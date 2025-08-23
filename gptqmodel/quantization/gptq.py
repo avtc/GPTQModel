@@ -322,9 +322,9 @@ class GPTQ:
             target_dtype = self.module.weight.data.dtype
 
             if Q.shape != self.module.weight.shape:
-                Q = Q.reshape(self.module.weight.shape).to(device=self.module.target_device, dtype=target_dtype)
+                Q = Q.reshape(self.module.weight.shape).to(device=self.module.target_device, dtype=target_dtype).contiguous()
             else:
-                Q = Q.to(device=self.module.target_device, dtype=target_dtype)
+                Q = Q.to(device=self.module.target_device, dtype=target_dtype).contiguous()
 
             duration = time.time() - start
             avg_loss = 0.0
