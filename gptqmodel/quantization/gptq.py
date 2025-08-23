@@ -374,40 +374,51 @@ class GPTQ:
 
         # Use mocked loop when mock_quantization is active
         if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
-            log.debug(f"MOCK: Using simplified quantization loop for {self.name}")
+            log.debug(f"MOCK: Using ultra-fast quantization for {self.name}")
             
-            # Simplified quantization - just quantize each column directly without hessian updates
-            for i1 in range(0, self.columns, blocksize):
-                i2 = min(i1 + blocksize, self.columns)
-                count = i2 - i1
+            # Ultra-fast mock quantization - process entire matrix at once
+            # This is much faster than column-by-column processing
+            
+            # Handle group quantization parameters for the entire matrix
+            if self.qcfg.group_size != -1:
+                if not self.qcfg.static_groups:
+                    # Process all groups at once
+                    for group_start in range(0, self.columns, self.qcfg.group_size):
+                        group_end = min(group_start + self.qcfg.group_size, self.columns)
+                        self.quantizer.find_params(W[:, group_start:group_end], weight=True)
+                        scale.append(self.quantizer.scale)
+                        zero.append(self.quantizer.zero)
+                else:
+                    # Use pre-computed groups
+                    self.quantizer = groups[0]  # Use first group as representative
+                    scale.append(self.quantizer.scale)
+                    zero.append(self.quantizer.zero)
+            else:
+                # Single quantization for entire matrix
+                self.quantizer.find_params(W, weight=True)
+                scale.append(self.quantizer.scale)
+                zero.append(self.quantizer.zero)
 
-                W1 = W[:, i1:i2].clone()
-                Q1 = torch.zeros_like(W1)
-
-                # Simple quantization without hessian updates or loss calculations
-                for i in range(count):
-                    w = W1[:, i]
+            # Ultra-fast quantization - apply to entire matrix at once
+            if self.qcfg.group_size != -1 and not self.qcfg.static_groups:
+                # Process each group separately for better quantization quality
+                for group_start in range(0, self.columns, self.qcfg.group_size):
+                    group_end = min(group_start + self.qcfg.group_size, self.columns)
+                    group_W = W[:, group_start:group_end]
                     
-                    # Handle group quantization parameters (same as original)
-                    if self.qcfg.group_size != -1:
-                        if not self.qcfg.static_groups:
-                            if (i1 + i) % self.qcfg.group_size == 0:
-                                self.quantizer.find_params(W[:, (i1 + i) : (i1 + i + self.qcfg.group_size)], weight=True)
-                            if ((i1 + i) // self.qcfg.group_size) - now_idx == -1:
-                                scale.append(self.quantizer.scale)
-                                zero.append(self.quantizer.zero)
-                                now_idx += 1
-                        else:
-                            idx = i1 + i
-                            if self.qcfg.desc_act:
-                                idx = perm[idx]
-                            self.quantizer = groups[idx // self.qcfg.group_size]
-
-                    # Direct quantization without loss calculations or hessian updates
-                    q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
-                    Q1[:, i] = q
-                
-                Q[:, i1:i2] = Q1
+                    # Find quantizer for this group
+                    group_idx = group_start // self.qcfg.group_size
+                    if self.qcfg.static_groups:
+                        group_quantizer = groups[group_idx]
+                    else:
+                        group_quantizer = self.quantizer
+                    
+                    # Quantize the entire group at once
+                    group_Q = group_quantizer.quantize(group_W)
+                    Q[:, group_start:group_end] = group_Q
+            else:
+                # Simple case - quantize entire matrix at once
+                Q = self.quantizer.quantize(W)
         else:
             # Original heavy loop for normal quantization
             for i1 in range(0, self.columns, blocksize):
