@@ -271,11 +271,6 @@ class GPTQ:
         self,
         blocksize=128,
     ):
-        # Check if mock quantization is enabled
-        if self.qcfg.mock_quantization:
-            log.info(f"Mock quantization enabled for `{self.name}` - skipping actual quantization computations")
-            return self._mock_quantize()
-
         # self.H = self.H.to(device=CUDA_0)
         # log.info(f"Quantization `{self.name}` using samples: `{self.nsamples}`")
         start = time.time()
