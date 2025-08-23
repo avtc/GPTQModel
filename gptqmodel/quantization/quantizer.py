@@ -18,6 +18,7 @@
 
 import torch
 import torch.nn as nn
+import time
 
 from ..quantization import QuantizeConfig
 from ..utils.logger import setup_logger
@@ -123,7 +124,6 @@ class Quantizer(nn.Module):
                     self.zero = torch.round(-xmin / self.scale)
 
         if self.qcfg.mse > 0.0:
-            import time
             start_time = time.time()
             log.trace(f"HEAVY: Starting MSE grid search for {self.name}, grid size: {int(self.maxshrink * self.grid)}")
             

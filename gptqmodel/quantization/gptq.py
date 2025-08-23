@@ -244,7 +244,6 @@ class GPTQ:
 
     @torch.inference_mode()
     def hessian_inverse(self, H: torch.Tensor):
-        import time
         start_time = time.time()
         log.trace(f"HEAVY: Starting hessian_inverse for module {self.name}, matrix shape: {H.shape}")
         
@@ -370,7 +369,6 @@ class GPTQ:
 
         Hinv, damp = self.hessian_inverse(H)
         
-        import time
         loop_start_time = time.time()
         log.trace(f"HEAVY: Starting iterative quantization loop for {self.name}, columns: {self.columns}, blocksize: {blocksize}")
 
