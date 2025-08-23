@@ -306,7 +306,7 @@ class GPTQ:
 
         if self.qcfg.mock_quantization:
             log.warning(f"Quantization: Mocking quantization for module `{self.name}`.")
-            Q = torch.zeros_like(W)
+            Q = torch.zeros(W.shape, dtype=W.dtype, device=W.device)
 
             group_size = self.qcfg.group_size if self.qcfg.group_size != -1 else self.columns
             g_idx = torch.tensor([i // group_size for i in range(self.columns)], dtype=torch.int32, device=Q.device)
