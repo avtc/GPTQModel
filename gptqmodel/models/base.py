@@ -354,9 +354,13 @@ class BaseGPTQModel(nn.Module):
         adapter_calibration_dataset: Union[List[Dict[str, Union[List[int], torch.LongTensor]]], List[str], List[int]] = None,
         # minimum length of calibration data, default is 10
         calibration_data_min_length: int = 10,
+        mock_quantization: bool = False,
     ) -> Dict[str, List[Dict[str, str]]]:
         if self.quantized:
             raise EnvironmentError("quantize() is called a model that is already quantized")
+
+        if mock_quantization:
+            self.quantize_config.mock_quantization = True
 
         if self.quantize_config.quant_method in QUANTIZE_BLACK_LIST:
             raise ValueError(

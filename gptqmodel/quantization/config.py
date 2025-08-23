@@ -218,6 +218,10 @@ class QuantizeConfig():
     v2_alpha: float = 0.25
     v2_memory_device: str = "auto" #
 
+    # Skips the actual quantization computations and generates mock quantized weights.
+    # This is useful for quickly testing model loading and compatibility.
+    mock_quantization: bool = field(default=False)
+
     def __post_init__(self):
         fields_info = fields(self)
 
@@ -470,6 +474,7 @@ class QuantizeConfig():
             # torch.dtype convert to string
             PACK_DTYPE_FIELD: str(self.pack_dtype).split(".")[-1],
             META_FIELD: self.meta,
+            "mock_quantization": self.mock_quantization,
             # DO NOT EXPORT Adapter to config/json since adapter can be swapped out/in
             # ADAPTER_FIELD: self.adapter.to_dict() if self.adapter else None,
         }

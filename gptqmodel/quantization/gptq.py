@@ -304,6 +304,32 @@ class GPTQ:
             W = self.module_copy.to(device=self.module.target_device)
             del self.module_copy
 
+        if self.qcfg.mock_quantization:
+            log.warning(f"Quantization: Mocking quantization for module `{self.name}`.")
+            Q = torch.zeros_like(W)
+
+            group_size = self.qcfg.group_size if self.qcfg.group_size != -1 else self.columns
+            g_idx = torch.tensor([i // group_size for i in range(self.columns)], dtype=torch.int32, device=Q.device)
+
+            num_groups = (self.columns + group_size - 1) // group_size
+
+            scale = torch.ones((self.rows, num_groups), device=Q.device, dtype=torch.float32)
+            zero = torch.zeros((self.rows, num_groups), device=Q.device, dtype=torch.float32)
+
+            if isinstance(self.module, transformers.Conv1D):
+                Q = Q.t()
+
+            if Q.shape != self.module.weight.shape:
+                Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
+            else:
+                Q = Q.type_as(self.module.weight.data)
+
+            duration = time.time() - start
+            avg_loss = 0.0
+            damp = self.qcfg.damp_percent
+
+            return Q, scale, zero, g_idx, duration, avg_loss, damp, self.nsamples
+
         self.quantizer.find_params(W, weight=True)
 
         H = self.H.to(device=self.module.target_device)
