@@ -78,38 +78,6 @@ class Quantizer(nn.Module):
             self.maxq = torch.tensor(-1)
 
     def find_params(self, x, weight=False):
-        # Check if we're in mock quantization mode
-        if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
-            # Simplified mock version - compute basic min/max without grid search
-            dev = x.device
-            self.maxq = self.maxq.to(dev)
-            
-            # Compute basic min/max
-            min_val = torch.min(x).item()
-            max_val = torch.max(x).item()
-            
-            # Handle symmetric quantization
-            if self.qcfg.sym:
-                max_val = max(abs(min_val), abs(max_val))
-                min_val = -max_val
-            
-            # Create simple scale and zero
-            if self.requires_groupwise_processing():
-                scale_val = max_val / self.maxq
-                zero_val = 0.0
-            else:
-                scale_val = (max_val - min_val) / self.maxq
-                if self.qcfg.sym:
-                    zero_val = (self.maxq + 1) / 2
-                else:
-                    zero_val = -min_val / scale_val
-            
-            # Create tensors with correct shape
-            self.scale = torch.tensor([scale_val], device=dev, dtype=torch.float32)
-            self.zero = torch.tensor([zero_val], device=dev, dtype=torch.float32)
-            return
-
-        # Original implementation for non-mock mode
         dev = x.device
         self.maxq = self.maxq.to(dev)
 
