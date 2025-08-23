@@ -326,13 +326,11 @@ class GPTQ:
             else:
                 Q = Q.to(device=self.module.target_device, dtype=target_dtype).contiguous()
 
-            self.module.weight.data = Q
-
             duration = time.time() - start
             avg_loss = 0.0
             damp = self.qcfg.damp_percent
 
-            return self.module.weight.data, scale, zero, g_idx, duration, avg_loss, damp, self.nsamples
+            return Q.clone(), scale, zero, g_idx, duration, avg_loss, damp, self.nsamples
 
         self.quantizer.find_params(W, weight=True)
 
