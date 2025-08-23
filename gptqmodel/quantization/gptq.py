@@ -118,6 +118,13 @@ class GPTQ:
         else:
             return (0, 0)
 
+    def _mock_hessian_inverse(self, H: torch.Tensor):
+        """Mock hessian inverse for fast testing"""
+        damp = self.qcfg.damp_percent
+        # Return identity matrix instead of complex inversion
+        identity = torch.eye(H.shape[0], device=H.device)
+        return identity, damp
+
     def _clone_module(self, copy=True, device: torch.device = None):
         if not device:
             device = self.module.weight.data.device
@@ -237,6 +244,10 @@ class GPTQ:
 
     @torch.inference_mode()
     def hessian_inverse(self, H: torch.Tensor):
+        import time
+        start_time = time.time()
+        log.trace(f"HEAVY: Starting hessian_inverse for module {self.name}, matrix shape: {H.shape}")
+        
         damp = self.qcfg.damp_percent
         diag = torch.arange(self.columns, device=H.device)
         mean = torch.mean(torch.diag(H))
@@ -264,6 +275,8 @@ class GPTQ:
             #raise ValueError(f"Quantization: `damp_percent` must between 0 and 1. current is {damp}")
             return None, 1.0
 
+        duration = time.time() - start_time
+        log.trace(f"HEAVY: Completed hessian_inverse for module {self.name} in {duration:.3f}s")
         return Hinv, damp
 
     @torch.inference_mode()
@@ -280,6 +293,14 @@ class GPTQ:
         # self.hessian_inverse = torch_compile(self.hessian_inverse)
         self.hessian_inverse = self.hessian_inverse
 
+        # Store original methods
+        original_hessian_inverse = self.hessian_inverse
+        
+        # Mock heavy computations based on single flag
+        if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
+            # Use simplified hessian inverse (identity matrix)
+            self.hessian_inverse = self._mock_hessian_inverse
+            
         # process buffered inputs
         if len(self.fwd_inputs_buffered_data) > 0:
             torch_sync(device=self.module.target_device)
@@ -348,6 +369,10 @@ class GPTQ:
         Q = torch.zeros_like(W)
 
         Hinv, damp = self.hessian_inverse(H)
+        
+        import time
+        loop_start_time = time.time()
+        log.trace(f"HEAVY: Starting iterative quantization loop for {self.name}, columns: {self.columns}, blocksize: {blocksize}")
 
         for i1 in range(0, self.columns, blocksize):
             i2 = min(i1 + blocksize, self.columns)
@@ -394,6 +419,10 @@ class GPTQ:
             if Hinv is not None:
                 Losses[:, i1:i2] = Losses1 / 2
                 W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
+        
+        loop_duration = time.time() - loop_start_time
+        num_blocks = (self.columns + blocksize - 1) // blocksize
+        log.trace(f"HEAVY: Completed iterative quantization loop for {self.name} in {loop_duration:.3f}s, {num_blocks} blocks processed")
 
         # TODO: why is there a torch_sync here? There are no streaming ops here?
         # torch_sync(device=self.module.target_device)
