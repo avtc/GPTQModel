@@ -446,12 +446,27 @@ class GPTQ:
             from .gar import invert_perm
             inv_final = invert_perm(final_perm)
             Q = Q[:, inv_final]
-            inv_global_perm = invert_perm(global_perm)
-            inv_global_perm_list = inv_global_perm.tolist()
-            temp_scale = [ scale[i] for i in inv_global_perm_list ]
-            scale = temp_scale
-            temp_zero = [ zero[i] for i in inv_global_perm_list ]
-            zero = temp_zero
+            inv_global_perm = invert_perm(global_perm) # This is a tensor of group indices
+
+            if self.qcfg.mock_quantization and self.qcfg.group_size != -1:
+                # Extract per-group scales/zeros (assuming they are repeated within each group_size block)
+                original_group_scales = scale[0, ::self.qcfg.group_size] # Shape (num_groups,)
+                original_group_zeros = zero[0, ::self.qcfg.group_size]   # Shape (num_groups,)
+
+                # Apply the permutation to these group-wise tensors
+                reordered_group_scales = original_group_scales[inv_global_perm]
+                reordered_group_zeros = original_group_zeros[inv_global_perm]
+
+                # Reconstruct the full scale and zero tensors with correct interleaving
+                scale = reordered_group_scales.repeat_interleave(self.qcfg.group_size)[:self.columns].unsqueeze(0)
+                zero = reordered_group_zeros.repeat_interleave(self.qcfg.group_size)[:self.columns].unsqueeze(0)
+            else:
+                # Original logic for non-mock or per-tensor mock quantization (where group_size == -1 or scale is a list)
+                inv_global_perm_list = inv_global_perm.tolist()
+                temp_scale = [ scale[i] for i in inv_global_perm_list ]
+                scale = temp_scale
+                temp_zero = [ zero[i] for i in inv_global_perm_list ]
+                zero = temp_zero
 
         if isinstance(self.module, transformers.Conv1D):
             Q = Q.t()
