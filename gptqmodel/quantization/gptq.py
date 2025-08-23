@@ -376,19 +376,19 @@ class GPTQ:
         if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
             log.debug(f"MOCK: Using optimized quantization loop for {self.name}")
             
-            # Optimized mock quantization - vectorized operations for much better performance
+            # Optimized mock quantization - maintain compatibility with original behavior
             for i1 in range(0, self.columns, blocksize):
                 i2 = min(i1 + blocksize, self.columns)
                 count = i2 - i1
 
-                # Use original weights directly - no cloning needed
-                W_block = W[:, i1:i2]
-                Q_block = torch.zeros_like(W_block)
+                # Clone the weights like the original code to maintain device/dtype consistency
+                W1 = W[:, i1:i2].clone()
+                Q1 = torch.zeros_like(W1)
 
-                # Handle group quantization parameters efficiently
+                # Handle group quantization parameters efficiently (similar to original)
                 if self.qcfg.group_size != -1:
                     if not self.qcfg.static_groups:
-                        # Find parameters for entire groups at once
+                        # Find parameters for entire groups at once (optimized)
                         group_start_cols = [i for i in range(i1, i2, self.qcfg.group_size)]
                         for group_start in group_start_cols:
                             group_end = min(group_start + self.qcfg.group_size, self.columns)
@@ -405,7 +405,7 @@ class GPTQ:
                                 idx = perm[idx]
                             self.quantizer = groups[idx // self.qcfg.group_size]
 
-                    # Vectorized quantization for the entire block
+                    # Vectorized quantization for the entire block (major optimization)
                     if len(scale) > 0 and len(zero) > 0:
                         # Use latest scale and zero for the entire block
                         latest_scale = scale[-1]
@@ -418,29 +418,29 @@ class GPTQ:
                         if latest_zero.dim() == 1:
                             latest_zero = latest_zero.view(-1, 1)
                         
-                        # Apply quantization formula: Q = scale * clamp(round(x/scale) + zero, 0, maxq) - scale * zero
+                        # Apply quantization formula using the cloned weights W1
                         maxq_val = 2 ** self.qcfg.bits - 1
                         if self.qcfg.sym:
                             # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
-                            Q_block = latest_scale * torch.clamp(
-                                torch.round(W_block / latest_scale),
+                            Q1 = latest_scale * torch.clamp(
+                                torch.round(W1 / latest_scale),
                                 -(maxq_val // 2),
                                 maxq_val // 2
                             )
                         else:
                             # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
                             quantized = torch.clamp(
-                                torch.round(W_block / latest_scale) + latest_zero,
+                                torch.round(W1 / latest_scale) + latest_zero,
                                 0,
                                 maxq_val
                             )
-                            Q_block = latest_scale * (quantized - latest_zero)
+                            Q1 = latest_scale * (quantized - latest_zero)
                     else:
                         # Fallback to individual quantization if no scale/zero available
                         for i in range(count):
-                            w = W_block[:, i]
+                            w = W1[:, i]
                             q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
-                            Q_block[:, i] = q
+                            Q1[:, i] = q
                 else:
                     # No grouping - vectorized quantization for entire block
                     maxq_val = 2 ** self.qcfg.bits - 1
@@ -454,26 +454,26 @@ class GPTQ:
                             latest_zero = latest_zero.view(-1, 1)
                         
                         if self.qcfg.sym:
-                            Q_block = latest_scale * torch.clamp(
-                                torch.round(W_block / latest_scale),
+                            Q1 = latest_scale * torch.clamp(
+                                torch.round(W1 / latest_scale),
                                 -(maxq_val // 2),
                                 maxq_val // 2
                             )
                         else:
                             quantized = torch.clamp(
-                                torch.round(W_block / latest_scale) + latest_zero,
+                                torch.round(W1 / latest_scale) + latest_zero,
                                 0,
                                 maxq_val
                             )
-                            Q_block = latest_scale * (quantized - latest_zero)
+                            Q1 = latest_scale * (quantized - latest_zero)
                     else:
                         # Fallback to individual quantization
                         for i in range(count):
-                            w = W_block[:, i]
+                            w = W1[:, i]
                             q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
-                            Q_block[:, i] = q
+                            Q1[:, i] = q
 
-                Q[:, i1:i2] = Q_block
+                Q[:, i1:i2] = Q1
         else:
             # Original heavy loop for normal quantization
             for i1 in range(0, self.columns, blocksize):
