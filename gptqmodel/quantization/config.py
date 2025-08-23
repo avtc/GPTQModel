@@ -217,6 +217,13 @@ class QuantizeConfig():
     v2: bool = False
     v2_alpha: float = 0.25
     v2_memory_device: str = "auto" #
+    
+    # Mock quantization mode - skip actual quantization computations for fast testing
+    # When enabled, this will skip the expensive quantization computations and just
+    # pack the original weights in a GPTQ-compatible format for quick model loading tests
+    # This is useful for quickly checking if a model can be loaded by vllm/sglang
+    # without waiting for the full quantization process to complete
+    mock_quantization: bool = False
 
     def __post_init__(self):
         fields_info = fields(self)

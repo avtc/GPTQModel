@@ -271,6 +271,11 @@ class GPTQ:
         self,
         blocksize=128,
     ):
+        # Check if mock quantization is enabled
+        if self.qcfg.mock_quantization:
+            log.info(f"Mock quantization enabled for `{self.name}` - skipping actual quantization computations")
+            return self._mock_quantize()
+
         # self.H = self.H.to(device=CUDA_0)
         # log.info(f"Quantization `{self.name}` using samples: `{self.nsamples}`")
         start = time.time()
@@ -282,13 +287,15 @@ class GPTQ:
 
         # process buffered inputs
         if len(self.fwd_inputs_buffered_data) > 0:
-            torch_sync(device=self.module.target_device)
+            # Skip expensive input processing in mock mode
+            if not self.qcfg.mock_quantization:
+                torch_sync(device=self.module.target_device)
 
-            for inp in self.fwd_inputs_buffered_data:
-                self.process_batch(inp)
+                for inp in self.fwd_inputs_buffered_data:
+                    self.process_batch(inp)
 
-            # release buffer
-            del self.fwd_inputs_buffered_data
+                # release buffer
+                del self.fwd_inputs_buffered_data
 
         # if self.device.type not in ["mps", "cpu"]:
         #     self.module.weight.data = self.module.weight.data.cpu()
@@ -304,14 +311,19 @@ class GPTQ:
             W = self.module_copy.to(device=self.module.target_device)
             del self.module_copy
 
-        self.quantizer.find_params(W, weight=True)
+        # Skip expensive quantizer setup and Hessian computation in mock mode
+        if not self.qcfg.mock_quantization:
+            self.quantizer.find_params(W, weight=True)
 
-        H = self.H.to(device=self.module.target_device)
-        del self.H
+            H = self.H.to(device=self.module.target_device)
+            del self.H
 
-        dead = torch.diag(H) == 0
-        H[dead, dead] = 1
-        W[:, dead] = 0
+            dead = torch.diag(H) == 0
+            H[dead, dead] = 1
+            W[:, dead] = 0
+        else:
+            # In mock mode, create minimal fake Hessian to avoid downstream errors
+            H = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=self.module.target_device)
 
         # g_idx = []
         scale = []
@@ -344,56 +356,64 @@ class GPTQ:
             W = W[:, final_perm]
             H = H[final_perm][:, final_perm]
 
-        Losses = torch.zeros_like(W)
-        Q = torch.zeros_like(W)
+        # Skip expensive quantization loops in mock mode
+        if not self.qcfg.mock_quantization:
+            Losses = torch.zeros_like(W)
+            Q = torch.zeros_like(W)
 
-        Hinv, damp = self.hessian_inverse(H)
+            Hinv, damp = self.hessian_inverse(H)
 
-        for i1 in range(0, self.columns, blocksize):
-            i2 = min(i1 + blocksize, self.columns)
-            count = i2 - i1
+            for i1 in range(0, self.columns, blocksize):
+                i2 = min(i1 + blocksize, self.columns)
+                count = i2 - i1
 
-            W1 = W[:, i1:i2].clone()
-            Q1 = torch.zeros_like(W1)
-            Err1 = torch.zeros_like(W1)
-            Losses1 = torch.zeros_like(W1)
+                W1 = W[:, i1:i2].clone()
+                Q1 = torch.zeros_like(W1)
+                Err1 = torch.zeros_like(W1)
+                Losses1 = torch.zeros_like(W1)
 
-            if Hinv is not None:
-                Hinv1 = Hinv[i1:i2, i1:i2]
-
-            for i in range(count):
-                w = W1[:, i]
                 if Hinv is not None:
-                    d = Hinv1[i, i]
+                    Hinv1 = Hinv[i1:i2, i1:i2]
 
-                if self.qcfg.group_size != -1:
-                    if not self.qcfg.static_groups:
-                        if (i1 + i) % self.qcfg.group_size == 0:
-                            self.quantizer.find_params(W[:, (i1 + i) : (i1 + i + self.qcfg.group_size)], weight=True)
+                for i in range(count):
+                    w = W1[:, i]
+                    if Hinv is not None:
+                        d = Hinv1[i, i]
 
-                        if ((i1 + i) // self.qcfg.group_size) - now_idx == -1:
-                            scale.append(self.quantizer.scale)
-                            zero.append(self.quantizer.zero)
-                            now_idx += 1
-                    else:
-                        idx = i1 + i
-                        if self.qcfg.desc_act:
-                            idx = perm[idx]
+                    if self.qcfg.group_size != -1:
+                        if not self.qcfg.static_groups:
+                            if (i1 + i) % self.qcfg.group_size == 0:
+                                self.quantizer.find_params(W[:, (i1 + i) : (i1 + i + self.qcfg.group_size)], weight=True)
 
-                        self.quantizer = groups[idx // self.qcfg.group_size]
+                            if ((i1 + i) // self.qcfg.group_size) - now_idx == -1:
+                                scale.append(self.quantizer.scale)
+                                zero.append(self.quantizer.zero)
+                                now_idx += 1
+                        else:
+                            idx = i1 + i
+                            if self.qcfg.desc_act:
+                                idx = perm[idx]
 
-                q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
-                Q1[:, i] = q
+                            self.quantizer = groups[idx // self.qcfg.group_size]
+
+                    q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+                    Q1[:, i] = q
+                    if Hinv is not None:
+                        Losses1[:, i] = (w - q) ** 2 / d**2
+                        err1 = (w - q) / d
+                        W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
+                        Err1[:, i] = err1
+
+                Q[:, i1:i2] = Q1
                 if Hinv is not None:
-                    Losses1[:, i] = (w - q) ** 2 / d**2
-                    err1 = (w - q) / d
-                    W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
-                    Err1[:, i] = err1
-
-            Q[:, i1:i2] = Q1
-            if Hinv is not None:
-                Losses[:, i1:i2] = Losses1 / 2
-                W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
+                    Losses[:, i1:i2] = Losses1 / 2
+                    W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
+        else:
+            # In mock mode, create fake quantized results
+            Q = W.clone()  # Just use original weights as "quantized"
+            Losses = torch.zeros_like(W)
+            damp = self.qcfg.damp_percent
+            Hinv = None
 
         # TODO: why is there a torch_sync here? There are no streaming ops here?
         # torch_sync(device=self.module.target_device)
@@ -448,14 +468,69 @@ class GPTQ:
 
         #Q = Q.to(device=use_device)
 
-        if scale == []:
-            scale.append(self.quantizer.scale)
-            zero.append(self.quantizer.zero)
+        # Create fake quantized results in mock mode
+        if self.qcfg.mock_quantization:
+            # Simulate actual quantization at the specified bits and group_size
+            # This creates properly "quantized" weights that match the expected format
+            
+            # Get original weights
+            W = self._clone_module(device=self.module.target_device)
+            
+            # Simulate quantization based on bits and group_size
+            if self.qcfg.group_size != -1:
+                # Per-group quantization
+                group_size = self.qcfg.group_size
+                num_groups = (self.columns + group_size - 1) // group_size
+                
+                # Create fake scales - one per group, using float16 for compatibility
+                max_val = 2 ** (self.qcfg.bits - 1) - 1 if self.qcfg.sym else 2 ** self.qcfg.bits - 1
+                scale = (torch.rand(num_groups, dtype=torch.float16, device=self.module.target_device) * 2 + 0.5)  # Random scales between 0.5-2.5
+                
+                # Create fake zeros - one per group, using int32 for compatibility
+                zero = (torch.randint(0, max_val + 1, (num_groups,), dtype=torch.int32, device=self.module.target_device).float() / scale).round()
+                
+                # Create fake quantized weights by simulating quantization
+                Q = W.clone()
+                for i in range(0, self.columns, group_size):
+                    end_idx = min(i + group_size, self.columns)
+                    group_W = W[:, i:end_idx]
+                    # Simulate quantization: round to nearest integer level
+                    quantized_group = (group_W / scale[i // group_size]).round().clamp(-max_val, max_val) * scale[i // group_size]
+                    Q[:, i:end_idx] = quantized_group
+                
+                # Create fake group indices
+                g_idx = torch.tensor([i // group_size for i in range(self.columns)],
+                                   dtype=torch.int32, device=self.module.target_device)
+            else:
+                # Per-tensor quantization (no grouping)
+                max_val = 2 ** (self.qcfg.bits - 1) - 1 if self.qcfg.sym else 2 ** self.qcfg.bits - 1
+                scale = torch.tensor([torch.rand(1).item() * 2 + 0.5], dtype=torch.float16, device=self.module.target_device)  # Random scale
+                
+                # Simulate quantization
+                Q = (W / scale).round().clamp(-max_val, max_val) * scale
+                zero = torch.tensor([0.0], dtype=torch.int32, device=self.module.target_device)
+                g_idx = torch.tensor([0], dtype=torch.int32, device=self.module.target_device)
+            
+            # Set fake quantization metrics to make it look like normal quantization
+            duration = 0.001  # Very small duration to indicate it's fake
+            avg_loss = 0.0     # Perfect loss (fake)
+            damp = self.qcfg.damp_percent  # Use the configured damp value
+            nsamples = self.nsamples if self.nsamples > 0 else 1  # Use actual samples or default to 1
+            
+            # Ensure scale and zero have the right final dimensions for compatibility
+            if self.qcfg.group_size != -1:
+                # For per-group quantization, repeat scale and zero to match full weight dimensions
+                scale = scale.repeat_interleave(self.qcfg.group_size)[:self.columns].unsqueeze(0)
+                zero = zero.repeat_interleave(self.qcfg.group_size)[:self.columns].unsqueeze(0)
+        else:
+            if scale == []:
+                scale.append(self.quantizer.scale)
+                zero.append(self.quantizer.zero)
 
-        scale = torch.cat(scale, dim=1)
-        zero = torch.cat(zero, dim=1)
+            scale = torch.cat(scale, dim=1)
+            zero = torch.cat(zero, dim=1)
 
-        duration = time.time() - start
+            duration = time.time() - start
 
         return Q, scale, zero, g_idx, duration, avg_loss, damp, self.nsamples
 
