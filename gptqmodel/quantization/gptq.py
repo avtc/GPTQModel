@@ -319,10 +319,12 @@ class GPTQ:
             if isinstance(self.module, transformers.Conv1D):
                 Q = Q.t()
 
+            target_dtype = self.module.weight.data.dtype
+
             if Q.shape != self.module.weight.shape:
-                Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
+                Q = Q.reshape(self.module.weight.shape).to(device=self.module.target_device, dtype=target_dtype)
             else:
-                Q = Q.type_as(self.module.weight.data)
+                Q = Q.to(device=self.module.target_device, dtype=target_dtype)
 
             duration = time.time() - start
             avg_loss = 0.0
