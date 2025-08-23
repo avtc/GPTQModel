@@ -372,55 +372,96 @@ class GPTQ:
         loop_start_time = time.time()
         log.debug(f"HEAVY: Starting iterative quantization loop for {self.name}, columns: {self.columns}, blocksize: {blocksize}")
 
-        for i1 in range(0, self.columns, blocksize):
-            i2 = min(i1 + blocksize, self.columns)
-            count = i2 - i1
+        # Use mocked loop when mock_quantization is active
+        if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
+            log.debug(f"MOCK: Using simplified quantization loop for {self.name}")
+            
+            # Simplified quantization - just quantize each column directly without hessian updates
+            for i1 in range(0, self.columns, blocksize):
+                i2 = min(i1 + blocksize, self.columns)
+                count = i2 - i1
 
-            W1 = W[:, i1:i2].clone()
-            Q1 = torch.zeros_like(W1)
-            Err1 = torch.zeros_like(W1)
-            Losses1 = torch.zeros_like(W1)
+                W1 = W[:, i1:i2].clone()
+                Q1 = torch.zeros_like(W1)
 
-            if Hinv is not None:
-                Hinv1 = Hinv[i1:i2, i1:i2]
+                # Simple quantization without hessian updates or loss calculations
+                for i in range(count):
+                    w = W1[:, i]
+                    
+                    # Handle group quantization parameters (same as original)
+                    if self.qcfg.group_size != -1:
+                        if not self.qcfg.static_groups:
+                            if (i1 + i) % self.qcfg.group_size == 0:
+                                self.quantizer.find_params(W[:, (i1 + i) : (i1 + i + self.qcfg.group_size)], weight=True)
+                            if ((i1 + i) // self.qcfg.group_size) - now_idx == -1:
+                                scale.append(self.quantizer.scale)
+                                zero.append(self.quantizer.zero)
+                                now_idx += 1
+                        else:
+                            idx = i1 + i
+                            if self.qcfg.desc_act:
+                                idx = perm[idx]
+                            self.quantizer = groups[idx // self.qcfg.group_size]
 
-            for i in range(count):
-                w = W1[:, i]
+                    # Direct quantization without loss calculations or hessian updates
+                    q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+                    Q1[:, i] = q
+                
+                Q[:, i1:i2] = Q1
+        else:
+            # Original heavy loop for normal quantization
+            for i1 in range(0, self.columns, blocksize):
+                i2 = min(i1 + blocksize, self.columns)
+                count = i2 - i1
+
+                W1 = W[:, i1:i2].clone()
+                Q1 = torch.zeros_like(W1)
+                Err1 = torch.zeros_like(W1)
+                Losses1 = torch.zeros_like(W1)
+
                 if Hinv is not None:
-                    d = Hinv1[i, i]
+                    Hinv1 = Hinv[i1:i2, i1:i2]
 
-                if self.qcfg.group_size != -1:
-                    if not self.qcfg.static_groups:
-                        if (i1 + i) % self.qcfg.group_size == 0:
-                            self.quantizer.find_params(W[:, (i1 + i) : (i1 + i + self.qcfg.group_size)], weight=True)
+                for i in range(count):
+                    w = W1[:, i]
+                    if Hinv is not None:
+                        d = Hinv1[i, i]
 
-                        if ((i1 + i) // self.qcfg.group_size) - now_idx == -1:
-                            scale.append(self.quantizer.scale)
-                            zero.append(self.quantizer.zero)
-                            now_idx += 1
-                    else:
-                        idx = i1 + i
-                        if self.qcfg.desc_act:
-                            idx = perm[idx]
+                    if self.qcfg.group_size != -1:
+                        if not self.qcfg.static_groups:
+                            if (i1 + i) % self.qcfg.group_size == 0:
+                                self.quantizer.find_params(W[:, (i1 + i) : (i1 + i + self.qcfg.group_size)], weight=True)
 
-                        self.quantizer = groups[idx // self.qcfg.group_size]
+                            if ((i1 + i) // self.qcfg.group_size) - now_idx == -1:
+                                scale.append(self.quantizer.scale)
+                                zero.append(self.quantizer.zero)
+                                now_idx += 1
+                        else:
+                            idx = i1 + i
+                            if self.qcfg.desc_act:
+                                idx = perm[idx]
 
-                q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
-                Q1[:, i] = q
+                            self.quantizer = groups[idx // self.qcfg.group_size]
+
+                    q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+                    Q1[:, i] = q
+                    if Hinv is not None:
+                        Losses1[:, i] = (w - q) ** 2 / d**2
+                        err1 = (w - q) / d
+                        W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
+                        Err1[:, i] = err1
+
+                Q[:, i1:i2] = Q1
                 if Hinv is not None:
-                    Losses1[:, i] = (w - q) ** 2 / d**2
-                    err1 = (w - q) / d
-                    W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
-                    Err1[:, i] = err1
-
-            Q[:, i1:i2] = Q1
-            if Hinv is not None:
-                Losses[:, i1:i2] = Losses1 / 2
-                W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
+                    Losses[:, i1:i2] = Losses1 / 2
+                    W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
         
         loop_duration = time.time() - loop_start_time
         num_blocks = (self.columns + blocksize - 1) // blocksize
-        log.debug(f"HEAVY: Completed iterative quantization loop for {self.name} in {loop_duration:.3f}s, {num_blocks} blocks processed")
+        if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
+            log.debug(f"MOCK: Completed simplified quantization loop for {self.name} in {loop_duration:.3f}s, {num_blocks} blocks processed")
+        else:
+            log.debug(f"HEAVY: Completed iterative quantization loop for {self.name} in {loop_duration:.3f}s, {num_blocks} blocks processed")
 
         # TODO: why is there a torch_sync here? There are no streaming ops here?
         # torch_sync(device=self.module.target_device)
