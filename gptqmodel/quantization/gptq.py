@@ -374,38 +374,40 @@ class GPTQ:
 
         # Use mocked loop when mock_quantization is active
         if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
-            log.debug(f"MOCK: Using fast mock quantization for {self.name}")
+            log.debug(f"MOCK: Using simplified quantization loop for {self.name}")
             
-            # Fast mock quantization - create simple mock tensors that have correct structure
-            # This is much faster than actual quantization but produces valid tensors
-            
-            # Create mock scale and zero tensors with correct shapes
-            if self.qcfg.group_size != -1:
-                num_groups = (self.columns + self.qcfg.group_size - 1) // self.qcfg.group_size
-                # Create simple mock scale and zero tensors
-                mock_scale = torch.ones(1, num_groups, device=W.device, dtype=torch.float16)
-                mock_zero = torch.zeros(1, num_groups, device=W.device, dtype=torch.float16)
-                scale.append(mock_scale)
-                zero.append(mock_zero)
-            else:
-                # Single scale and zero for entire matrix
-                mock_scale = torch.ones(1, 1, device=W.device, dtype=torch.float16)
-                mock_zero = torch.zeros(1, 1, device=W.device, dtype=torch.float16)
-                scale.append(mock_scale)
-                zero.append(mock_zero)
+            # Simplified quantization - just quantize each column directly without hessian updates
+            for i1 in range(0, self.columns, blocksize):
+                i2 = min(i1 + blocksize, self.columns)
+                count = i2 - i1
 
-            # Create mock quantized weights - simple transformation that maintains structure
-            # Use random-like but deterministic values for fast processing
-            torch.manual_seed(42)  # For reproducible mock results
-            if W.dtype == torch.float16:
-                Q = W + torch.randn_like(W) * 0.01  # Small random perturbation
-            else:
-                Q = W.to(torch.float16) + torch.randn_like(W.to(torch.float16)) * 0.01
-            
-            # Ensure we have integer-like values for quantization
-            levels = 2 ** (self.qcfg.bits - 1) if self.qcfg.sym else 2 ** self.qcfg.bits
-            Q = torch.clamp(Q, -levels, levels-1)
-            Q = Q.to(torch.int32)  # GPTQ typically uses int32 for quantized weights
+                W1 = W[:, i1:i2].clone()
+                Q1 = torch.zeros_like(W1)
+
+                # Simple quantization without hessian updates or loss calculations
+                for i in range(count):
+                    w = W1[:, i]
+                    
+                    # Handle group quantization parameters (same as original)
+                    if self.qcfg.group_size != -1:
+                        if not self.qcfg.static_groups:
+                            if (i1 + i) % self.qcfg.group_size == 0:
+                                self.quantizer.find_params(W[:, (i1 + i) : (i1 + i + self.qcfg.group_size)], weight=True)
+                            if ((i1 + i) // self.qcfg.group_size) - now_idx == -1:
+                                scale.append(self.quantizer.scale)
+                                zero.append(self.quantizer.zero)
+                                now_idx += 1
+                        else:
+                            idx = i1 + i
+                            if self.qcfg.desc_act:
+                                idx = perm[idx]
+                            self.quantizer = groups[idx // self.qcfg.group_size]
+
+                    # Direct quantization without loss calculations or hessian updates
+                    q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+                    Q1[:, i] = q
+                
+                Q[:, i1:i2] = Q1
         else:
             # Original heavy loop for normal quantization
             for i1 in range(0, self.columns, blocksize):
