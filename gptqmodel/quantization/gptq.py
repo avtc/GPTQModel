@@ -245,7 +245,7 @@ class GPTQ:
     @torch.inference_mode()
     def hessian_inverse(self, H: torch.Tensor):
         start_time = time.time()
-        log.trace(f"HEAVY: Starting hessian_inverse for module {self.name}, matrix shape: {H.shape}")
+        log.debug(f"HEAVY: Starting hessian_inverse for module {self.name}, matrix shape: {H.shape}")
         
         damp = self.qcfg.damp_percent
         diag = torch.arange(self.columns, device=H.device)
@@ -275,7 +275,7 @@ class GPTQ:
             return None, 1.0
 
         duration = time.time() - start_time
-        log.trace(f"HEAVY: Completed hessian_inverse for module {self.name} in {duration:.3f}s")
+        log.debug(f"HEAVY: Completed hessian_inverse for module {self.name} in {duration:.3f}s")
         return Hinv, damp
 
     @torch.inference_mode()
@@ -370,7 +370,7 @@ class GPTQ:
         Hinv, damp = self.hessian_inverse(H)
         
         loop_start_time = time.time()
-        log.trace(f"HEAVY: Starting iterative quantization loop for {self.name}, columns: {self.columns}, blocksize: {blocksize}")
+        log.debug(f"HEAVY: Starting iterative quantization loop for {self.name}, columns: {self.columns}, blocksize: {blocksize}")
 
         for i1 in range(0, self.columns, blocksize):
             i2 = min(i1 + blocksize, self.columns)
@@ -420,7 +420,7 @@ class GPTQ:
         
         loop_duration = time.time() - loop_start_time
         num_blocks = (self.columns + blocksize - 1) // blocksize
-        log.trace(f"HEAVY: Completed iterative quantization loop for {self.name} in {loop_duration:.3f}s, {num_blocks} blocks processed")
+        log.debug(f"HEAVY: Completed iterative quantization loop for {self.name} in {loop_duration:.3f}s, {num_blocks} blocks processed")
 
         # TODO: why is there a torch_sync here? There are no streaming ops here?
         # torch_sync(device=self.module.target_device)

@@ -125,7 +125,7 @@ class Quantizer(nn.Module):
 
         if self.qcfg.mse > 0.0:
             start_time = time.time()
-            log.trace(f"HEAVY: Starting MSE grid search for {self.name}, grid size: {int(self.maxshrink * self.grid)}")
+            log.debug(f"HEAVY: Starting MSE grid search for {self.name}, grid size: {int(self.maxshrink * self.grid)}")
             
             best = torch.full([x.shape[0]], float("inf"), device=dev)
             for i in range(int(self.maxshrink * self.grid)):
@@ -150,7 +150,7 @@ class Quantizer(nn.Module):
                     self.zero[tmp] = zero1[tmp]
             
             duration = time.time() - start_time
-            log.trace(f"HEAVY: Completed MSE grid search for {self.name} in {duration:.3f}s")
+            log.debug(f"HEAVY: Completed MSE grid search for {self.name} in {duration:.3f}s")
         if not self.perchannel:
             if weight:
                 tmp = shape[0]
