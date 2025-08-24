@@ -326,140 +326,60 @@ class ModuleLooper():
                     # logger.info(f"layer-{i}: Begin Forward() Pass")
                     fwd_start = time.time()
 
-                    # Fast forward optimization branch
-                    if self.gptq_model.quantize_config.fast_fwd:
-                        layer_outputs = []
+                    layer_outputs = []
+                    for j in range(processor.num_batches):
+                        layer_input = []
+                        # log.info(f"batch: {processor.num_batches}, j = {j}, layer_inputs = {layer_inputs}")
+                        for k, layer_inp in enumerate(layer_inputs[j]):
+                            layer_input.append(move_to(layer_inp, device=cur_layer_device, stream=False))
 
-                        # Pre-allocate reusable tensors based on first batch dimensions
-                        pre_allocated_layer_inputs = []
-                        for k in range(len(layer_inputs[0])):
-                            if len(layer_inputs[0][k].shape) == 1:
-                                pre_allocated_layer_inputs.append(torch.zeros(1, *layer_inputs[0][k].shape[1:],
-                                                                             device=cur_layer_device, dtype=layer_inputs[0][k].dtype))
-                            else:
-                                pre_allocated_layer_inputs.append(torch.zeros_like(layer_inputs[0][k], device=cur_layer_device))
+                        mask = attention_masks[j]
+                        layer_attention_mask = mask if mask is None else move_to(mask, device=cur_layer_device, stream=False)
 
-                        # Pre-allocate additional inputs dict
-                        additional_layer_inputs = {}
-                        if self.support_batch_quantize:
-                            additional_layer_inputs["attention_mask"] = torch.zeros_like(attention_masks[0],
-                                                                         device=cur_layer_device) if attention_masks[0] is not None else None
-                        # Pre-allocate position_ids tensor
-                        if position_ids:
-                            additional_layer_inputs["position_ids"] = torch.zeros_like(position_ids[0], device=cur_layer_device)
+                        additional_layer_inputs = {"attention_mask": layer_attention_mask} if self.support_batch_quantize else {}
+                        layer_position_ids = (
+                            None if not position_ids else move_to(position_ids[j], device=cur_layer_device, stream=False)
+                        )
 
-                        # Pre-allocate layer_input_kwargs structure
-                        if layer_input_kwargs and layer_input_kwargs[0]:
-                            pre_allocated_kwargs = nested_zeros_like(layer_input_kwargs[0], device=cur_layer_device)
-                            additional_layer_inputs.update(pre_allocated_kwargs)
+                        if layer_position_ids is not None:
+                            additional_layer_inputs["position_ids"] = layer_position_ids
+                        for k, v in layer_input_kwargs[j].items():
+                            additional_layer_inputs[k] = nested_move_to(v, device=cur_layer_device, stream=False)
 
-                        for j in range(processor.num_batches):
-                            # Optimized tensor movement using pre-allocated buffers
-                            for k, layer_inp in enumerate(layer_inputs[j]):
-                                pre_allocated_layer_inputs[k].copy_(layer_inp.to(cur_layer_device))
+                        # sync above stream copies
+                        #torch_sync(device=cur_layer_device)
 
-                            mask = attention_masks[j]
-                            if mask is not None:
-                                additional_layer_inputs["attention_mask"].copy_(mask.to(cur_layer_device))
+                        # reuse_kv is a flag to reuse the kv cache, only for the hamba model
+                        if hasattr(module, "reuse_kv"):
+                            if module.reuse_kv:
+                                additional_layer_inputs["kv_last_layer"] = shared_kv_cache_dict.get(
+                                    layer_index - 1)
 
-                            if position_ids:
-                                additional_layer_inputs["position_ids"].copy_(position_ids[j].to(cur_layer_device))
-
-                            # Optimized dictionary update
-                            if layer_input_kwargs and layer_input_kwargs[j]:
-                                nested_move_copy_(additional_layer_inputs, layer_input_kwargs[j], device=cur_layer_device)
-
-                            # Enable stream synchronization when beneficial
-                            if HAS_CUDA and cur_layer_device.type == 'cuda':
-                                torch_sync(device=cur_layer_device)
-
-                            # Optimized conditional logic with cached results
-                            has_reuse_kv = hasattr(module, "reuse_kv") and module.reuse_kv
-                            
-                            if has_reuse_kv:
-                                additional_layer_inputs["kv_last_layer"] = shared_kv_cache_dict.get(layer_index - 1)
-
-                            # Common module call logic
-                            if is_lm_head_module:
-                                layer_output = module(*pre_allocated_layer_inputs)
-                            else:
-                                layer_output = module(*pre_allocated_layer_inputs, **additional_layer_inputs)
-
-                            # Cache layer output if needed
-                            if has_reuse_kv and shared_kv_cache_dict.get(layer_index) is None:
+                            layer_output = module(*layer_input) if is_lm_head_module else module(*layer_input,
+                                                                                                    **additional_layer_inputs)
+                            if shared_kv_cache_dict.get(layer_index) is None:
                                 shared_kv_cache_dict[layer_index] = layer_output[-1]
-                            
-                            # For Native processor, we can update processor input here
-                            # if second forward is not required, this/first forward output is captured as input for next loop
-                            if not processor.fwd_after_process:
-                                # after transformers 4.54, some model's DecodeLayer.forward() no longer returns tuple
-                                if isinstance(layer_output, tuple):
-                                    layer_outputs.append([layer_output[0]])
-                                else:
-                                    layer_outputs.append([layer_output])
-
-                        # Native processor does not need to run a second forward pass, the output of the first pass is
-                        # directly saved and used as input for the next loop.
+                        else:
+                            layer_output = module(*layer_input) if is_lm_head_module else module(*layer_input,
+                                                                                    **additional_layer_inputs)
+                        # For Native processor, we can update processor input here
+                        # if second forward is not required, this/first forward output is captured as input for next loop
                         if not processor.fwd_after_process:
-                            processor.receive_layer_inputs(layer_outputs)
-                            # Remove explicit deletion - rely on garbage collection
-
-                    else:
-                        # Original code path (non-fast_fwd)
-                        layer_outputs = []
-                        for j in range(processor.num_batches):
-                            layer_input = []
-                            # log.info(f"batch: {processor.num_batches}, j = {j}, layer_inputs = {layer_inputs}")
-                            for k, layer_inp in enumerate(layer_inputs[j]):
-                                layer_input.append(move_to(layer_inp, device=cur_layer_device, stream=False))
-
-                            mask = attention_masks[j]
-                            layer_attention_mask = mask if mask is None else move_to(mask, device=cur_layer_device, stream=False)
-
-                            additional_layer_inputs = {"attention_mask": layer_attention_mask} if self.support_batch_quantize else {}
-                            layer_position_ids = (
-                                None if not position_ids else move_to(position_ids[j], device=cur_layer_device, stream=False)
-                            )
-
-                            if layer_position_ids is not None:
-                                additional_layer_inputs["position_ids"] = layer_position_ids
-                            for k, v in layer_input_kwargs[j].items():
-                                additional_layer_inputs[k] = nested_move_to(v, device=cur_layer_device, stream=False)
-
-                            # sync above stream copies
-                            #torch_sync(device=cur_layer_device)
-
-                            # reuse_kv is a flag to reuse the kv cache, only for the hamba model
-                            if hasattr(module, "reuse_kv"):
-                                if module.reuse_kv:
-                                    additional_layer_inputs["kv_last_layer"] = shared_kv_cache_dict.get(
-                                        layer_index - 1)
-
-                                layer_output = module(*layer_input) if is_lm_head_module else module(*layer_input,
-                                                                                                     **additional_layer_inputs)
-                                if shared_kv_cache_dict.get(layer_index) is None:
-                                    shared_kv_cache_dict[layer_index] = layer_output[-1]
+                            # after transformers 4.54, some model's DecodeLayer.forward() no longer returns tuple
+                            if isinstance(layer_output, tuple):
+                                layer_outputs.append([layer_output[0]])
                             else:
-                                layer_output = module(*layer_input) if is_lm_head_module else module(*layer_input,
-                                                                                      **additional_layer_inputs)
-                            # For Native processor, we can update processor input here
-                            # if second forward is not required, this/first forward output is captured as input for next loop
-                            if not processor.fwd_after_process:
-                                # after transformers 4.54, some model's DecodeLayer.forward() no longer returns tuple
-                                if isinstance(layer_output, tuple):
-                                    layer_outputs.append([layer_output[0]])
-                                else:
-                                    layer_outputs.append([layer_output])
+                                layer_outputs.append([layer_output])
 
 
-                            del layer_input
-                            del additional_layer_inputs
+                        del layer_input
+                        del additional_layer_inputs
 
-                        # Native processor does not need to run a second forward pass, the output of the first pass is
-                        # directly saved and used as input for the next loop.
-                        if not processor.fwd_after_process:
-                            processor.receive_layer_inputs(layer_outputs)
-                            del layer_outputs
+                    # Native processor does not need to run a second forward pass, the output of the first pass is
+                    # directly saved and used as input for the next loop.
+                    if not processor.fwd_after_process:
+                        processor.receive_layer_inputs(layer_outputs)
+                        del layer_outputs
 
                     fwd_end = time.time()
                     fwd_time = fwd_end - fwd_start
