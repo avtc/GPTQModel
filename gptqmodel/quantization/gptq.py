@@ -577,6 +577,7 @@ class GPTQ:
 
         # Ensure Q is on the same device as the original module weight before type conversion
         if Q.device != self.module.weight.data.device:
+            log.debug(f"Q=Q.to(device=): Q.device from {Q.device.type}:{Q.device.index} to {self.module.weight.data.device.type}:{self.module.weight.data.device.index}")
             Q = Q.to(device=self.module.weight.data.device)
 
         if Q.shape != self.module.weight.shape:
