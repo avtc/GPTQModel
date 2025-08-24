@@ -288,9 +288,6 @@ class GPTQ:
         # self.hessian_inverse = torch_compile(self.hessian_inverse)
         self.hessian_inverse = self.hessian_inverse
 
-        # Store original methods
-        original_hessian_inverse = self.hessian_inverse
-        
         # Mock heavy computations
         if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
             # Use simplified hessian inverse (identity matrix)
