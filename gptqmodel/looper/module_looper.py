@@ -356,14 +356,14 @@ class ModuleLooper():
                         for j in range(processor.num_batches):
                             # Optimized tensor movement using pre-allocated buffers
                             for k, layer_inp in enumerate(layer_inputs[j]):
-                                torch.move_copy_(pre_allocated_layer_inputs[k], layer_inp, device=cur_layer_device)
+                                pre_allocated_layer_inputs[k].copy_(layer_inp.to(cur_layer_device))
 
                             mask = attention_masks[j]
                             if mask is not None:
-                                torch.move_copy_(additional_layer_inputs["attention_mask"], mask, device=cur_layer_device)
+                                additional_layer_inputs["attention_mask"].copy_(mask.to(cur_layer_device))
 
                             if position_ids:
-                                torch.move_copy_(additional_layer_inputs["position_ids"], position_ids[j], device=cur_layer_device)
+                                additional_layer_inputs["position_ids"].copy_(position_ids[j].to(cur_layer_device))
 
                             # Optimized dictionary update
                             if layer_input_kwargs and layer_input_kwargs[j]:

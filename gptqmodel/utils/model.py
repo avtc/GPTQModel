@@ -154,9 +154,9 @@ def nested_zeros_like(v, device):
 
 def nested_move_copy_(dest, src, device):
     if isinstance(src, torch.Tensor):
-        # Ensure dest is a tensor before calling torch.move_copy_
+        # Ensure dest is a tensor before calling copy_
         if isinstance(dest, torch.Tensor):
-            torch.move_copy_(dest, src, device=device)
+            dest.copy_(src.to(device))
         else:
             # This case should ideally not be hit if pre-allocation is correct
             dest = src.to(device)
