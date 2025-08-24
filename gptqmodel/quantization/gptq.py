@@ -575,6 +575,10 @@ class GPTQ:
         if isinstance(self.module, transformers.Conv1D):
             Q = Q.t()
 
+        # Ensure Q is on the same device as the original module weight before type conversion
+        if Q.device != self.module.weight.data.device:
+            Q = Q.to(device=self.module.weight.data.device)
+
         if Q.shape != self.module.weight.shape:
             Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
         else:
