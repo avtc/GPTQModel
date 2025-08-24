@@ -567,10 +567,11 @@ class GPTQ:
                             Q1 = scale[-1].view(-1, 1) * (quantized - zero[-1].view(-1, 1))
                         
                         errors = (W1 - Q1).unsqueeze(2)  # Shape: (columns, count, 1)
-                        Hinv_cols = Hinv1.unsqueeze(0)   # Shape: (1, count, count)
                         
-                        # Vectorized error propagation
-                        W1 -= torch.matmul(errors, Hinv_cols).squeeze(2)
+                        # Vectorized error propagation - fix dimension mismatch
+                        # Use only the diagonal elements for error propagation
+                        Hinv_diag = torch.diagonal(Hinv1, dim1=-2, dim2=-1).view(1, -1, 1) # Shape: (1, count, 1)
+                        W1 -= (errors * Hinv_diag).squeeze(2)
                         Err1 = (W1 - Q1) / torch.diagonal(Hinv1).unsqueeze(1)
                         Losses1 = (W1 - Q1) ** 2 / (torch.diagonal(Hinv1).unsqueeze(1) ** 2)
                     else:
