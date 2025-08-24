@@ -245,7 +245,6 @@ class GPTQ:
     @torch.inference_mode()
     def hessian_inverse(self, H: torch.Tensor):
         start_time = time.time()
-        log.debug(f"HEAVY: Starting hessian_inverse for module {self.name}, matrix shape: {H.shape}")
         
         damp = self.qcfg.damp_percent
         diag = torch.arange(self.columns, device=H.device)
@@ -275,7 +274,7 @@ class GPTQ:
             return None, 1.0
 
         duration = time.time() - start_time
-        log.debug(f"HEAVY: Completed hessian_inverse for module {self.name} in {duration:.3f}s")
+        log.debug(f"Completed hessian_inverse for module {self.name} in {duration:.3f}s")
         return Hinv, damp
 
     @torch.inference_mode()
@@ -295,7 +294,7 @@ class GPTQ:
         # Store original methods
         original_hessian_inverse = self.hessian_inverse
         
-        # Mock heavy computations based on single flag
+        # Mock heavy computations
         if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
             # Use simplified hessian inverse (identity matrix)
             self.hessian_inverse = self._mock_hessian_inverse
@@ -370,13 +369,9 @@ class GPTQ:
         Hinv, damp = self.hessian_inverse(H)
         
         loop_start_time = time.time()
-        log.debug(f"HEAVY: Starting iterative quantization loop for {self.name}, columns: {self.columns}, blocksize: {blocksize}")
 
-        # Use mocked loop when mock_quantization is active
+        # Use simplified loop when mock_quantization is active
         if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
-            log.debug(f"MOCK: Using optimized quantization loop for {self.name}")
-            
-            # Optimized mock quantization - maintain compatibility with original behavior
             for i1 in range(0, self.columns, blocksize):
                 i2 = min(i1 + blocksize, self.columns)
                 count = i2 - i1
@@ -523,11 +518,10 @@ class GPTQ:
                     W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
         
         loop_duration = time.time() - loop_start_time
-        num_blocks = (self.columns + blocksize - 1) // blocksize
         if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
-            log.debug(f"MOCK: Completed simplified quantization loop for {self.name} in {loop_duration:.3f}s, {num_blocks} blocks processed")
+            log.debug(f"Completed simplified quantization loop for {self.name} in {loop_duration:.3f}s")
         else:
-            log.debug(f"HEAVY: Completed iterative quantization loop for {self.name} in {loop_duration:.3f}s, {num_blocks} blocks processed")
+            log.debug(f"Completed iterative quantization loop for {self.name} in {loop_duration:.3f}s")
 
         # TODO: why is there a torch_sync here? There are no streaming ops here?
         # torch_sync(device=self.module.target_device)
@@ -577,7 +571,8 @@ class GPTQ:
 
         # Ensure Q is on the same device as the original module weight before type conversion
         if Q.device != self.module.weight.data.device:
-            log.debug(f"Q=Q.to(device=): Q.device from {Q.device.type}:{Q.device.index} to {self.module.weight.data.device.type}:{self.module.weight.data.device.index}")
+            # the code in next "if" sometimes leads to illegal memory access
+            log.debug(f"Moving Q from {Q.device.type}:{Q.device.index} to {self.module.weight.data.device.type}:{self.module.weight.data.device.index}")
             Q = Q.to(device=self.module.weight.data.device)
 
         if Q.shape != self.module.weight.shape:
