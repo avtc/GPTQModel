@@ -572,8 +572,8 @@ class GPTQ:
                         # Use only the diagonal elements for error propagation
                         Hinv_diag = torch.diagonal(Hinv1, dim1=-2, dim2=-1).view(1, -1, 1) # Shape: (1, count, 1)
                         W1 -= (errors * Hinv_diag).squeeze(2)
-                        Err1 = (W1 - Q1) / torch.diagonal(Hinv1).unsqueeze(1)
-                        Losses1 = (W1 - Q1) ** 2 / (torch.diagonal(Hinv1).unsqueeze(1) ** 2)
+                        Err1 = (W1 - Q1) / torch.diagonal(Hinv1)
+                        Losses1 = (W1 - Q1) ** 2 / (torch.diagonal(Hinv1) ** 2)
                     else:
                         # Fallback to individual error computation
                         for i in range(count):
