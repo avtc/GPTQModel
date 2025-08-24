@@ -220,6 +220,8 @@ class QuantizeConfig():
 
     # Skip all heavy computations for testing model loading
     mock_quantization: bool = field(default=False, metadata={"help": "Skip heavy computations for fast model loading validation"})
+    mock_hessian_inverse: bool = field(default=False, metadata={"help": "Skip heavy computations for fast model loading validation"})
+    fast_loop: bool = field(default=False, metadata={"help": "Optimized version of quantization loop"})
 
     def __post_init__(self):
         fields_info = fields(self)

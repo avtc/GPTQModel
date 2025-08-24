@@ -295,8 +295,7 @@ class GPTQ:
         # Store original methods
         original_hessian_inverse = self.hessian_inverse
         
-        # Mock heavy computations based on single flag
-        if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
+        if hasattr(self.qcfg, 'mock_hessian_inverse') and self.qcfg.mock_hessian_inverse:
             # Use simplified hessian inverse (identity matrix)
             self.hessian_inverse = self._mock_hessian_inverse
             
@@ -474,6 +473,122 @@ class GPTQ:
                             Q1[:, i] = q
 
                 Q[:, i1:i2] = Q1
+        elif hasattr(self.qcfg, 'fast_loop') and self.qcfg.fast_loop:
+            # Use fast loop when fast_loop config is enabled
+            log.debug(f"FAST: Using optimized quantization loop for {self.name}")
+            # Optimized fast loop implementation
+            for i1 in range(0, self.columns, blocksize):
+                i2 = min(i1 + blocksize, self.columns)
+                count = i2 - i1
+
+                W1 = W[:, i1:i2].clone()
+                Q1 = torch.zeros_like(W1)
+                Err1 = torch.zeros_like(W1) if Hinv is not None else None
+                Losses1 = torch.zeros_like(W1) if Hinv is not None else None
+
+                if Hinv is not None:
+                    Hinv1 = Hinv[i1:i2, i1:i2]
+
+                # Handle group quantization parameters efficiently
+                if self.qcfg.group_size != -1:
+                    if not self.qcfg.static_groups:
+                        # Find parameters for entire groups at once (optimized)
+                        group_start_cols = [i for i in range(i1, i2, self.qcfg.group_size)]
+                        for group_start in group_start_cols:
+                            group_end = min(group_start + self.qcfg.group_size, self.columns)
+                            if group_start < group_end:
+                                self.quantizer.find_params(W[:, group_start:group_end], weight=True)
+                                scale.append(self.quantizer.scale)
+                                zero.append(self.quantizer.zero)
+                                now_idx += 1
+                    else:
+                        # Static groups - use pre-computed groups
+                        for i in range(count):
+                            idx = i1 + i
+                            if self.qcfg.desc_act:
+                                idx = perm[idx]
+                            self.quantizer = groups[idx // self.qcfg.group_size]
+
+                # Vectorized quantization for the entire block (major optimization)
+                if self.qcfg.group_size != -1 and len(scale) > 0 and len(zero) > 0:
+                    # Use latest scale and zero for the entire block
+                    latest_scale = scale[-1]
+                    latest_zero = zero[-1]
+                    
+                    # Reshape scales and zeros to match block dimensions
+                    if latest_scale.dim() == 1:
+                        latest_scale = latest_scale.view(-1, 1)
+                    if latest_zero.dim() == 1:
+                        latest_zero = latest_zero.view(-1, 1)
+                    
+                    # Apply quantization formula using broadcasting
+                    maxq_val = 2 ** self.qcfg.bits - 1
+                    if self.qcfg.sym:
+                        # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
+                        Q1 = latest_scale * torch.clamp(
+                            torch.round(W1 / latest_scale),
+                            -(maxq_val // 2),
+                            maxq_val // 2
+                        )
+                    else:
+                        # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
+                        quantized = torch.clamp(
+                            torch.round(W1 / latest_scale) + latest_zero,
+                            0,
+                            maxq_val
+                        )
+                        Q1 = latest_scale * (quantized - latest_zero)
+                else:
+                    # No grouping or no scale/zero available - fallback to individual quantization
+                    for i in range(count):
+                        w = W1[:, i]
+                        q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+                        Q1[:, i] = q
+
+                # Vectorized error computation if Hinv is available
+                if Hinv is not None:
+                    if self.qcfg.group_size != -1 and len(scale) > 0 and len(zero) > 0:
+                        # Vectorized error computation for grouped quantization
+                        maxq_val = 2 ** self.qcfg.bits - 1
+                        if self.qcfg.sym:
+                            quantized = torch.clamp(
+                                torch.round(W1 / scale[-1].view(-1, 1)),
+                                -(maxq_val // 2),
+                                maxq_val // 2
+                            )
+                        else:
+                            quantized = torch.clamp(
+                                torch.round(W1 / scale[-1].view(-1, 1)) + zero[-1].view(-1, 1),
+                                0,
+                                maxq_val
+                            )
+                        Q1 = scale[-1].view(-1, 1) * quantized
+                        if not self.qcfg.sym:
+                            Q1 = scale[-1].view(-1, 1) * (quantized - zero[-1].view(-1, 1))
+                        
+                        errors = (W1 - Q1).unsqueeze(2)  # Shape: (columns, count, 1)
+                        Hinv_cols = Hinv1.unsqueeze(0)   # Shape: (1, count, count)
+                        
+                        # Vectorized error propagation
+                        W1 -= torch.matmul(errors, Hinv_cols).squeeze(2)
+                        Err1 = (W1 - Q1) / torch.diagonal(Hinv1).unsqueeze(1)
+                        Losses1 = (W1 - Q1) ** 2 / (torch.diagonal(Hinv1).unsqueeze(1) ** 2)
+                    else:
+                        # Fallback to individual error computation
+                        for i in range(count):
+                            w = W1[:, i]
+                            q = Q1[:, i]
+                            d = Hinv1[i, i]
+                            
+                            Losses1[:, i] = (w - q) ** 2 / d**2
+                            err1 = (w - q) / d
+                            W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
+                            Err1[:, i] = err1
+
+                Q[:, i1:i2] = Q1
+                if Hinv is not None:
+                    Losses[:, i1:i2] = Losses1 / 2
+                    W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
         else:
             # Original heavy loop for normal quantization
             for i1 in range(0, self.columns, blocksize):
@@ -526,6 +641,8 @@ class GPTQ:
         num_blocks = (self.columns + blocksize - 1) // blocksize
         if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
             log.debug(f"MOCK: Completed simplified quantization loop for {self.name} in {loop_duration:.3f}s, {num_blocks} blocks processed")
+        elif hasattr(self.qcfg, 'fast_loop') and self.qcfg.fast_loop:
+            log.debug(f"FAST: Completed optimized quantization loop for {self.name} in {loop_duration:.3f}s, {num_blocks} blocks processed")
         else:
             log.debug(f"HEAVY: Completed iterative quantization loop for {self.name} in {loop_duration:.3f}s, {num_blocks} blocks processed")
 
@@ -577,7 +694,7 @@ class GPTQ:
 
         # Ensure Q is on the same device as the original module weight before type conversion
         if Q.device != self.module.weight.data.device:
-            log.debug(f"Q=Q.to(device=): Q.device from {Q.device.type}:{Q.device.index} to {self.module.weight.data.device.type}:{self.module.weight.data.device.index}")
+            log.debug(f"Q.device from {Q.device.type}:{Q.device.index} to {self.module.weight.data.device.type}:{self.module.weight.data.device.index}")
             Q = Q.to(device=self.module.weight.data.device)
 
         if Q.shape != self.module.weight.shape:
