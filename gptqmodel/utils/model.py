@@ -135,8 +135,37 @@ def nested_move_to(v, device, dtype: torch.dtype = None, stream: bool = False):
         return move_to(v, device=device, dtype=dtype, stream=stream)
     elif isinstance(v, (list, tuple)):
         return type(v)([nested_move_to(e, device=device, dtype=dtype, stream=stream) for e in v])
+    elif isinstance(v, dict):
+        return {k: nested_move_to(i, device=device, dtype=dtype, stream=stream) for k, i in v.items()}
     else:
         return v
+
+
+def nested_zeros_like(v, device):
+    if isinstance(v, torch.Tensor):
+        return torch.zeros_like(v, device=device)
+    elif isinstance(v, (list, tuple)):
+        return type(v)([nested_zeros_like(e, device=device) for e in v])
+    elif isinstance(v, dict):
+        return {k: nested_zeros_like(i, device=device) for k, i in v.items()}
+    else:
+        return v
+
+
+def nested_move_copy_(dest, src, device):
+    if isinstance(src, torch.Tensor):
+        # Ensure dest is a tensor before calling torch.move_copy_
+        if isinstance(dest, torch.Tensor):
+            torch.move_copy_(dest, src, device=device)
+        else:
+            # This case should ideally not be hit if pre-allocation is correct
+            dest = src.to(device)
+    elif isinstance(src, (list, tuple)):
+        for i in range(len(src)):
+            nested_move_copy_(dest[i], src[i], device=device)
+    elif isinstance(src, dict):
+        for k in src:
+            nested_move_copy_(dest[k], src[k], device=device)
 
 
 def find_modules(module: nn.Module, layers=None, name: str="") -> Dict[str, nn.Module]:

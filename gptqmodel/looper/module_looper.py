@@ -33,7 +33,8 @@ from ..models._const import SUPPORTS_MODULE_TYPES
 from ..nn_modules.hooked_linear import replace_module_with_hooked_legacy, replace_module_with_hooked_tree, HookedLinear
 from ..utils.logger import setup_logger
 from ..utils.model import (find_modules, get_device, get_module, get_module_by_name_prefix,
-                           get_moe_layer_modules, move_to, nested_move_to)
+                           get_moe_layer_modules, move_to, nested_move_copy_,
+                           nested_move_to, nested_zeros_like)
 from ..utils.torch import (ALL_DEVICES, ALL_STREAMS, CPU, DEFAULT_BALANCE_STRATEGY,
                            HAS_CUDA, BalanceStrategy, device_next, device_next_reset,
                            torch_devices, torch_empty_cache, torch_streamCtx, torch_sync)
@@ -328,7 +329,7 @@ class ModuleLooper():
                     # Fast forward optimization branch
                     if self.gptq_model.quantize_config.fast_fwd:
                         layer_outputs = []
-                        
+
                         # Pre-allocate reusable tensors based on first batch dimensions
                         pre_allocated_layer_inputs = []
                         for k in range(len(layer_inputs[0])):
@@ -337,12 +338,20 @@ class ModuleLooper():
                                                                              device=cur_layer_device, dtype=layer_inputs[0][k].dtype))
                             else:
                                 pre_allocated_layer_inputs.append(torch.zeros_like(layer_inputs[0][k], device=cur_layer_device))
-                        
+
                         # Pre-allocate additional inputs dict
-                        pre_allocated_additional_inputs = {}
+                        additional_layer_inputs = {}
                         if self.support_batch_quantize:
-                            pre_allocated_additional_inputs["attention_mask"] = torch.zeros_like(attention_masks[0],
+                            additional_layer_inputs["attention_mask"] = torch.zeros_like(attention_masks[0],
                                                                          device=cur_layer_device) if attention_masks[0] is not None else None
+                        # Pre-allocate position_ids tensor
+                        if position_ids:
+                            additional_layer_inputs["position_ids"] = torch.zeros_like(position_ids[0], device=cur_layer_device)
+
+                        # Pre-allocate layer_input_kwargs structure
+                        if layer_input_kwargs and layer_input_kwargs[0]:
+                            pre_allocated_kwargs = nested_zeros_like(layer_input_kwargs[0], device=cur_layer_device)
+                            additional_layer_inputs.update(pre_allocated_kwargs)
 
                         for j in range(processor.num_batches):
                             # Optimized tensor movement using pre-allocated buffers
@@ -351,19 +360,14 @@ class ModuleLooper():
 
                             mask = attention_masks[j]
                             if mask is not None:
-                                torch.move_copy_(pre_allocated_additional_inputs["attention_mask"], mask, device=cur_layer_device)
+                                torch.move_copy_(additional_layer_inputs["attention_mask"], mask, device=cur_layer_device)
 
-                            # Optimized dictionary creation
-                            additional_layer_inputs = pre_allocated_additional_inputs.copy()
                             if position_ids:
-                                layer_position_ids = move_to(position_ids[j], device=cur_layer_device, stream=False)
-                                additional_layer_inputs["position_ids"] = layer_position_ids
-                            
+                                torch.move_copy_(additional_layer_inputs["position_ids"], position_ids[j], device=cur_layer_device)
+
                             # Optimized dictionary update
-                            additional_layer_inputs.update({
-                                k: nested_move_to(v, device=cur_layer_device, stream=False)
-                                for k, v in layer_input_kwargs[j].items()
-                            })
+                            if layer_input_kwargs and layer_input_kwargs[j]:
+                                nested_move_copy_(additional_layer_inputs, layer_input_kwargs[j], device=cur_layer_device)
 
                             # Enable stream synchronization when beneficial
                             if HAS_CUDA and cur_layer_device.type == 'cuda':
