@@ -244,7 +244,6 @@ class GPTQ:
 
     @torch.inference_mode()
     def hessian_inverse(self, H: torch.Tensor):
-        start_time = time.time()
         
         damp = self.qcfg.damp_percent
         diag = torch.arange(self.columns, device=H.device)
@@ -273,8 +272,6 @@ class GPTQ:
             #raise ValueError(f"Quantization: `damp_percent` must between 0 and 1. current is {damp}")
             return None, 1.0
 
-        duration = time.time() - start_time
-        log.debug(f"Completed hessian_inverse for module {self.name} in {duration:.3f}s")
         return Hinv, damp
 
     @torch.inference_mode()
@@ -368,8 +365,6 @@ class GPTQ:
 
         Hinv, damp = self.hessian_inverse(H)
         
-        loop_start_time = time.time()
-
         # Use simplified loop when mock_quantization is active
         if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
             for i1 in range(0, self.columns, blocksize):
@@ -517,12 +512,6 @@ class GPTQ:
                     Losses[:, i1:i2] = Losses1 / 2
                     W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
         
-        loop_duration = time.time() - loop_start_time
-        if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
-            log.debug(f"Completed simplified quantization loop for {self.name} in {loop_duration:.3f}s")
-        else:
-            log.debug(f"Completed iterative quantization loop for {self.name} in {loop_duration:.3f}s")
-
         # TODO: why is there a torch_sync here? There are no streaming ops here?
         # torch_sync(device=self.module.target_device)
 
@@ -571,8 +560,6 @@ class GPTQ:
 
         # Ensure Q is on the same device as the original module weight before type conversion
         if Q.device != self.module.weight.data.device:
-            # the code in next "if" sometimes leads to illegal memory access
-            log.debug(f"Moving Q from {Q.device.type}:{Q.device.index} to {self.module.weight.data.device.type}:{self.module.weight.data.device.index}")
             Q = Q.to(device=self.module.weight.data.device)
 
         if Q.shape != self.module.weight.shape:
