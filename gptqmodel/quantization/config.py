@@ -218,10 +218,8 @@ class QuantizeConfig():
     v2_alpha: float = 0.25
     v2_memory_device: str = "auto" #
 
-    # Skip all heavy computations for testing model loading
-    mock_quantization: bool = field(default=False, metadata={"help": "Skip heavy computations for fast model loading validation"})
-    mock_hessian_inverse: bool = field(default=False, metadata={"help": "Skip heavy computations for fast model loading validation"})
-    fast_loop: bool = field(default=False, metadata={"help": "Optimized version of quantization loop, could cause quality degradation, require testing"})
+    mock_hessian_inverse: bool = field(default=False, metadata={"help": "Use simplified hessian inverse (identity matrix), experiemental"})
+    fast_loop: bool = field(default=False, metadata={"help": "Optimized version of quantization loop, experiemental"})
 
     def __post_init__(self):
         fields_info = fields(self)
