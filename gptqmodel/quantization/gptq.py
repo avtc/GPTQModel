@@ -570,10 +570,18 @@ class GPTQ:
                     
                     # Fast diagonal-based error propagation
                     if self.qcfg.group_size != -1 and len(scale) > 0 and len(zero) > 0:
-                        # Use diagonal approximation for speed
+                        # Use diagonal approximation for speed - ensure proper broadcasting
                         Hinv_diag = torch.diagonal(Hinv1).view(-1, 1)
-                        errors_scaled = errors / Hinv_diag
-                        W1 -= errors_scaled * 0.5  # Reduced update factor for stability
+                        # Ensure errors and Hinv_diag have compatible shapes
+                        if errors.shape[0] == Hinv_diag.shape[0]:
+                            errors_scaled = errors / Hinv_diag
+                            W1 -= errors_scaled * 0.5  # Reduced update factor for stability
+                        else:
+                            # Fallback to element-wise error correction for incompatible shapes
+                            for i in range(count):
+                                d = Hinv1[i, i]
+                                err = (W1[:, i] - Q1[:, i]) / d
+                                W1[:, i:] -= err.unsqueeze(1) * Hinv1[i, i:] * 0.5
                     else:
                         # Simple error correction for non-grouped case
                         for i in range(count):
@@ -593,8 +601,16 @@ class GPTQ:
                 errors_final = (W_original - Q1)
                 if self.qcfg.group_size != -1 and len(scale) > 0 and len(zero) > 0:
                     Hinv_diag = torch.diagonal(Hinv1).view(-1, 1)
-                    errors_scaled = errors_final / Hinv_diag
-                    W[:, i2:] -= errors_scaled.matmul(Hinv[i1:i2, i2:])
+                    # Ensure errors_final and Hinv_diag have compatible shapes
+                    if errors_final.shape[0] == Hinv_diag.shape[0]:
+                        errors_scaled = errors_final / Hinv_diag
+                        W[:, i2:] -= errors_scaled.matmul(Hinv[i1:i2, i2:])
+                    else:
+                        # Fallback to element-wise error correction for incompatible shapes
+                        for i in range(count):
+                            d = Hinv1[i, i]
+                            err = (W_original[:, i] - Q1[:, i]) / d
+                            W[:, i2:] -= err.unsqueeze(1).matmul(Hinv[i1:i2, i2:])
                 else:
                     for i in range(count):
                         d = Hinv1[i, i]
