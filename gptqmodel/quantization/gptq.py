@@ -581,14 +581,18 @@ class GPTQ:
                             for i in range(count):
                                 d = Hinv1[i, i]
                                 err = (W1[:, i] - Q1[:, i]) / d
-                                # Ensure proper matrix multiplication dimensions
+                                # Use broadcasting for element-wise multiplication instead of matrix multiplication
+                                # This handles the case where err has shape [count, 1] and Hinv1[i, i:] has shape [remaining_cols]
                                 if err.dim() == 1:
                                     err = err.unsqueeze(1)  # Shape: [count, 1]
-                                if Hinv1[i, i:].dim() == 1:
-                                    Hinv_row = Hinv1[i, i:].unsqueeze(0)  # Shape: [1, remaining_cols]
-                                else:
-                                    Hinv_row = Hinv1[i, i:]  # Should already be [1, remaining_cols]
-                                W1[:, i:] -= err.matmul(Hinv_row) * 0.5
+                                
+                                # Get the appropriate row from Hinv1 for error propagation
+                                hinv_row = Hinv1[i, i:]  # Shape: [remaining_cols]
+                                if hinv_row.dim() == 1:
+                                    hinv_row = hinv_row.unsqueeze(0)  # Shape: [1, remaining_cols]
+                                
+                                # Use broadcasting: err ([count, 1]) * hinv_row ([1, remaining_cols]) -> [count, remaining_cols]
+                                W1[:, i:] -= err * hinv_row * 0.5
                     else:
                         # Simple error correction for non-grouped case
                         for i in range(count):
@@ -617,14 +621,18 @@ class GPTQ:
                         for i in range(count):
                             d = Hinv1[i, i]
                             err = (W_original[:, i] - Q1[:, i]) / d
-                            # Ensure proper matrix multiplication dimensions
+                            # Use broadcasting for element-wise multiplication instead of matrix multiplication
+                            # This handles the case where err has shape [1024, 1] and Hinv[i1:i2, i2:] has shape [128, 896]
                             if err.dim() == 1:
-                                err = err.unsqueeze(1)  # Shape: [count, 1]
-                            if Hinv[i1:i2, i2:].dim() == 1:
-                                Hinv_submatrix = Hinv[i1:i2, i2:].unsqueeze(0)  # Shape: [1, remaining_cols]
-                            else:
-                                Hinv_submatrix = Hinv[i1:i2, i2:]  # Should already be [blocksize, remaining_cols]
-                            W[:, i2:] -= err.matmul(Hinv_submatrix)
+                                err = err.unsqueeze(1)  # Shape: [1024, 1]
+                            
+                            # Get the appropriate row from Hinv for error propagation
+                            hinv_row = Hinv[i1 + i, i2:]  # Shape: [896]
+                            if hinv_row.dim() == 1:
+                                hinv_row = hinv_row.unsqueeze(0)  # Shape: [1, 896]
+                            
+                            # Use broadcasting: err ([1024, 1]) * hinv_row ([1, 896]) -> [1024, 896]
+                            W[:, i2:] -= err * hinv_row
                 else:
                     for i in range(count):
                         d = Hinv1[i, i]
