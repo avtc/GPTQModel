@@ -582,11 +582,11 @@ class GPTQ:
 
         # Ensure Q is on the same device as the original module weight before type conversion
         if Q.device != self.module.weight.data.device:
-            Q = Q.to(device=self.module.weight.data.device)
-
-        # Ensure Q is on the same device as the original module weight before type conversion
-        if Q.device != self.module.weight.data.device:
-            Q = Q.to(device=self.module.weight.data.device)
+            try:
+                Q = Q.to(device=self.module.weight.data.device)
+            except:
+                log.error(f"Failed to move Q from {Q.device.type}:{Q.device.index} to {self.module.weight.data.device.type}:{self.module.weight.data.device.index}")
+                raise
 
         if Q.shape != self.module.weight.shape:
             Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
