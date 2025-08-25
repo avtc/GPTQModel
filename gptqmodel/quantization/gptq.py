@@ -581,7 +581,14 @@ class GPTQ:
                             for i in range(count):
                                 d = Hinv1[i, i]
                                 err = (W1[:, i] - Q1[:, i]) / d
-                                W1[:, i:] -= err.unsqueeze(1) * Hinv1[i, i:] * 0.5
+                                # Ensure proper matrix multiplication dimensions
+                                if err.dim() == 1:
+                                    err = err.unsqueeze(1)  # Shape: [count, 1]
+                                if Hinv1[i, i:].dim() == 1:
+                                    Hinv_row = Hinv1[i, i:].unsqueeze(0)  # Shape: [1, remaining_cols]
+                                else:
+                                    Hinv_row = Hinv1[i, i:]  # Should already be [1, remaining_cols]
+                                W1[:, i:] -= err.matmul(Hinv_row) * 0.5
                     else:
                         # Simple error correction for non-grouped case
                         for i in range(count):
@@ -610,7 +617,14 @@ class GPTQ:
                         for i in range(count):
                             d = Hinv1[i, i]
                             err = (W_original[:, i] - Q1[:, i]) / d
-                            W[:, i2:] -= err.unsqueeze(1).matmul(Hinv[i1:i2, i2:])
+                            # Ensure proper matrix multiplication dimensions
+                            if err.dim() == 1:
+                                err = err.unsqueeze(1)  # Shape: [count, 1]
+                            if Hinv[i1:i2, i2:].dim() == 1:
+                                Hinv_submatrix = Hinv[i1:i2, i2:].unsqueeze(0)  # Shape: [1, remaining_cols]
+                            else:
+                                Hinv_submatrix = Hinv[i1:i2, i2:]  # Should already be [blocksize, remaining_cols]
+                            W[:, i2:] -= err.matmul(Hinv_submatrix)
                 else:
                     for i in range(count):
                         d = Hinv1[i, i]
