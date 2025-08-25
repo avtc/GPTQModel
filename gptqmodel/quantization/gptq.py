@@ -32,14 +32,13 @@ from torch.nn.modules.conv import _ConvNd
 from ..looper.named_module import NamedModule
 from ..quantization import QuantizeConfig
 from ..utils.logger import setup_logger
-from ..utils.torch import HAS_CUDA, HAS_XPU, TORCH_GTE_28, device_next, torch_compile, torch_sync
+from ..utils.torch import HAS_CUDA, HAS_XPU, TORCH_GTE_28, DEVICE_0, device_next, torch_compile, torch_sync
 from .quantizer import HF_OPTIMUM, Quantizer
 
 log = setup_logger()
 lock = threading.Lock()
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
-DEVICE_0 = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # TODO: is there a threading init bug in torch.linalg?
 # bypass strange threading bug
