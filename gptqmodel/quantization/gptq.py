@@ -245,6 +245,7 @@ class GPTQ:
     @torch.inference_mode()
     def hessian_inverse(self, H: torch.Tensor):
         start_time = time.time()
+        log.debug(f"HEAVY: Starting hessian_inverse for module {self.name}, matrix shape: {H.shape}")
         
         damp = self.qcfg.damp_percent
         diag = torch.arange(self.columns, device=H.device)
@@ -274,7 +275,7 @@ class GPTQ:
             return None, 1.0
 
         duration = time.time() - start_time
-        log.debug(f"Completed hessian_inverse for module {self.name} in {duration:.3f}s")
+        log.debug(f"HEAVY: Completed hessian_inverse for module {self.name} in {duration:.3f}s")
         return Hinv, damp
 
     @torch.inference_mode()
@@ -491,31 +492,49 @@ class GPTQ:
 
     def _fast_loop(self, W, Q, Hinv, Losses, scale, zero, now_idx, blocksize, perm, groups):
         """
-        Vectorized iterative error propagation without column-wise loop
+        Enhanced fast loop with multi-iteration error propagation for better accuracy.
+        Uses 2-3 iterations per block instead of full heavy loop computation.
         """
         max_iterations = self.qcfg.fast_loop_iterations
         
         for i1 in range(0, self.columns, blocksize):
             i2 = min(i1 + blocksize, self.columns)
-
-            # Save original weights for loss calculation
-            W_original = W[:, i1:i2].clone()
+            count = i2 - i1
             
-            # Process the entire block with iterative refinement
+            # Clone weights for iterative refinement
+            W1 = W[:, i1:i2].clone()
+            
+            # Store original weights for error computation
+            W_original = W1.clone()
+            
             for iteration in range(max_iterations):
-                # Update quantization params for groups
-                if self.qcfg.group_size != -1 and not self.qcfg.static_groups:
-                    group_starts = [g for g in range(i1, i2, self.qcfg.group_size)]
-                    for group_start in group_starts:
-                        group_end = min(group_start + self.qcfg.group_size, self.columns)
-                        self.quantizer.find_params(W[:, group_start:group_end], weight=True)
-                        scale.append(self.quantizer.scale)
-                        zero.append(self.quantizer.zero)
-                        now_idx += 1
+                Q1 = torch.zeros_like(W1)
                 
+                if Hinv is not None:
+                    Hinv1 = Hinv[i1:i2, i1:i2]
+
+                # Handle group quantization parameters
+                if self.qcfg.group_size != -1:
+                    if not self.qcfg.static_groups:
+                        # Find parameters for entire groups at once (optimized)
+                        group_start_cols = [i for i in range(i1, i2, self.qcfg.group_size)]
+                        for group_start in group_start_cols:
+                            group_end = min(group_start + self.qcfg.group_size, self.columns)
+                            if group_start < group_end:
+                                self.quantizer.find_params(W[:, group_start:group_end], weight=True)
+                                scale.append(self.quantizer.scale)
+                                zero.append(self.quantizer.zero)
+                                now_idx += 1
+                    else:
+                        # Static groups - use pre-computed groups
+                        for i in range(count):
+                            idx = i1 + i
+                            if self.qcfg.desc_act:
+                                idx = perm[idx]
+                            self.quantizer = groups[idx // self.qcfg.group_size]
+
                 # Vectorized quantization for the entire block
                 if self.qcfg.group_size != -1 and len(scale) > 0 and len(zero) > 0:
-                    # Use the latest scale/zero for all groups
                     latest_scale = scale[-1]
                     latest_zero = zero[-1]
                     
@@ -527,52 +546,98 @@ class GPTQ:
                     maxq_val = 2 ** self.qcfg.bits - 1
                     if self.qcfg.sym:
                         Q1 = latest_scale * torch.clamp(
-                            torch.round(W[:, i1:i2] / latest_scale),
+                            torch.round(W1 / latest_scale),
                             -(maxq_val // 2),
                             maxq_val // 2
                         )
                     else:
                         quantized = torch.clamp(
-                            torch.round(W[:, i1:i2] / latest_scale) + latest_zero,
+                            torch.round(W1 / latest_scale) + latest_zero,
                             0,
                             maxq_val
                         )
                         Q1 = latest_scale * (quantized - latest_zero)
                 else:
-                    # Fallback to per-column quantization
-                    Q1 = torch.zeros_like(W[:, i1:i2])
-                    for i in range(i2 - i1):
-                        w = W[:, i1 + i]
+                    # Fallback to individual quantization
+                    for i in range(count):
+                        w = W1[:, i]
                         q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                         Q1[:, i] = q
-                
-                # Only store quantized weights on final iteration
-                if iteration == max_iterations - 1:
-                    Q[:, i1:i2] = Q1
-                else:
-                    # Calculate error and propagate vectorially
-                    if Hinv is not None:
-                        # Get diagonal elements for the block
-                        diag = torch.diag(Hinv[i1:i2, i1:i2]).unsqueeze(0)
-                        
-                        # Calculate error
-                        err = (W[:, i1:i2] - Q1) / diag
-                        
-                        # Propagate error to subsequent columns
-                        if i2 < self.columns:
-                            # Vectorized Hessian slice
-                            H_block = Hinv[i1:i2, i2:]
-                            
-                            # Vectorized error propagation: [rows, block] * [block, remaining] -> [rows, remaining]
-                            err_prop = err @ H_block
-                            
-                            # Update weights
-                            W[:, i2:] -= err_prop
+
+                # Apply error propagation if this is not the final iteration
+                if iteration < max_iterations - 1 and Hinv is not None:
+                    errors = (W1 - Q1)
+                    
+                    # Fast diagonal-based error propagation
+                    if self.qcfg.group_size != -1 and len(scale) > 0 and len(zero) > 0:
+                        # Use diagonal approximation for speed - ensure proper broadcasting
+                        Hinv_diag = torch.diagonal(Hinv1).view(-1, 1)
+                        # Ensure errors and Hinv_diag have compatible shapes
+                        if errors.shape[0] == Hinv_diag.shape[0]:
+                            errors_scaled = errors / Hinv_diag
+                            W1 -= errors_scaled * 0.5  # Reduced update factor for stability
+                        else:
+                            # Fallback to element-wise error correction for incompatible shapes
+                            for i in range(count):
+                                d = Hinv1[i, i]
+                                err = (W1[:, i] - Q1[:, i]) / d
+                                # Use broadcasting for element-wise multiplication instead of matrix multiplication
+                                # This handles the case where err has shape [count, 1] and Hinv1[i, i:] has shape [remaining_cols]
+                                if err.dim() == 1:
+                                    err = err.unsqueeze(1)  # Shape: [count, 1]
+                                
+                                # Get the appropriate row from Hinv1 for error propagation
+                                hinv_row = Hinv1[i, i:]  # Shape: [remaining_cols]
+                                if hinv_row.dim() == 1:
+                                    hinv_row = hinv_row.unsqueeze(0)  # Shape: [1, remaining_cols]
+                                
+                                # Use broadcasting: err ([count, 1]) * hinv_row ([1, remaining_cols]) -> [count, remaining_cols]
+                                W1[:, i:] -= err * hinv_row * 0.5
+                    else:
+                        # Simple error correction for non-grouped case
+                        for i in range(count):
+                            d = Hinv1[i, i]
+                            err = (W1[:, i] - Q1[:, i]) / d
+                            W1[:, i:] -= err.unsqueeze(1) * Hinv1[i, i:] * 0.5
             
-            # Calculate losses
+            # Final quantization assignment
+            Q[:, i1:i2] = Q1
+            
+            # Compute final losses
             if Hinv is not None:
-                diag = torch.diag(Hinv[i1:i2, i1:i2]).unsqueeze(0)
-                Losses[:, i1:i2] = (W_original - Q[:, i1:i2]) ** 2 / diag**2
+                Losses_block = (W_original - Q1) ** 2
+                Losses[:, i1:i2] = Losses_block / 2
+                
+                # Apply final error propagation to remaining weights
+                errors_final = (W_original - Q1)
+                if self.qcfg.group_size != -1 and len(scale) > 0 and len(zero) > 0:
+                    Hinv_diag = torch.diagonal(Hinv1).view(-1, 1)
+                    # Ensure errors_final and Hinv_diag have compatible shapes
+                    if errors_final.shape[0] == Hinv_diag.shape[0]:
+                        errors_scaled = errors_final / Hinv_diag
+                        W[:, i2:] -= errors_scaled.matmul(Hinv[i1:i2, i2:])
+                    else:
+                        # Fallback to element-wise error correction for incompatible shapes
+                        for i in range(count):
+                            d = Hinv1[i, i]
+                            err = (W_original[:, i] - Q1[:, i]) / d
+                            # Use broadcasting for element-wise multiplication instead of matrix multiplication
+                            # This handles the case where err has shape [1024, 1] and Hinv[i1:i2, i2:] has shape [128, 896]
+                            if err.dim() == 1:
+                                err = err.unsqueeze(1)  # Shape: [1024, 1]
+                            
+                            # Get the appropriate row from Hinv for error propagation
+                            hinv_row = Hinv[i1 + i, i2:]  # Shape: [896]
+                            if hinv_row.dim() == 1:
+                                hinv_row = hinv_row.unsqueeze(0)  # Shape: [1, 896]
+                            
+                            # Use broadcasting: err ([1024, 1]) * hinv_row ([1, 896]) -> [1024, 896]
+                            W[:, i2:] -= err * hinv_row
+                else:
+                    for i in range(count):
+                        d = Hinv1[i, i]
+                        err = (W_original[:, i] - Q1[:, i]) / d
+                        W[:, i2:] -= err.unsqueeze(1).matmul(Hinv[i1:i2, i2:])
 
     def free(self):
         if hasattr(self, "H"):
