@@ -39,6 +39,7 @@ log = setup_logger()
 lock = threading.Lock()
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
+DEVICE_0 = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # TODO: is there a threading init bug in torch.linalg?
 # bypass strange threading bug
@@ -581,12 +582,17 @@ class GPTQ:
             Q = Q.t()
 
         # Ensure Q is on the same device as the original module weight before type conversion
-        if Q.device != self.module.weight.data.device:
+        if Q.device != DEVICE_0:
             try:
-                Q = Q.to(device=self.module.weight.data.device)
-            except:
-                log.error(f"Failed to move Q from {Q.device.type}:{Q.device.index} to {self.module.weight.data.device.type}:{self.module.weight.data.device.index}")
-                raise
+                Q = Q.to(device=DEVICE_0)
+            except Exception as e:
+                log.warn(f"Failed to move Q from {Q.device.type}:{Q.device.index} to {DEVICE_0.type}:{DEVICE_0.index}, {e}")
+                if Q.device != DEVICE_0:
+                    try:
+                        Q = Q.to(device=DEVICE_0)
+                    except Exception as e2:
+                        log.error(f"Failed to move Q from {Q.device.type}:{Q.device.index} to {DEVICE_0.type}:{DEVICE_0.index}, {e2} (second attempt)")
+                        raise
 
         if Q.shape != self.module.weight.shape:
             Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
