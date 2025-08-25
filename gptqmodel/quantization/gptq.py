@@ -333,6 +333,8 @@ class GPTQ:
         scale = []
         zero = []
         now_idx = 1
+        perm = None
+        groups = []
 
         if self.qcfg.static_groups:
             import copy
