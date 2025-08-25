@@ -32,7 +32,7 @@ from torch.nn.modules.conv import _ConvNd
 from ..looper.named_module import NamedModule
 from ..quantization import QuantizeConfig
 from ..utils.logger import setup_logger
-from ..utils.torch import HAS_CUDA, HAS_XPU, device_next, torch_compile, torch_streamCtx, torch_sync
+from ..utils.torch import HAS_CUDA, HAS_XPU, TORCH_GTE_28, device_next, torch_compile, torch_sync
 from .quantizer import HF_OPTIMUM, Quantizer
 
 log = setup_logger()
@@ -46,6 +46,7 @@ if HAS_CUDA or HAS_XPU:
     tmp_eye = torch.eye(64, device="cuda" if HAS_CUDA else "xpu")
     torch.linalg.cholesky(tmp_eye)
     del tmp_eye
+
 
 def get_number_of_rows_and_cols(layer: nn.Module):
     # return layer.weight.shape[0], np.prod(layer.weight.shape[1:])
@@ -61,7 +62,7 @@ def get_number_of_rows_and_cols(layer: nn.Module):
 
 
 class GPTQ:
-    def __init__(self, module: nn.Module, qcfg: Optional[QuantizeConfig]=None):
+    def __init__(self, module: nn.Module, qcfg: Optional[QuantizeConfig] = None):
         # self.lock = threading.Lock()
 
         # self.num_tied_handles = 0
@@ -86,7 +87,7 @@ class GPTQ:
 
         self._validate_module(self.module)
 
-        self.qcfg = qcfg if qcfg else QuantizeConfig() # HF compat will not pass qcfg
+        self.qcfg = qcfg if qcfg else QuantizeConfig()  # HF compat will not pass qcfg
 
         self.module_copy = None
 
@@ -104,7 +105,8 @@ class GPTQ:
 
     @staticmethod
     def _validate_module(module):
-        assert isinstance(module, (nn.Linear, nn.Conv1d, nn.Conv2d, transformers.Conv1D)), f"We supports only linear and convolutional layers. actual = `{module}`"
+        assert isinstance(module, (nn.Linear, nn.Conv1d, nn.Conv2d,
+                                   transformers.Conv1D)), f"We supports only linear and convolutional layers. actual = `{module}`"
 
     # def has_hessian_issues(self) -> bool:
     #     return any([self.issue_zero_samples, self.issue_nan_hessian, self.issue_non_invertible])
@@ -208,30 +210,30 @@ class GPTQ:
         self.nsamples += batch_token_size
 
         # inp returned here is flattened/reshaped original inp
-        #return batch_token_size, reshaped_inp, alpha, beta
+        # return batch_token_size, reshaped_inp, alpha, beta
         del batch_token_size, reshaped_inp, alpha, beta
 
     # FIXME, optimum needs fasterquant, we need to remove it
     def fasterquant(
-        self,
-        blocksize=128,
-        percdamp=0.01,
-        damp_auto_increment=0.0015,
-        group_size=-1,
-        actorder=False,
-        static_groups=False,
+            self,
+            blocksize=128,
+            percdamp=0.01,
+            damp_auto_increment=0.0015,
+            group_size=-1,
+            actorder=False,
+            static_groups=False,
     ):
         return self.hf_quantize(blocksize, percdamp, damp_auto_increment, group_size, actorder, static_groups)
 
     # public api exposed to hf
     def hf_quantize(
-        self,
-        blocksize=128,
-        percdamp=0.01,
-        damp_auto_increment=0.0015,
-        group_size=-1,
-        actorder=False,
-        static_groups=False,
+            self,
+            blocksize=128,
+            percdamp=0.01,
+            damp_auto_increment=0.0015,
+            group_size=-1,
+            actorder=False,
+            static_groups=False,
     ):
         self.qcfg.group_size = group_size
         self.qcfg.damp_percent = percdamp
@@ -245,8 +247,6 @@ class GPTQ:
     @torch.inference_mode()
     def hessian_inverse(self, H: torch.Tensor):
         start_time = time.time()
-        log.debug(f"HEAVY: Starting hessian_inverse for module {self.name}, matrix shape: {H.shape}")
-        
         damp = self.qcfg.damp_percent
         diag = torch.arange(self.columns, device=H.device)
         mean = torch.mean(torch.diag(H))
@@ -270,8 +270,9 @@ class GPTQ:
                     raise e
 
         if not (0 < damp < 1):
-            log.error(f"Quantization: Module `{self.name}` -> `damp_percent` must between 0 and 1. current is {damp}. Module cannot be correctly processed.")
-            #raise ValueError(f"Quantization: `damp_percent` must between 0 and 1. current is {damp}")
+            log.error(
+                f"Quantization: Module `{self.name}` -> `damp_percent` must between 0 and 1. current is {damp}. Module cannot be correctly processed.")
+            # raise ValueError(f"Quantization: `damp_percent` must between 0 and 1. current is {damp}")
             return None, 1.0
 
         duration = time.time() - start_time
@@ -280,8 +281,8 @@ class GPTQ:
 
     @torch.inference_mode()
     def quantize(
-        self,
-        blocksize=128,
+            self,
+            blocksize=128,
     ):
         # self.H = self.H.to(device=CUDA_0)
         # log.info(f"Quantization `{self.name}` using samples: `{self.nsamples}`")
@@ -289,8 +290,13 @@ class GPTQ:
 
         # Temporarily disable torch.compile due to compatibility issues with torch 2.8
         # Will re-enable once the issue is fixed
-        # self.hessian_inverse = torch_compile(self.hessian_inverse)
-        self.hessian_inverse = self.hessian_inverse
+        if not TORCH_GTE_28:
+            self.hessian_inverse = torch_compile(self.hessian_inverse)
+
+        # Mock heavy computations
+        if hasattr(self.qcfg, 'mock_quantization') and self.qcfg.mock_quantization:
+            # Use simplified hessian inverse (identity matrix)
+            self.hessian_inverse = self._mock_hessian_inverse
 
         # Store original methods
         original_hessian_inverse = self.hessian_inverse
@@ -314,7 +320,8 @@ class GPTQ:
 
         # TODO: waiting for pytorch implementation of ops for MPS
         if sys.platform == "darwin" and os.getenv("PYTORCH_ENABLE_MPS_FALLBACK") != "1":
-            raise RuntimeError("For MacOS you must set env `PYTORCH_ENABLE_MPS_FALLBACK=1` before running quantization.")
+            raise RuntimeError(
+                "For MacOS you must set env `PYTORCH_ENABLE_MPS_FALLBACK=1` before running quantization.")
 
         if self.module_copy is None:
             # log.info("copy W to cuda_1")
@@ -343,7 +350,7 @@ class GPTQ:
             groups = []
             for i in range(0, self.columns, self.qcfg.group_size):
                 quantizer = copy.deepcopy(self.quantizer)
-                quantizer.find_params(W[:, i : (i + self.qcfg.group_size)], weight=True)
+                quantizer.find_params(W[:, i: (i + self.qcfg.group_size)], weight=True)
 
                 scale.append(quantizer.scale)
                 zero.append(quantizer.zero)
@@ -356,7 +363,7 @@ class GPTQ:
             invperm = torch.argsort(perm)
 
         if hasattr(self.qcfg, "hyb_act") and self.qcfg.hyb_act and not self.qcfg.desc_act:
-            from .gar import compute_local_perms, compute_global_perm, compose_final_perm
+            from .gar import compose_final_perm, compute_global_perm, compute_local_perms
             local_perms = compute_local_perms(torch.diag(H), self.qcfg.group_size)
             global_perm = compute_global_perm(torch.diag(H), self.qcfg.group_size)
             final_perm = compose_final_perm(local_perms, global_perm, self.qcfg.group_size)
@@ -685,9 +692,9 @@ class GPTQ:
             Q = Q[:, inv_final]
             inv_global_perm = invert_perm(global_perm)
             inv_global_perm_list = inv_global_perm.tolist()
-            temp_scale = [ scale[i] for i in inv_global_perm_list ]
+            temp_scale = [scale[i] for i in inv_global_perm_list]
             scale = temp_scale
-            temp_zero = [ zero[i] for i in inv_global_perm_list ]
+            temp_zero = [zero[i] for i in inv_global_perm_list]
             zero = temp_zero
 
         if isinstance(self.module, transformers.Conv1D):
@@ -698,12 +705,16 @@ class GPTQ:
             log.debug(f"Q.device from {Q.device.type}:{Q.device.index} to {self.module.weight.data.device.type}:{self.module.weight.data.device.index}")
             Q = Q.to(device=self.module.weight.data.device)
 
+        # Ensure Q is on the same device as the original module weight before type conversion
+        if Q.device != self.module.weight.data.device:
+            Q = Q.to(device=self.module.weight.data.device)
+
         if Q.shape != self.module.weight.shape:
             Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
         else:
             Q = Q.type_as(self.module.weight.data)
 
-        #Q = Q.to(device=use_device)
+        # Q = Q.to(device=use_device)
 
         if scale == []:
             scale.append(self.quantizer.scale)
@@ -725,5 +736,6 @@ class GPTQ:
         del self.module
 
         # torch_empty_cache(self.device)
+
 
 __all__ = ["GPTQ"]
