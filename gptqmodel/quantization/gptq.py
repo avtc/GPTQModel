@@ -368,7 +368,7 @@ class GPTQ:
         loop_start_time = time.time()
 
         if self.qcfg.fast_loop:
-            self._fast_loop(self, W, Q, Hinv, Losses, scale, zero, now_idx, blocksize, perm, groups)
+            self._fast_loop(W, Q, Hinv, Losses, scale, zero, now_idx, blocksize, perm, groups)
         else:
             # Original heavy loop for normal quantization
             for i1 in range(0, self.columns, blocksize):
