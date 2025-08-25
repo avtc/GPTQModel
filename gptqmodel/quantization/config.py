@@ -218,8 +218,10 @@ class QuantizeConfig():
     v2_alpha: float = 0.25
     v2_memory_device: str = "auto" #
 
-    mock_hessian_inverse: bool = field(default=False, metadata={"help": "Use simplified hessian inverse (identity matrix), experiemental"})
-    fast_loop: bool = field(default=False, metadata={"help": "Optimized version of quantization loop, experiemental"})
+    # Intended to skip complex computational code paths during quantization to accelerate model quant testing
+    # can produce quants of slighlty less quality but much faster (at least in 8 bit)
+    mock_hessian_inverse: bool = field(default=False, metadata={"help": "Use simplified hessian inverse (identity matrix), v1, experimental, use with fast_loop for MoE models"})
+    fast_loop: bool = field(default=False, metadata={"help": "Optimized version of quantization loop, v1, experimental"})
 
     def __post_init__(self):
         fields_info = fields(self)

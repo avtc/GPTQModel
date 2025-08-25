@@ -246,7 +246,6 @@ class GPTQ:
 
     @torch.inference_mode()
     def hessian_inverse(self, H: torch.Tensor):
-        start_time = time.time()
         damp = self.qcfg.damp_percent
         diag = torch.arange(self.columns, device=H.device)
         mean = torch.mean(torch.diag(H))
@@ -275,8 +274,6 @@ class GPTQ:
             # raise ValueError(f"Quantization: `damp_percent` must between 0 and 1. current is {damp}")
             return None, 1.0
 
-        duration = time.time() - start_time
-        log.debug(f"Completed hessian_inverse for module {self.name} in {duration:.3f}s")
         return Hinv, damp
 
     @torch.inference_mode()
@@ -367,8 +364,6 @@ class GPTQ:
 
         Hinv, damp = self.hessian_inverse(H)
         
-        loop_start_time = time.time()
-
         if self.qcfg.fast_loop:
             # Optimized fast loop implementation
             for i1 in range(0, self.columns, blocksize):
@@ -530,9 +525,6 @@ class GPTQ:
                 if Hinv is not None:
                     Losses[:, i1:i2] = Losses1 / 2
                     W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
-        
-        loop_duration = time.time() - loop_start_time
-        log.debug(f"Completed quantization loop for {self.name} in {loop_duration:.3f}s")
 
         # TODO: why is there a torch_sync here? There are no streaming ops here?
         # torch_sync(device=self.module.target_device)
