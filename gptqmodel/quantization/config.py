@@ -219,9 +219,9 @@ class QuantizeConfig():
     v2_memory_device: str = "auto" #
 
     # Skip all heavy computations for testing model loading
-    mock_quantization: bool = field(default=False, metadata={"help": "Skip heavy computations for fast model loading validation"})
     mock_hessian_inverse: bool = field(default=False, metadata={"help": "Skip heavy computations for fast model loading validation"})
-    fast_loop: bool = field(default=False, metadata={"help": "Optimized version of quantization loop, could cause quality degradation, require testing"})
+    fast_loop: bool = field(default=False, metadata={"help": "Optimized version of quantization loop, could cause quality degradation"})
+    fast_loop_iterations: int = field(default=2, metadata={"help": "Number of iterations for fast loop error propagation (1-3)"})
 
     def __post_init__(self):
         fields_info = fields(self)
