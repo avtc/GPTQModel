@@ -104,16 +104,16 @@ def test_error_computation_correctness():
     # Test original error computation logic
     Losses1_original = torch.zeros_like(W1)
     Err1_original = torch.zeros_like(W1)
+    W1_original = W1.clone()
     
     for i in range(8):
-        w = W1[:, i]
+        w = W1_original[:, i]
         q = Q1[:, i]
         d = Hinv1[i, i]
         
         Losses1_original[:, i] = (w - q) ** 2 / d**2
         err1 = (w - q) / d
-        W1_temp = W1.clone()
-        W1_temp[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
+        W1_original[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
         Err1_original[:, i] = err1
     
     # Test optimized error computation
@@ -124,20 +124,21 @@ def test_error_computation_correctness():
     errors = differences / diagonal_elements.unsqueeze(1)
     Err1_optimized = errors.clone()
     
-    W1_test = W1.clone()
-    for i in range(8):
-        W1_test[:, i:] -= errors[:, i:i+1] @ Hinv1[i:i+1, i:]
+    # Test vectorized triangular update
+    Hinv1_tril = torch.tril(Hinv1)
+    W1_vectorized = W1.clone()
+    W1_vectorized -= errors @ Hinv1_tril
     
     # Compare results
     loss_diff = torch.max(torch.abs(Losses1_original - Losses1_optimized)).item()
     err_diff = torch.max(torch.abs(Err1_original - Err1_optimized)).item()
-    weight_diff = torch.max(torch.abs(W1_temp - W1_test)).item()
+    weight_diff_original = torch.max(torch.abs(W1_original - W1_vectorized)).item()
     
     print(f"Loss computation difference: {loss_diff:.2e}")
     print(f"Error computation difference: {err_diff:.2e}")
-    print(f"Weight update difference: {weight_diff:.2e}")
+    print(f"Weight update difference (original vs vectorized): {weight_diff_original:.2e}")
     
-    success = (loss_diff < 1e-10 and err_diff < 1e-10 and weight_diff < 1e-10)
+    success = (loss_diff < 1e-10 and err_diff < 1e-10 and weight_diff_original < 1e-10)
     
     if success:
         print("✓ Error computation test PASSED!")

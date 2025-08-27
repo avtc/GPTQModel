@@ -443,23 +443,17 @@ class GPTQ:
                         q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                         Q1[:, i] = q
 
-                # Optimized error computation with vectorization
+                # Error computation must be sequential to maintain triangular dependency
                 if Hinv is not None:
-                    # Vectorized computation of differences and diagonal elements
-                    differences = W1 - Q1
-                    diagonal_elements = Hinv1.diagonal()
-                    
-                    # Vectorized loss computation
-                    Losses1 = (differences ** 2) / (diagonal_elements.unsqueeze(1) ** 2)
-                    
-                    # Vectorized error computation
-                    errors = differences / diagonal_elements.unsqueeze(1)
-                    Err1 = errors.clone()
-                    
-                    # Vectorized weight update - batch matrix multiplication
-                    # For each column i, compute: W1[:, i:] -= errors[:, i:i+1] @ Hinv1[i:i+1, i:]
                     for i in range(count):
-                        W1[:, i:] -= errors[:, i:i+1] @ Hinv1[i:i+1, i:]
+                        w = W1[:, i]
+                        q = Q1[:, i]
+                        d = Hinv1[i, i]
+                        
+                        Losses1[:, i] = (w - q) ** 2 / d**2
+                        err1 = (w - q) / d
+                        W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
+                        Err1[:, i] = err1
 
                 Q[:, i1:i2] = Q1
                 if Hinv is not None:
