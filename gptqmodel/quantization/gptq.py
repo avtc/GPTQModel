@@ -398,35 +398,44 @@ class GPTQ:
                                 idx = perm[idx]
                             self.quantizer = groups[idx // self.qcfg.group_size]
 
-                # Vectorized quantization for the entire block (major optimization)
+                # Optimized quantization with correct per-weight scale/zero handling
                 if self.qcfg.group_size != -1 and len(scale) > 0 and len(zero) > 0:
-                    # Use latest scale and zero for the entire block
-                    latest_scale = scale[-1]
-                    latest_zero = zero[-1]
+                    # Pre-allocate scale and zero tensors for the entire block
+                    block_scales = []
+                    block_zeros = []
                     
-                    # Reshape scales and zeros to match block dimensions
-                    if latest_scale.dim() == 1:
-                        latest_scale = latest_scale.view(-1, 1)
-                    if latest_zero.dim() == 1:
-                        latest_zero = latest_zero.view(-1, 1)
+                    # Determine which scale/zero to use for each column in the block
+                    for i in range(count):
+                        col_idx = i1 + i
+                        group_idx = col_idx // self.qcfg.group_size
+                        if self.qcfg.desc_act:
+                            group_idx = perm[col_idx] // self.qcfg.group_size
+                        
+                        # Use the appropriate scale/zero for this column's group
+                        block_scales.append(scale[group_idx])
+                        block_zeros.append(zero[group_idx])
                     
-                    # Apply quantization formula using broadcasting
+                    # Convert to tensors and reshape for broadcasting
+                    block_scales = torch.stack(block_scales).view(-1, 1)
+                    block_zeros = torch.stack(block_zeros).view(-1, 1)
                     maxq_val = 2 ** self.qcfg.bits - 1
+                    
+                    # Vectorized quantization using correct per-column scale/zero
                     if self.qcfg.sym:
                         # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
-                        Q1 = latest_scale * torch.clamp(
-                            torch.round(W1 / latest_scale),
+                        Q1 = block_scales * torch.clamp(
+                            torch.round(W1 / block_scales),
                             -(maxq_val // 2),
                             maxq_val // 2
                         )
                     else:
                         # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
                         quantized = torch.clamp(
-                            torch.round(W1 / latest_scale) + latest_zero,
+                            torch.round(W1 / block_scales) + block_zeros,
                             0,
                             maxq_val
                         )
-                        Q1 = latest_scale * (quantized - latest_zero)
+                        Q1 = block_scales * (quantized - block_zeros)
                 else:
                     # No grouping or no scale/zero available - fallback to individual quantization
                     for i in range(count):
@@ -434,45 +443,23 @@ class GPTQ:
                         q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                         Q1[:, i] = q
 
-                # Error computation if Hinv is available
+                # Optimized error computation with vectorization
                 if Hinv is not None:
-                    # if self.qcfg.group_size != -1 and len(scale) > 0 and len(zero) > 0:
-                    #     # Vectorized error computation for grouped quantization
-                    #     maxq_val = 2 ** self.qcfg.bits - 1
-                    #     if self.qcfg.sym:
-                    #         quantized = torch.clamp(
-                    #             torch.round(W1 / scale[-1].view(-1, 1)),
-                    #             -(maxq_val // 2),
-                    #             maxq_val // 2
-                    #         )
-                    #     else:
-                    #         quantized = torch.clamp(
-                    #             torch.round(W1 / scale[-1].view(-1, 1)) + zero[-1].view(-1, 1),
-                    #             0,
-                    #             maxq_val
-                    #         )
-                    #     Q1 = scale[-1].view(-1, 1) * quantized
-                    #     if not self.qcfg.sym:
-                    #         Q1 = scale[-1].view(-1, 1) * (quantized - zero[-1].view(-1, 1))
-                        
-                    #     errors = (W1 - Q1).unsqueeze(2)  # Shape: (columns, count, 1)
-                        
-                    #     # Use only the diagonal elements for error propagation
-                    #     Hinv_diag = torch.diagonal(Hinv1, dim1=-2, dim2=-1).view(1, -1, 1) # Shape: (1, count, 1)
-                    #     W1 -= (errors * Hinv_diag).squeeze(2)
-                    #     Err1 = (W1 - Q1) / torch.diagonal(Hinv1)
-                    #     Losses1 = (W1 - Q1) ** 2 / (torch.diagonal(Hinv1) ** 2)
-                    # else:
-                    # Fallback to individual error computation
+                    # Vectorized computation of differences and diagonal elements
+                    differences = W1 - Q1
+                    diagonal_elements = Hinv1.diagonal()
+                    
+                    # Vectorized loss computation
+                    Losses1 = (differences ** 2) / (diagonal_elements.unsqueeze(1) ** 2)
+                    
+                    # Vectorized error computation
+                    errors = differences / diagonal_elements.unsqueeze(1)
+                    Err1 = errors.clone()
+                    
+                    # Vectorized weight update - batch matrix multiplication
+                    # For each column i, compute: W1[:, i:] -= errors[:, i:i+1] @ Hinv1[i:i+1, i:]
                     for i in range(count):
-                        w = W1[:, i]
-                        q = Q1[:, i]
-                        d = Hinv1[i, i]
-                        
-                        Losses1[:, i] = (w - q) ** 2 / d**2
-                        err1 = (w - q) / d
-                        W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
-                        Err1[:, i] = err1
+                        W1[:, i:] -= errors[:, i:i+1] @ Hinv1[i:i+1, i:]
 
                 Q[:, i1:i2] = Q1
                 if Hinv is not None:
