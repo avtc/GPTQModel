@@ -444,32 +444,32 @@ class GPTQ:
                             block_scales_list = []
                             block_zeros_list = []
                             
-                            for i, (scale, zero) in enumerate(block_groups):
+                            for i, (group_scale, group_zero) in enumerate(block_groups):
                                 # Get the actual number of columns in this group
                                 group_start_col = global_indices[i]
                                 group_actual_size = min(self.qcfg.group_size, count - group_start_col)
                                 
                                 # The scale tensor might already have the correct size for the group
                                 # If it has more elements than needed, take only the first group_actual_size elements
-                                if scale.numel() > group_actual_size:
-                                    scale = scale[:group_actual_size]
-                                if zero.numel() > group_actual_size:
-                                    zero = zero[:group_actual_size]
+                                if group_scale.numel() > group_actual_size:
+                                    group_scale = group_scale[:group_actual_size]
+                                if group_zero.numel() > group_actual_size:
+                                    group_zero = group_zero[:group_actual_size]
                                 
                                 # Ensure scale and zero have the correct shape
-                                scale = scale.view(-1, 1)
-                                zero = zero.view(-1, 1)
+                                group_scale = group_scale.view(-1, 1)
+                                group_zero = group_zero.view(-1, 1)
                                 
                                 # If we still have size mismatch, replicate the values
-                                if scale.shape[0] < group_actual_size:
+                                if group_scale.shape[0] < group_actual_size:
                                     # Repeat the scale values to fill the group
-                                    scale = scale.repeat(group_actual_size // scale.shape[0] + 1, 1)[:group_actual_size]
-                                if zero.shape[0] < group_actual_size:
+                                    group_scale = group_scale.repeat(group_actual_size // group_scale.shape[0] + 1, 1)[:group_actual_size]
+                                if group_zero.shape[0] < group_actual_size:
                                     # Repeat the zero values to fill the group
-                                    zero = zero.repeat(group_actual_size // zero.shape[0] + 1, 1)[:group_actual_size]
+                                    group_zero = group_zero.repeat(group_actual_size // group_zero.shape[0] + 1, 1)[:group_actual_size]
                                 
-                                block_scales_list.append(scale)
-                                block_zeros_list.append(zero)
+                                block_scales_list.append(group_scale)
+                                block_zeros_list.append(group_zero)
                             
                             # Concatenate all group parameters
                             if block_scales_list:
