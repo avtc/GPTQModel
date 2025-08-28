@@ -142,7 +142,7 @@ class GPTQProcessor(LoopProcessor):
         with self.lock:
             g = self.tasks[module.name]
 
-        wq, scale, zero, g_idx, duration, avg_loss, damp_percent, nsamples = g.quantize(blocksize=qcfg_clone.block_size)
+        wq, scale, zero, g_idx, duration, avg_loss, damp_percent, nsamples = g.quantize(blocksize=self.qcfg.block_size)
 
         with self.lock:
             self.result_save(module.full_name, {
