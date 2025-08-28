@@ -440,34 +440,48 @@ class GPTQ:
                             start_tmp = time.time()
 
                             # Stack all group parameters for vectorized operations
-                            block_scales = torch.stack([g[0] for g in block_groups]).view(-1, 1)
-                            block_zeros = torch.stack([g[1] for g in block_groups]).view(-1, 1)
+                            block_scales = torch.stack([g[0] for g in block_groups])
+                            block_zeros = torch.stack([g[1] for g in block_groups])
                             maxq_val = 2 ** self.qcfg.bits - 1
                             
                             # Create mask for columns that belong to computed groups
                             group_mask = torch.zeros(count, dtype=torch.bool, device=W1.device)
-                            # Mark all columns in each group as True, not just the starting index
-                            for idx in global_indices:
+                            # Create group mapping to map each column to its corresponding group parameters
+                            group_mapping = torch.zeros(count, dtype=torch.long, device=W1.device)
+                            
+                            # Mark all columns in each group and create mapping
+                            for group_idx, idx in enumerate(global_indices):
                                 group_start = idx
                                 group_end = min(group_start + self.qcfg.group_size, count)
                                 group_mask[group_start:group_end] = True
+                                group_mapping[group_start:group_end] = group_idx
                             
                             # Vectorized quantization for grouped columns
                             if self.qcfg.sym:
                                 # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
-                                grouped_cols = block_scales * torch.clamp(
-                                    torch.round(W1[:, group_mask] / block_scales),
+                                # Reshape scales for proper broadcasting (1 x num_groups)
+                                block_scales = block_scales.view(1, -1)
+                                # Select the correct scale for each grouped column
+                                selected_scales = block_scales[:, group_mapping[group_mask]]
+                                grouped_cols = selected_scales * torch.clamp(
+                                    torch.round(W1[:, group_mask] / selected_scales),
                                     -(maxq_val // 2),
                                     maxq_val // 2
                                 )
                             else:
                                 # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
+                                # Reshape for proper broadcasting (1 x num_groups)
+                                block_scales = block_scales.view(1, -1)
+                                block_zeros = block_zeros.view(1, -1)
+                                # Select the correct scale and zero for each grouped column
+                                selected_scales = block_scales[:, group_mapping[group_mask]]
+                                selected_zeros = block_zeros[:, group_mapping[group_mask]]
                                 quantized = torch.clamp(
-                                    torch.round(W1[:, group_mask] / block_scales) + block_zeros,
+                                    torch.round(W1[:, group_mask] / selected_scales) + selected_zeros,
                                     0,
                                     maxq_val
                                 )
-                                grouped_cols = block_scales * (quantized - block_zeros)
+                                grouped_cols = selected_scales * (quantized - selected_zeros)
                             
                             log.debug(f"Completed 7.{i1}.Vectorized quantization for grouped columns for {self.name} in {time.time() - start_tmp:.3f}s")
 
