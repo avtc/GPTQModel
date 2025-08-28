@@ -140,6 +140,9 @@ class ModuleLooper():
 
     @torch.no_grad()
     def loop(self, auto_gc=True, calibration_enable_gpu_cache=True, buffered_fwd=False, **kwargs):
+        # Track total quantization time
+        quantization_start_time = time.time()
+        
         if self.gptq_model.quantize_config.lm_head:
             if self.gptq_model.model.config.tie_word_embeddings and hasattr(self.gptq_model.model.model, "_tied_weights_keys"):
                 tied_keys = self.gptq_model.model._tied_weights_keys
@@ -568,4 +571,8 @@ class ModuleLooper():
         if auto_gc:
             torch_empty_cache()
 
+        # Calculate total quantization time
+        total_quantization_time = time.time() - quantization_start_time
+        log.info(f"Quantization completed in {total_quantization_time:.3f}s")
+        
         return total_log

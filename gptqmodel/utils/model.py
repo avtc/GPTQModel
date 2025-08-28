@@ -650,6 +650,7 @@ def pack_model(
 
     model.to(CPU)
 
+    packing_start_time = time.time()
     log.info("Packing model...")
 
     modules = find_modules(model)
@@ -690,7 +691,8 @@ def pack_model(
             for _ in executor.map(wrapper, names):
                 pass
 
-    log.info("Model packed.")
+    packing_time = time.time() - packing_start_time
+    log.info(f"Model packed in {packing_time:.3f}s.")
     return quant_linear_cls
 
 
