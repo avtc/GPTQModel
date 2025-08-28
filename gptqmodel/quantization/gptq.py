@@ -434,7 +434,11 @@ class GPTQ:
                             
                             # Create mask for columns that belong to computed groups
                             group_mask = torch.zeros(count, dtype=torch.bool, device=W1.device)
-                            group_mask[global_indices] = True
+                            # Mark all columns in each group as True, not just the starting index
+                            for idx in global_indices:
+                                group_start = idx
+                                group_end = min(group_start + self.qcfg.group_size, count)
+                                group_mask[group_start:group_end] = True
                             
                             # Vectorized quantization for grouped columns
                             if self.qcfg.sym:
