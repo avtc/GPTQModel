@@ -16,6 +16,7 @@
 
 import copy
 import threading
+import time
 from typing import Callable, Optional, Tuple
 
 import torch
@@ -84,6 +85,7 @@ class GPTQProcessor(LoopProcessor):
             qcfg_clone.static_groups = self.qcfg.dynamic_get(module.full_name, "static_groups", qcfg_clone.static_groups)
             qcfg_clone.v2 = self.qcfg.dynamic_get(module.full_name, "v2", qcfg_clone.v2)
             qcfg_clone.v2_alpha = self.qcfg.dynamic_get(module.full_name, "v2_alpha", qcfg_clone.v2_alpha)
+            qcfg_clone.block_size = self.qcfg.dynamic_get(module.full_name, "block_size", qcfg_clone.block_size)
 
         # store last used qcfg_dynamic
         self.qcfg_dynamic = qcfg_clone
@@ -140,7 +142,7 @@ class GPTQProcessor(LoopProcessor):
         with self.lock:
             g = self.tasks[module.name]
 
-        wq, scale, zero, g_idx, duration, avg_loss, damp_percent, nsamples = g.quantize()
+        wq, scale, zero, g_idx, duration, avg_loss, damp_percent, nsamples = g.quantize(blocksize=qcfg_clone.block_size)
 
         with self.lock:
             self.result_save(module.full_name, {

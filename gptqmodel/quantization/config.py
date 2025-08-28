@@ -222,6 +222,11 @@ class QuantizeConfig():
     # can produce quants of slighlty less quality but much faster (at least in 8 bit)
     mock_hessian_inverse: bool = field(default=False, metadata={"help": "Use simplified hessian inverse (identity matrix), v1, experimental, use with fast_loop for MoE models"})
     fast_loop: bool = field(default=False, metadata={"help": "Optimized version of quantization loop, v1, experimental"})
+    
+    # Block size for GPTQ quantization (default: 128)
+    # Controls the number of columns processed in each block during quantization
+    # Smaller values use less memory but may be slower, larger values are faster but use more memory
+    block_size: int = field(default=128, metadata={"help": "Block size for GPTQ quantization"})
 
     def __post_init__(self):
         fields_info = fields(self)
@@ -280,6 +285,9 @@ class QuantizeConfig():
 
         if self.damp_auto_increment < 0:
             raise ValueError("QuantizeConfig:: `damp_auto_increment` must greater than 0.")
+            
+        if self.block_size <= 0:
+            raise ValueError("QuantizeConfig: `block_size` must be greater than 0.")
 
         # validate meta
         if self.meta is not None:
@@ -475,6 +483,7 @@ class QuantizeConfig():
             # torch.dtype convert to string
             PACK_DTYPE_FIELD: str(self.pack_dtype).split(".")[-1],
             META_FIELD: self.meta,
+            "block_size": self.block_size,
             # DO NOT EXPORT Adapter to config/json since adapter can be swapped out/in
             # ADAPTER_FIELD: self.adapter.to_dict() if self.adapter else None,
         }
