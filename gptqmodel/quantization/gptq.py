@@ -446,42 +446,28 @@ class GPTQ:
                             
                             # Create mask for columns that belong to computed groups
                             group_mask = torch.zeros(count, dtype=torch.bool, device=W1.device)
-                            # Create group mapping to map each column to its corresponding group parameters
-                            group_mapping = torch.zeros(count, dtype=torch.long, device=W1.device)
-                            
-                            # Mark all columns in each group and create mapping
-                            for group_idx, idx in enumerate(global_indices):
+                            # Mark all columns in each group as True, not just the starting index
+                            for idx in global_indices:
                                 group_start = idx
                                 group_end = min(group_start + self.qcfg.group_size, count)
                                 group_mask[group_start:group_end] = True
-                                group_mapping[group_start:group_end] = group_idx
                             
                             # Vectorized quantization for grouped columns
                             if self.qcfg.sym:
                                 # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
-                                # Use group_mapping to select the correct scale for each column
-                                selected_scales = block_scales[group_mapping[group_mask]]
-                                # Reshape selected_scales to match the grouped columns for broadcasting
-                                selected_scales = selected_scales.view(1, -1)
-                                grouped_cols = selected_scales * torch.clamp(
-                                    torch.round(W1[:, group_mask] / selected_scales),
+                                grouped_cols = block_scales * torch.clamp(
+                                    torch.round(W1[:, group_mask] / block_scales),
                                     -(maxq_val // 2),
                                     maxq_val // 2
                                 )
                             else:
                                 # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
-                                # Use group_mapping to select the correct scale and zero for each column
-                                selected_scales = block_scales[group_mapping[group_mask]]
-                                selected_zeros = block_zeros[group_mapping[group_mask]]
-                                # Reshape for proper broadcasting
-                                selected_scales = selected_scales.view(1, -1)
-                                selected_zeros = selected_zeros.view(1, -1)
                                 quantized = torch.clamp(
-                                    torch.round(W1[:, group_mask] / selected_scales) + selected_zeros,
+                                    torch.round(W1[:, group_mask] / block_scales) + block_zeros,
                                     0,
                                     maxq_val
                                 )
-                                grouped_cols = selected_scales * (quantized - selected_zeros)
+                                grouped_cols = block_scales * (quantized - block_zeros)
                             
                             log.debug(f"Completed 7.{i1}.Vectorized quantization for grouped columns for {self.name} in {time.time() - start_tmp:.3f}s")
 
