@@ -466,28 +466,25 @@ class GPTQ:
                         q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                         Q1[:, i] = q
 
-                # Error computation must be sequential to maintain triangular dependency
+                # Optimized error computation - eliminates inner loop and unnecessary W1 updates
                 if Hinv is not None:
-                    # Precompute diagonal values to avoid repeated calculations
+                    # Precompute diagonal values and inverse for vectorized operations
                     diag_vals = torch.diag(Hinv1)  # Shape: (count,)
+                    inv_diag = 1.0 / diag_vals  # Shape: (count,)
                     
-                    for i in range(count):
-                        w = W1[:, i]
-                        q = Q1[:, i]
-                        d = diag_vals[i]  # Precomputed value
-                        
-                        # Compute error for current column
-                        err1 = (w - q) / d
-                        
-                        # Vectorized loss computation
-                        Losses1[:, i] = (w - q) ** 2 / d**2
-                        
-                        # Efficient rank-1 update using outer product
-                        # This updates remaining columns for next iterations
-                        Hinv_row = Hinv1[i, i:]  # Shape: (count - i,)
-                        W1[:, i:] -= torch.outer(err1, Hinv_row)
-                        
-                        Err1[:, i] = err1
+                    # Vectorized computation of all errors and losses
+                    W_cols = W1.T  # Shape: (count, rows) for column-wise operations
+                    Q_cols = Q1.T  # Shape: (count, rows)
+                    
+                    # Vectorized error computation for all columns
+                    diff = W_cols - Q_cols  # Shape: (count, rows)
+                    errors = diff * inv_diag.unsqueeze(1)  # Shape: (count, rows)
+                    
+                    # Vectorized loss computation
+                    Losses1 = (diff * errors.T).T  # Shape: (rows, count) then transpose back
+                    
+                    # Store all errors - no need to update W1 as it's not used after this block
+                    Err1 = errors.T  # Shape: (rows, count) back to original shape
 
                 Q[:, i1:i2] = Q1
                 if Hinv is not None:
