@@ -440,8 +440,30 @@ class GPTQ:
                             start_tmp = time.time()
 
                             # Stack all group parameters for vectorized operations
-                            block_scales = torch.stack([g[0] for g in block_groups]).view(-1, 1)
-                            block_zeros = torch.stack([g[1] for g in block_groups]).view(-1, 1)
+                            # Each group has scales/zeros of shape (group_size, 1), so we need to expand them
+                            block_scales_list = []
+                            block_zeros_list = []
+                            
+                            for i, (scale, zero) in enumerate(block_groups):
+                                # Get the actual number of columns in this group
+                                group_start_col = global_indices[i]
+                                group_actual_size = min(self.qcfg.group_size, count - group_start_col)
+                                
+                                # Expand scales/zeros to match the actual number of columns in this group
+                                expanded_scale = scale.expand(group_actual_size, 1)
+                                expanded_zero = zero.expand(group_actual_size, 1)
+                                
+                                block_scales_list.append(expanded_scale)
+                                block_zeros_list.append(expanded_zero)
+                            
+                            # Concatenate all expanded group parameters
+                            if block_scales_list:
+                                block_scales = torch.cat(block_scales_list, dim=0)
+                                block_zeros = torch.cat(block_zeros_list, dim=0)
+                            else:
+                                block_scales = torch.empty(0, 1, device=W1.device)
+                                block_zeros = torch.empty(0, 1, device=W1.device)
+                                
                             maxq_val = 2 ** self.qcfg.bits - 1
                             
                             # Create mask for columns that belong to computed groups
