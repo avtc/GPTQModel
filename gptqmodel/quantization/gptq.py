@@ -650,6 +650,11 @@ class GPTQ:
             g_idx = [i // group_size for i in range(self.columns)]
 
         g_idx = torch.tensor(g_idx, dtype=torch.int32, device=Q.device)
+        
+        # Debug: Check group index calculation
+        if log.isEnabledFor(log.DEBUG):
+            unique_groups = torch.unique(g_idx)
+            log.debug(f"Group index debug - group_size: {group_size}, columns: {self.columns}, unique_groups: {len(unique_groups)}, range: [{g_idx.min()}, {g_idx.max()}]")
 
         if self.qcfg.desc_act:
             Q = Q[:, invperm]
