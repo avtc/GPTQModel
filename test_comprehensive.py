@@ -33,6 +33,9 @@ def run_test_case(model, test_data, group_size, blocksize, test_name):
         # Create GPTQ instance
         gptq = GPTQ(model, qcfg)
         
+        # Configure the quantizer properly (equivalent to what gptq_processor.py does)
+        gptq.quantizer.configure(perchannel=True)
+        
         # Add calibration data
         print("  Adding calibration data...")
         with torch.no_grad():
