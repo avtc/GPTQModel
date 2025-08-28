@@ -449,14 +449,29 @@ class GPTQ:
                                 group_start_col = global_indices[i]
                                 group_actual_size = min(self.qcfg.group_size, count - group_start_col)
                                 
-                                # Expand scales/zeros to match the actual number of columns in this group
-                                expanded_scale = scale.expand(group_actual_size, 1)
-                                expanded_zero = zero.expand(group_actual_size, 1)
+                                # The scale tensor might already have the correct size for the group
+                                # If it has more elements than needed, take only the first group_actual_size elements
+                                if scale.numel() > group_actual_size:
+                                    scale = scale[:group_actual_size]
+                                if zero.numel() > group_actual_size:
+                                    zero = zero[:group_actual_size]
                                 
-                                block_scales_list.append(expanded_scale)
-                                block_zeros_list.append(expanded_zero)
+                                # Ensure scale and zero have the correct shape
+                                scale = scale.view(-1, 1)
+                                zero = zero.view(-1, 1)
+                                
+                                # If we still have size mismatch, replicate the values
+                                if scale.shape[0] < group_actual_size:
+                                    # Repeat the scale values to fill the group
+                                    scale = scale.repeat(group_actual_size // scale.shape[0] + 1, 1)[:group_actual_size]
+                                if zero.shape[0] < group_actual_size:
+                                    # Repeat the zero values to fill the group
+                                    zero = zero.repeat(group_actual_size // zero.shape[0] + 1, 1)[:group_actual_size]
+                                
+                                block_scales_list.append(scale)
+                                block_zeros_list.append(zero)
                             
-                            # Concatenate all expanded group parameters
+                            # Concatenate all group parameters
                             if block_scales_list:
                                 block_scales = torch.cat(block_scales_list, dim=0)
                                 block_zeros = torch.cat(block_zeros_list, dim=0)
