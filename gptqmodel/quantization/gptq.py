@@ -460,41 +460,68 @@ class GPTQ:
                             
                             start_tmp = time.time()
 
-                            # Fill remaining columns with individual quantization
+                            # Fill remaining columns with optimized batch quantization
                             remaining_cols = ~group_mask
                             if torch.any(remaining_cols):
-                                for i in torch.where(remaining_cols)[0]:
-                                    w = W1[:, i]
-                                    q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
-                                    Q1[:, i] = q
+                                # Get indices of remaining columns
+                                remaining_indices = torch.where(remaining_cols)[0]
+                                
+                                # Process all remaining columns in batch for better performance
+                                if len(remaining_indices) > 0:
+                                    # Extract all remaining columns at once
+                                    remaining_W = W1[:, remaining_indices]
+                                    
+                                    # Use batch quantization for better performance
+                                    # Reshape to (num_remaining_cols, rows) for quantizer
+                                    remaining_W_reshaped = remaining_W.T  # Shape: (num_remaining_cols, rows)
+                                    
+                                    # Quantize all remaining columns at once
+                                    quantized_remaining = self.quantizer.quantize(remaining_W_reshaped)
+                                    
+                                    # Reshape back and assign to Q1
+                                    Q1[:, remaining_indices] = quantized_remaining.T
 
-                            log.debug(f"Completed 8.{i1}.Fill remaining columns with individual quantization for {self.name} in {time.time() - start_tmp:.3f}s")
+                            log.debug(f"Completed 8.{i1}.Fill remaining columns with optimized batch quantization for {self.name} in {time.time() - start_tmp:.3f}s")
 
                         else:
-                            # Fallback to individual quantization if no valid groups found
-                            for i in range(count):
-                                w = W1[:, i]
-                                q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
-                                Q1[:, i] = q
+                            # Fallback to batch quantization if no valid groups found
+                            # Process all columns in batch for better performance
+                            W1_reshaped = W1.T  # Shape: (count, rows)
+                            Q1_batch = self.quantizer.quantize(W1_reshaped)
+                            Q1 = Q1_batch.T
                     else:
-                        # Static groups - use pre-computed groups with optimized access
+                        # Static groups - optimized batch processing
+                        # Group columns by their quantizer group for batch processing
+                        group_cols = {}
                         for i in range(count):
                             idx = i1 + i
                             if self.qcfg.desc_act:
                                 idx = perm[idx]
-                            self.quantizer = groups[idx // self.qcfg.group_size]
+                            group_idx = idx // self.qcfg.group_size
                             
-                            # Get the column and quantize it
-                            w = W1[:, i]
-                            q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
-                            Q1[:, i] = q
+                            if group_idx not in group_cols:
+                                group_cols[group_idx] = []
+                            group_cols[group_idx].append(i)
+                        
+                        # Process each group's columns in batch
+                        for group_idx, col_indices in group_cols.items():
+                            self.quantizer = groups[group_idx]
+                            
+                            # Get all columns for this group
+                            group_W = W1[:, col_indices]
+                            group_W_reshaped = group_W.T  # Shape: (num_cols_in_group, rows)
+                            
+                            # Quantize the entire group at once
+                            quantized_group = self.quantizer.quantize(group_W_reshaped)
+                            
+                            # Assign back to Q1
+                            Q1[:, col_indices] = quantized_group.T
                 else:
-                    # No grouping - optimized individual quantization
-                    # Process all columns in batch for better cache utilization
-                    for i in range(count):
-                        w = W1[:, i]
-                        q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
-                        Q1[:, i] = q
+                    # No grouping - optimized batch quantization
+                    # Process all columns in batch for better performance and cache utilization
+                    W1_reshaped = W1.T  # Shape: (count, rows)
+                    Q1_batch = self.quantizer.quantize(W1_reshaped)
+                    Q1 = Q1_batch.T
 
                 # Optimized error computation - eliminates inner loop and unnecessary W1 updates
                 if Hinv is not None:
