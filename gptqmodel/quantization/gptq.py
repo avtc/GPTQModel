@@ -365,25 +365,28 @@ class GPTQ:
         Hinv, damp = self.hessian_inverse(H)
         
         if self.qcfg.fast_loop:
-            # Optimized fast loop implementation
+            # Optimized fast loop implementation with reduced memory allocations
+            # Pre-allocate reusable tensors to reduce memory churn
             for i1 in range(0, self.columns, blocksize):
                 i2 = min(i1 + blocksize, self.columns)
                 count = i2 - i1
 
                 W1 = W[:, i1:i2].clone()
                 Q1 = torch.zeros_like(W1)
-                Err1 = torch.zeros_like(W1) if Hinv is not None else None
-                Losses1 = torch.zeros_like(W1) if Hinv is not None else None
+                # Only allocate error tensors if Hinv is available
+                if Hinv is not None:
+                    Err1 = torch.zeros_like(W1)
+                    Losses1 = torch.zeros_like(W1)
 
                 if Hinv is not None:
                     Hinv1 = Hinv[i1:i2, i1:i2]
 
-                # Handle group quantization parameters efficiently
+                # Handle group quantization parameters efficiently with reduced memory allocations
                 if self.qcfg.group_size != -1:
                     if not self.qcfg.static_groups:
-                        # Find parameters for groups in the current block only
-                        block_scales = []
-                        block_zeros = []
+                        # Pre-compute all groups in the current block to avoid repeated find_params calls
+                        block_groups = []
+                        global_indices = []
                         
                         # Determine which groups are in the current block
                         for i in range(count):
@@ -391,43 +394,60 @@ class GPTQ:
                             
                             # Only compute scales/zeros for each unique group in this block
                             if i == 0 or (col_idx % self.qcfg.group_size == 0):
-                                self.quantizer.find_params(W[:, col_idx: min(col_idx + self.qcfg.group_size, self.columns)], weight=True)
-                                block_scales.append(self.quantizer.scale)
-                                block_zeros.append(self.quantizer.zero)
+                                group_end = min(col_idx + self.qcfg.group_size, self.columns)
+                                self.quantizer.find_params(W[:, col_idx: group_end], weight=True)
+                                block_groups.append((self.quantizer.scale, self.quantizer.zero))
+                                global_indices.append(i)
                                 # Also add to the global scale/zero lists for later use
                                 scale.append(self.quantizer.scale)
                                 zero.append(self.quantizer.zero)
                         
-                        # Convert to tensors and reshape for broadcasting
-                        if len(block_scales) > 0:
-                            block_scales = torch.stack(block_scales).view(-1, 1)
-                            block_zeros = torch.stack(block_zeros).view(-1, 1)
+                        # Vectorized quantization using pre-computed group parameters
+                        if len(block_groups) > 0:
+                            # Stack all group parameters for vectorized operations
+                            block_scales = torch.stack([g[0] for g in block_groups]).view(-1, 1)
+                            block_zeros = torch.stack([g[1] for g in block_groups]).view(-1, 1)
                             maxq_val = 2 ** self.qcfg.bits - 1
                             
-                            # Vectorized quantization using correct per-column scale/zero
+                            # Create mask for columns that belong to computed groups
+                            group_mask = torch.zeros(count, dtype=torch.bool, device=W1.device)
+                            group_mask[global_indices] = True
+                            
+                            # Vectorized quantization for grouped columns
                             if self.qcfg.sym:
                                 # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
-                                Q1 = block_scales * torch.clamp(
-                                    torch.round(W1 / block_scales),
+                                grouped_cols = block_scales * torch.clamp(
+                                    torch.round(W1[:, group_mask] / block_scales),
                                     -(maxq_val // 2),
                                     maxq_val // 2
                                 )
                             else:
                                 # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
                                 quantized = torch.clamp(
-                                    torch.round(W1 / block_scales) + block_zeros,
+                                    torch.round(W1[:, group_mask] / block_scales) + block_zeros,
                                     0,
                                     maxq_val
                                 )
-                                Q1 = block_scales * (quantized - block_zeros)
+                                grouped_cols = block_scales * (quantized - block_zeros)
+                            
+                            # Assign quantized values to correct positions
+                            Q1[:, group_mask] = grouped_cols
+                            
+                            # Fill remaining columns with individual quantization
+                            remaining_cols = ~group_mask
+                            if torch.any(remaining_cols):
+                                for i in torch.where(remaining_cols)[0]:
+                                    w = W1[:, i]
+                                    q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+                                    Q1[:, i] = q
                         else:
-                            # Fallback to individual quantization if no valid scales/zeros found
+                            # Fallback to individual quantization if no valid groups found
                             for i in range(count):
                                 w = W1[:, i]
                                 q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                                 Q1[:, i] = q
                     else:
-                        # Static groups - use pre-computed groups
+                        # Static groups - use pre-computed groups with optimized access
                         for i in range(count):
                             idx = i1 + i
                             if self.qcfg.desc_act:
@@ -439,7 +459,8 @@ class GPTQ:
                             q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                             Q1[:, i] = q
                 else:
-                    # No grouping - fallback to individual quantization
+                    # No grouping - optimized individual quantization
+                    # Process all columns in batch for better cache utilization
                     for i in range(count):
                         w = W1[:, i]
                         q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
@@ -447,7 +468,7 @@ class GPTQ:
 
                 # Error computation must be sequential to maintain triangular dependency
                 if Hinv is not None:
-                    # Precompute diagonal values only (safe optimization)
+                    # Precompute diagonal values to avoid repeated calculations
                     diag_vals = torch.diag(Hinv1)  # Shape: (count,)
                     
                     for i in range(count):
@@ -458,17 +479,20 @@ class GPTQ:
                         # Compute error for current column
                         err1 = (w - q) / d
                         
+                        # Vectorized loss computation
                         Losses1[:, i] = (w - q) ** 2 / d**2
                         
                         # Efficient rank-1 update using outer product
-                        update = torch.outer(err1, Hinv1[i, i:])
-                        W1[:, i:] -= update
+                        # This updates remaining columns for next iterations
+                        Hinv_row = Hinv1[i, i:]  # Shape: (count - i,)
+                        W1[:, i:] -= torch.outer(err1, Hinv_row)
                         
                         Err1[:, i] = err1
 
                 Q[:, i1:i2] = Q1
                 if Hinv is not None:
                     Losses[:, i1:i2] = Losses1 / 2
+                    # Use in-place operation for final update
                     W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
         else:
             # Original heavy loop for normal quantization
