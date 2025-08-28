@@ -47,7 +47,7 @@ def run_test_case(model, test_data, group_size, blocksize, test_name):
         # Perform quantization
         print("  Performing quantization...")
         start_time = time.time()
-        scale, zero, g_idx, duration, avg_loss, damp_percent = gptq.hf_quantize(blocksize=blocksize)
+        scale, zero, g_idx, duration, avg_loss, damp_percent = gptq.hf_quantize(blocksize=blocksize, group_size=group_size)
         end_time = time.time()
         
         print("  ✓ Quantization successful!")
