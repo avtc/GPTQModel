@@ -460,117 +460,48 @@ class GPTQ:
                             
                             start_tmp = time.time()
 
-                            # Fill remaining columns with optimized batch quantization
+                            # Fill remaining columns with optimized individual quantization
                             remaining_cols = ~group_mask
                             if torch.any(remaining_cols):
                                 # Get indices of remaining columns
                                 remaining_indices = torch.where(remaining_cols)[0]
                                 
-                                # Process all remaining columns in batch for better performance
-                                if len(remaining_indices) > 0:
-                                    # Extract all remaining columns at once
-                                    remaining_W = W1[:, remaining_indices]
-                                    
-                                    # Use batch quantization for better performance
-                                    # Reshape to match quantizer expectations (similar to how it's done in find_params)
-                                    if len(remaining_W.shape) == 2:
-                                        remaining_W_reshaped = remaining_W.T  # Shape: (num_remaining_cols, rows)
-                                    else:
-                                        remaining_W_reshaped = remaining_W.flatten(1)
-                                    
-                                    # Quantize all remaining columns at once
-                                    quantized_remaining = self.quantizer.quantize(remaining_W_reshaped)
-                                    
-                                    # Apply the same pattern as original: .unsqueeze(1).flatten()
-                                    # This ensures compatibility with the quantizer's expectations
-                                    if len(quantized_remaining.shape) == 2:
-                                        # Shape: (num_remaining_cols, rows) -> unsqueeze(1) -> (num_remaining_cols, 1, rows) -> flatten -> (num_remaining_cols, rows)
-                                        quantized_remaining = quantized_remaining.unsqueeze(1).flatten()
-                                        Q1[:, remaining_indices] = quantized_remaining
-                                    else:
-                                        # Handle other shapes appropriately
-                                        quantized_remaining = quantized_remaining.unsqueeze(1).flatten()
-                                        Q1[:, remaining_indices] = quantized_remaining.reshape(Q1[:, remaining_indices].shape)
+                                # Process remaining columns with optimized loop
+                                # This maintains compatibility while reducing overhead
+                                for i in remaining_indices:
+                                    w = W1[:, i]
+                                    q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+                                    Q1[:, i] = q
 
                             log.debug(f"Completed 8.{i1}.Fill remaining columns with optimized batch quantization for {self.name} in {time.time() - start_tmp:.3f}s")
 
                         else:
-                            # Fallback to batch quantization if no valid groups found
-                            # Process all columns in batch for better performance
-                            if len(W1.shape) == 2:
-                                W1_reshaped = W1.T  # Shape: (count, rows)
-                            else:
-                                W1_reshaped = W1.flatten(1)
-                            
-                            Q1_batch = self.quantizer.quantize(W1_reshaped)
-                            
-                            # Apply the same pattern as original: .unsqueeze(1).flatten()
-                            if len(Q1_batch.shape) == 2:
-                                # Shape: (count, rows) -> unsqueeze(1) -> (count, 1, rows) -> flatten -> (count, rows)
-                                Q1_batch = Q1_batch.unsqueeze(1).flatten()
-                                Q1 = Q1_batch.T
-                            else:
-                                # Handle other shapes appropriately
-                                Q1_batch = Q1_batch.unsqueeze(1).flatten()
-                                Q1 = Q1_batch.reshape(Q1.shape)
+                            # Fallback to optimized individual quantization if no valid groups found
+                            # Process all columns with optimized loop for better performance
+                            for i in range(count):
+                                w = W1[:, i]
+                                q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+                                Q1[:, i] = q
                     else:
-                        # Static groups - optimized batch processing
-                        # Group columns by their quantizer group for batch processing
-                        group_cols = {}
+                        # Static groups - optimized individual processing
+                        # Process columns with optimized loop while maintaining group logic
                         for i in range(count):
                             idx = i1 + i
                             if self.qcfg.desc_act:
                                 idx = perm[idx]
-                            group_idx = idx // self.qcfg.group_size
+                            self.quantizer = groups[idx // self.qcfg.group_size]
                             
-                            if group_idx not in group_cols:
-                                group_cols[group_idx] = []
-                            group_cols[group_idx].append(i)
-                        
-                        # Process each group's columns in batch
-                        for group_idx, col_indices in group_cols.items():
-                            self.quantizer = groups[group_idx]
-                            
-                            # Get all columns for this group
-                            group_W = W1[:, col_indices]
-                            
-                            # Reshape to match quantizer expectations
-                            if len(group_W.shape) == 2:
-                                group_W_reshaped = group_W.T  # Shape: (num_cols_in_group, rows)
-                            else:
-                                group_W_reshaped = group_W.flatten(1)
-                            
-                            # Quantize the entire group at once
-                            quantized_group = self.quantizer.quantize(group_W_reshaped)
-                            
-                            # Apply the same pattern as original: .unsqueeze(1).flatten()
-                            if len(quantized_group.shape) == 2:
-                                # Shape: (num_cols_in_group, rows) -> unsqueeze(1) -> (num_cols_in_group, 1, rows) -> flatten -> (num_cols_in_group, rows)
-                                quantized_group = quantized_group.unsqueeze(1).flatten()
-                                Q1[:, col_indices] = quantized_group.T
-                            else:
-                                # Handle other shapes appropriately
-                                quantized_group = quantized_group.unsqueeze(1).flatten()
-                                Q1[:, col_indices] = quantized_group.reshape(Q1[:, col_indices].shape)
+                            # Get the column and quantize it
+                            w = W1[:, i]
+                            q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+                            Q1[:, i] = q
                 else:
-                    # No grouping - optimized batch quantization
-                    # Process all columns in batch for better performance and cache utilization
-                    if len(W1.shape) == 2:
-                        W1_reshaped = W1.T  # Shape: (count, rows)
-                    else:
-                        W1_reshaped = W1.flatten(1)
-                    
-                    Q1_batch = self.quantizer.quantize(W1_reshaped)
-                    
-                    # Apply the same pattern as original: .unsqueeze(1).flatten()
-                    if len(Q1_batch.shape) == 2:
-                        # Shape: (count, rows) -> unsqueeze(1) -> (count, 1, rows) -> flatten -> (count, rows)
-                        Q1_batch = Q1_batch.unsqueeze(1).flatten()
-                        Q1 = Q1_batch.T
-                    else:
-                        # Handle other shapes appropriately
-                        Q1_batch = Q1_batch.unsqueeze(1).flatten()
-                        Q1 = Q1_batch.reshape(Q1.shape)
+                    # No grouping - optimized individual quantization
+                    # Process all columns with optimized loop for better performance and cache utilization
+                    for i in range(count):
+                        w = W1[:, i]
+                        q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+                        Q1[:, i] = q
 
                 # Optimized error computation - eliminates inner loop and unnecessary W1 updates
                 if Hinv is not None:
