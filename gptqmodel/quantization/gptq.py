@@ -491,30 +491,35 @@ class GPTQ:
                             
                             # Get the number of grouped columns and verify block_scales size
                             num_grouped_cols = torch.sum(group_mask).item()
-                            if num_grouped_cols > 0 and block_scales.shape[0] >= num_grouped_cols:
-                                # Vectorized quantization for grouped columns
-                                if self.qcfg.sym:
-                                    # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
-                                    grouped_cols = block_scales[:num_grouped_cols] * torch.clamp(
-                                        torch.round(W1[:, group_mask] / block_scales[:num_grouped_cols]),
-                                        -(maxq_val // 2),
-                                        maxq_val // 2
-                                    )
+                            if num_grouped_cols > 0:
+                                # Check if we have enough scales for all grouped columns
+                                if block_scales.shape[0] >= num_grouped_cols:
+                                    # Vectorized quantization for grouped columns
+                                    if self.qcfg.sym:
+                                        # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
+                                        grouped_cols = block_scales[:num_grouped_cols] * torch.clamp(
+                                            torch.round(W1[:, group_mask] / block_scales[:num_grouped_cols]),
+                                            -(maxq_val // 2),
+                                            maxq_val // 2
+                                        )
+                                    else:
+                                        # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
+                                        quantized = torch.clamp(
+                                            torch.round(W1[:, group_mask] / block_scales[:num_grouped_cols]) + block_zeros[:num_grouped_cols],
+                                            0,
+                                            maxq_val
+                                        )
+                                        grouped_cols = block_scales[:num_grouped_cols] * (quantized - block_zeros[:num_grouped_cols])
                                 else:
-                                    # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
-                                    quantized = torch.clamp(
-                                        torch.round(W1[:, group_mask] / block_scales[:num_grouped_cols]) + block_zeros[:num_grouped_cols],
-                                        0,
-                                        maxq_val
-                                    )
-                                    grouped_cols = block_scales[:num_grouped_cols] * (quantized - block_zeros[:num_grouped_cols])
+                                    # Fallback to individual quantization if sizes don't match
+                                    grouped_cols = torch.zeros_like(W1[:, group_mask])
+                                    for j, col_idx in enumerate(torch.where(group_mask)[0]):
+                                        w = W1[:, col_idx]
+                                        q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+                                        grouped_cols[:, j] = q
                             else:
-                                # Fallback to individual quantization if sizes don't match
-                                grouped_cols = torch.zeros_like(W1[:, group_mask])
-                                for j, col_idx in enumerate(torch.where(group_mask)[0]):
-                                    w = W1[:, col_idx]
-                                    q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
-                                    grouped_cols[:, j] = q
+                                # No grouped columns, create empty tensor
+                                grouped_cols = torch.zeros((W1.shape[0], 0), device=W1.device)
                             
                             log.debug(f"Completed 7.{i1}.Vectorized quantization for grouped columns for {self.name} in {time.time() - start_tmp:.3f}s")
 
