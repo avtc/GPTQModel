@@ -400,42 +400,57 @@ class GPTQ:
 
                 # Optimized quantization with correct per-weight scale/zero handling
                 if self.qcfg.group_size != -1 and len(scale) > 0 and len(zero) > 0:
-                    # Pre-allocate scale and zero tensors for the entire block
+                    # Pre-allocate scale and zero tensors for the current block only
                     block_scales = []
                     block_zeros = []
                     
-                    # Determine which scale/zero to use for each column in the block
+                    # Determine which scale/zero to use for each column in the current block
                     for i in range(count):
-                        col_idx = i1 + i
+                        col_idx = i1 + i  # Global column index
                         group_idx = col_idx // self.qcfg.group_size
+                        
+                        # Handle desc_act permutation if needed
                         if self.qcfg.desc_act:
-                            group_idx = perm[col_idx] // self.qcfg.group_size
+                            perm_col_idx = perm[col_idx]
+                            group_idx = perm_col_idx // self.qcfg.group_size
                         
                         # Use the appropriate scale/zero for this column's group
-                        block_scales.append(scale[group_idx])
-                        block_zeros.append(zero[group_idx])
+                        if group_idx < len(scale) and group_idx < len(zero):
+                            block_scales.append(scale[group_idx])
+                            block_zeros.append(zero[group_idx])
+                        else:
+                            # Fallback to quantizer's default scale/zero if index is out of bounds
+                            block_scales.append(self.quantizer.scale)
+                            block_zeros.append(self.quantizer.zero)
                     
                     # Convert to tensors and reshape for broadcasting
-                    block_scales = torch.stack(block_scales).view(-1, 1)
-                    block_zeros = torch.stack(block_zeros).view(-1, 1)
-                    maxq_val = 2 ** self.qcfg.bits - 1
-                    
-                    # Vectorized quantization using correct per-column scale/zero
-                    if self.qcfg.sym:
-                        # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
-                        Q1 = block_scales * torch.clamp(
-                            torch.round(W1 / block_scales),
-                            -(maxq_val // 2),
-                            maxq_val // 2
-                        )
+                    if len(block_scales) > 0:
+                        block_scales = torch.stack(block_scales).view(-1, 1)
+                        block_zeros = torch.stack(block_zeros).view(-1, 1)
+                        maxq_val = 2 ** self.qcfg.bits - 1
+                        
+                        # Vectorized quantization using correct per-column scale/zero
+                        if self.qcfg.sym:
+                            # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
+                            Q1 = block_scales * torch.clamp(
+                                torch.round(W1 / block_scales),
+                                -(maxq_val // 2),
+                                maxq_val // 2
+                            )
+                        else:
+                            # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
+                            quantized = torch.clamp(
+                                torch.round(W1 / block_scales) + block_zeros,
+                                0,
+                                maxq_val
+                            )
+                            Q1 = block_scales * (quantized - block_zeros)
                     else:
-                        # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
-                        quantized = torch.clamp(
-                            torch.round(W1 / block_scales) + block_zeros,
-                            0,
-                            maxq_val
-                        )
-                        Q1 = block_scales * (quantized - block_zeros)
+                        # Fallback to individual quantization if no valid scales/zeros found
+                        for i in range(count):
+                            w = W1[:, i]
+                            q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+                            Q1[:, i] = q
                 else:
                     # No grouping or no scale/zero available - fallback to individual quantization
                     for i in range(count):
