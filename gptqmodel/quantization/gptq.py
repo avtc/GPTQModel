@@ -296,6 +296,8 @@ class GPTQ:
             
         # process buffered inputs
         if len(self.fwd_inputs_buffered_data) > 0:
+            start_tmp = time.time()
+
             torch_sync(device=self.module.target_device)
 
             for inp in self.fwd_inputs_buffered_data:
@@ -303,6 +305,8 @@ class GPTQ:
 
             # release buffer
             del self.fwd_inputs_buffered_data
+
+            log.debug(f"Completed 1.fwd_inputs_buffered_data for {self.name} in {time.time() - start_tmp:.3f}s")
 
         # if self.device.type not in ["mps", "cpu"]:
         #     self.module.weight.data = self.module.weight.data.cpu()
@@ -319,7 +323,11 @@ class GPTQ:
             W = self.module_copy.to(device=self.module.target_device)
             del self.module_copy
 
+        start_tmp = time.time()
+
         self.quantizer.find_params(W, weight=True)
+
+        log.debug(f"Completed 2.find_params(W) for {self.name} in {time.time() - start_tmp:.3f}s")
 
         H = self.H.to(device=self.module.target_device)
         del self.H
@@ -346,18 +354,27 @@ class GPTQ:
                 groups.append(quantizer)
 
         if self.qcfg.desc_act:
+            start_tmp = time.time()
+
             perm = torch.argsort(torch.diag(H), descending=True)
             W = W[:, perm]
             H = H[perm][:, perm]
             invperm = torch.argsort(perm)
 
+            log.debug(f"Completed 3.desc_act for {self.name} in {time.time() - start_tmp:.3f}s")
+
         if hasattr(self.qcfg, "hyb_act") and self.qcfg.hyb_act and not self.qcfg.desc_act:
             from .gar import compose_final_perm, compute_global_perm, compute_local_perms
+            start_tmp = time.time()
+
             local_perms = compute_local_perms(torch.diag(H), self.qcfg.group_size)
             global_perm = compute_global_perm(torch.diag(H), self.qcfg.group_size)
             final_perm = compose_final_perm(local_perms, global_perm, self.qcfg.group_size)
             W = W[:, final_perm]
             H = H[final_perm][:, final_perm]
+            
+            log.debug(f"Completed 4.hyb_act for {self.name} in {time.time() - start_tmp:.3f}s")
+
 
         Losses = torch.zeros_like(W)
         Q = torch.zeros_like(W)
@@ -385,6 +402,8 @@ class GPTQ:
                 if self.qcfg.group_size != -1:
                     if not self.qcfg.static_groups:
                         # Pre-compute all groups in the current block to avoid repeated find_params calls
+                        start_tmp = time.time()
+
                         block_groups = []
                         global_indices = []
                         
@@ -402,8 +421,12 @@ class GPTQ:
                                 scale.append(self.quantizer.scale)
                                 zero.append(self.quantizer.zero)
                         
+                        log.debug(f"Completed 6.{i1}.compute scales/zeros for {self.name} in {time.time() - start_tmp:.3f}s")
+
                         # Vectorized quantization using pre-computed group parameters
                         if len(block_groups) > 0:
+                            start_tmp = time.time()
+
                             # Stack all group parameters for vectorized operations
                             block_scales = torch.stack([g[0] for g in block_groups]).view(-1, 1)
                             block_zeros = torch.stack([g[1] for g in block_groups]).view(-1, 1)
@@ -430,9 +453,13 @@ class GPTQ:
                                 )
                                 grouped_cols = block_scales * (quantized - block_zeros)
                             
+                            log.debug(f"Completed 7.{i1}.Vectorized quantization for grouped columns for {self.name} in {time.time() - start_tmp:.3f}s")
+
                             # Assign quantized values to correct positions
                             Q1[:, group_mask] = grouped_cols
                             
+                            start_tmp = time.time()
+
                             # Fill remaining columns with individual quantization
                             remaining_cols = ~group_mask
                             if torch.any(remaining_cols):
@@ -440,6 +467,9 @@ class GPTQ:
                                     w = W1[:, i]
                                     q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                                     Q1[:, i] = q
+
+                            log.debug(f"Completed 8.{i1}.Fill remaining columns with individual quantization for {self.name} in {time.time() - start_tmp:.3f}s")
+
                         else:
                             # Fallback to individual quantization if no valid groups found
                             for i in range(count):
@@ -468,6 +498,8 @@ class GPTQ:
 
                 # Optimized error computation - eliminates inner loop and unnecessary W1 updates
                 if Hinv is not None:
+                    start_tmp = time.time()
+
                     # Precompute diagonal values and inverse for vectorized operations
                     diag_vals = torch.diag(Hinv1)  # Shape: (count,)
                     inv_diag = 1.0 / diag_vals  # Shape: (count,)
@@ -488,11 +520,19 @@ class GPTQ:
                     # Store all errors - no need to update W1 as it's not used after this block
                     Err1 = errors.T  # Shape: (rows, count) back to original shape
 
+                    log.debug(f"Completed 9.{i1}.Optimized error computation for {self.name} in {time.time() - start_tmp:.3f}s")
+
+
+                start_tmp = time.time()
+
                 Q[:, i1:i2] = Q1
                 if Hinv is not None:
                     Losses[:, i1:i2] = Losses1 / 2
                     # Use in-place operation for final update
                     W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
+
+                log.debug(f"Completed 10.{i1}.Final update for {self.name} in {time.time() - start_tmp:.3f}s")
+
         else:
             # Original heavy loop for normal quantization
             for i1 in range(0, self.columns, blocksize):
@@ -575,6 +615,8 @@ class GPTQ:
 
         if hasattr(self.qcfg, "hyb_act") and self.qcfg.hyb_act and not self.qcfg.desc_act:
             from .gar import invert_perm
+            start_tmp = time.time()
+
             inv_final = invert_perm(final_perm)
             Q = Q[:, inv_final]
             inv_global_perm = invert_perm(global_perm)
@@ -583,6 +625,11 @@ class GPTQ:
             scale = temp_scale
             temp_zero = [zero[i] for i in inv_global_perm_list]
             zero = temp_zero
+
+            log.debug(f"Completed 11.hyb_act final for {self.name} in {time.time() - start_tmp:.3f}s")
+
+
+        start_tmp = time.time()
 
         if isinstance(self.module, transformers.Conv1D):
             Q = Q.t()
@@ -604,6 +651,8 @@ class GPTQ:
             Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
         else:
             Q = Q.type_as(self.module.weight.data)
+
+        log.debug(f"Completed 12.Q to and reshape for {self.name} in {time.time() - start_tmp:.3f}s")
 
         # Q = Q.to(device=use_device)
 
