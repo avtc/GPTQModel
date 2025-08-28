@@ -353,6 +353,8 @@ class GPTQ:
                 zero.append(quantizer.zero)
                 groups.append(quantizer)
 
+        start_loop = time.time()
+
         if self.qcfg.desc_act:
             start_tmp = time.time()
 
@@ -592,6 +594,8 @@ class GPTQ:
                     Losses[:, i1:i2] = Losses1 / 2
                     W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
 
+        log.debug(f"Completed Loop for {self.name} in {time.time() - start_loop:.3f}s")
+
         # TODO: why is there a torch_sync here? There are no streaming ops here?
         # torch_sync(device=self.module.target_device)
 
@@ -626,8 +630,6 @@ class GPTQ:
 
         if hasattr(self.qcfg, "hyb_act") and self.qcfg.hyb_act and not self.qcfg.desc_act:
             from .gar import invert_perm
-            start_tmp = time.time()
-
             inv_final = invert_perm(final_perm)
             Q = Q[:, inv_final]
             inv_global_perm = invert_perm(global_perm)
@@ -636,11 +638,6 @@ class GPTQ:
             scale = temp_scale
             temp_zero = [zero[i] for i in inv_global_perm_list]
             zero = temp_zero
-
-            log.debug(f"Completed 11.hyb_act final for {self.name} in {time.time() - start_tmp:.3f}s")
-
-
-        start_tmp = time.time()
 
         if isinstance(self.module, transformers.Conv1D):
             Q = Q.t()
@@ -662,8 +659,6 @@ class GPTQ:
             Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
         else:
             Q = Q.type_as(self.module.weight.data)
-
-        log.debug(f"Completed 12.Q to and reshape for {self.name} in {time.time() - start_tmp:.3f}s")
 
         # Q = Q.to(device=use_device)
 
