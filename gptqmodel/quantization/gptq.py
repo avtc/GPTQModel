@@ -88,6 +88,10 @@ class GPTQ:
         self._validate_module(self.module)
 
         self.qcfg = qcfg if qcfg else QuantizeConfig()  # HF compat will not pass qcfg
+        
+        # Set default blocksize from config if not already set
+        if not hasattr(self.qcfg, 'block_size') or self.qcfg.block_size is None:
+            self.qcfg.block_size = 128
 
         self.module_copy = None
 
@@ -216,25 +220,29 @@ class GPTQ:
     # FIXME, optimum needs fasterquant, we need to remove it
     def fasterquant(
             self,
-            blocksize=128,
+            blocksize=None,
             percdamp=0.01,
             damp_auto_increment=0.0015,
             group_size=-1,
             actorder=False,
             static_groups=False,
     ):
+        if blocksize is None:
+            blocksize = self.qcfg.block_size
         return self.hf_quantize(blocksize, percdamp, damp_auto_increment, group_size, actorder, static_groups)
 
     # public api exposed to hf
     def hf_quantize(
             self,
-            blocksize=128,
+            blocksize=None,
             percdamp=0.01,
             damp_auto_increment=0.0015,
             group_size=-1,
             actorder=False,
             static_groups=False,
     ):
+        if blocksize is None:
+            blocksize = self.qcfg.block_size
         self.qcfg.group_size = group_size
         self.qcfg.damp_percent = percdamp
         self.qcfg.damp_auto_increment = damp_auto_increment
@@ -279,8 +287,10 @@ class GPTQ:
     @torch.inference_mode()
     def quantize(
             self,
-            blocksize=128,
+            blocksize=None,
     ):
+        if blocksize is None:
+            blocksize = self.qcfg.block_size
         # self.H = self.H.to(device=CUDA_0)
         # log.info(f"Quantization `{self.name}` using samples: `{self.nsamples}`")
         start = time.time()

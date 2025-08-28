@@ -13,8 +13,10 @@ class QQQ(GPTQ):
     @torch.inference_mode()
     def quantize(
         self,
-        blocksize=128,
+        blocksize=None,
     ):
+        if blocksize is None:
+            blocksize = self.qcfg.block_size
         wq, scale, zero, g_idx, duration, avg_loss, damp_percent, nsamples = super().quantize(blocksize=blocksize)
 
         # post int8 quant

@@ -120,8 +120,10 @@ class GPTQv2(GPTQ):
     @torch.inference_mode()
     def quantize(
             self,
-            blocksize=128,
+            blocksize=None,
     ):
+        if blocksize is None:
+            blocksize = self.qcfg.block_size
         # self.H = self.H.to(device=CUDA_0)
         # log.info(f"Quantization `{self.name}` using samples: `{self.nsamples}`")
         start = time.time()
