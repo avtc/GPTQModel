@@ -480,8 +480,10 @@ class GPTQ:
                     diff = W_cols - Q_cols  # Shape: (count, rows)
                     errors = diff * inv_diag.unsqueeze(1)  # Shape: (count, rows)
                     
-                    # Vectorized loss computation
-                    Losses1 = (diff * errors.T).T  # Shape: (rows, count) then transpose back
+                    # Vectorized loss computation - fix dimension mismatch
+                    # diff: (count, rows), errors: (count, rows)
+                    # Compute element-wise product and sum along rows for each column
+                    Losses1 = (diff * errors).T  # Shape: (rows, count)
                     
                     # Store all errors - no need to update W1 as it's not used after this block
                     Err1 = errors.T  # Shape: (rows, count) back to original shape
