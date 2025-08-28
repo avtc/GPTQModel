@@ -446,28 +446,37 @@ class GPTQ:
                             
                             # Create mask for columns that belong to computed groups
                             group_mask = torch.zeros(count, dtype=torch.bool, device=W1.device)
-                            # Mark all columns in each group as True, not just the starting index
-                            for idx in global_indices:
+                            # Create group mapping to map each column to its corresponding group parameters
+                            group_mapping = torch.zeros(count, dtype=torch.long, device=W1.device)
+                            
+                            # Mark all columns in each group and create mapping
+                            for group_idx, idx in enumerate(global_indices):
                                 group_start = idx
                                 group_end = min(group_start + self.qcfg.group_size, count)
                                 group_mask[group_start:group_end] = True
+                                group_mapping[group_start:group_end] = group_idx
                             
                             # Vectorized quantization for grouped columns
                             if self.qcfg.sym:
                                 # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
-                                grouped_cols = block_scales * torch.clamp(
-                                    torch.round(W1[:, group_mask] / block_scales),
+                                # Use group_mapping to select the correct scale for each column
+                                selected_scales = block_scales[group_mapping[group_mask]]
+                                grouped_cols = selected_scales * torch.clamp(
+                                    torch.round(W1[:, group_mask] / selected_scales),
                                     -(maxq_val // 2),
                                     maxq_val // 2
                                 )
                             else:
                                 # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
+                                # Use group_mapping to select the correct scale and zero for each column
+                                selected_scales = block_scales[group_mapping[group_mask]]
+                                selected_zeros = block_zeros[group_mapping[group_mask]]
                                 quantized = torch.clamp(
-                                    torch.round(W1[:, group_mask] / block_scales) + block_zeros,
+                                    torch.round(W1[:, group_mask] / selected_scales) + selected_zeros,
                                     0,
                                     maxq_val
                                 )
-                                grouped_cols = block_scales * (quantized - block_zeros)
+                                grouped_cols = selected_scales * (quantized - selected_zeros)
                             
                             log.debug(f"Completed 7.{i1}.Vectorized quantization for grouped columns for {self.name} in {time.time() - start_tmp:.3f}s")
 
@@ -577,9 +586,12 @@ class GPTQ:
 
                     if self.qcfg.group_size != -1:
                         if not self.qcfg.static_groups:
+                            # Only compute scales/zeros when we're at the start of a new group
                             if (i1 + i) % self.qcfg.group_size == 0:
-                                self.quantizer.find_params(W[:, (i1 + i) : (i1 + i + self.qcfg.group_size)], weight=True)
+                                group_end = min(i1 + i + self.qcfg.group_size, self.columns)
+                                self.quantizer.find_params(W[:, (i1 + i):group_end], weight=True)
 
+                            # Add scale/zero to global list when we complete a group
                             if ((i1 + i) // self.qcfg.group_size) - now_idx == -1:
                                 scale.append(self.quantizer.scale)
                                 zero.append(self.quantizer.zero)
