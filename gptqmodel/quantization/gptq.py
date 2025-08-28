@@ -445,14 +445,23 @@ class GPTQ:
 
                 # Error computation must be sequential to maintain triangular dependency
                 if Hinv is not None:
+                    # Precompute diagonal values only (safe optimization)
+                    diag_vals = torch.diag(Hinv1)  # Shape: (count,)
+                    
                     for i in range(count):
                         w = W1[:, i]
                         q = Q1[:, i]
-                        d = Hinv1[i, i]
+                        d = diag_vals[i]  # Precomputed value
+                        
+                        # Compute error for current column
+                        err1 = (w - q) / d
                         
                         Losses1[:, i] = (w - q) ** 2 / d**2
-                        err1 = (w - q) / d
-                        W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
+                        
+                        # Efficient rank-1 update using outer product
+                        update = torch.outer(err1, Hinv1[i, i:])
+                        W1[:, i:] -= update
+                        
                         Err1[:, i] = err1
 
                 Q[:, i1:i2] = Q1
