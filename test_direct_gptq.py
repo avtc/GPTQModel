@@ -31,11 +31,11 @@ def test_direct_gptq():
         {"group_size": 128, "blocksize": 128, "fast_loop": True, "name": "Fast: group_size=128, blocksize=128 (baseline)"},
         {"group_size": 128, "blocksize": 128, "fast_loop": False, "name": "Original: group_size=128, blocksize=128 (baseline)"},
         # Fast loop tests
-        {"group_size": 128, "blocksize": 1024, "fast_loop": True, "name": "Fast: group_size=128, blocksize=1024"},
-        {"group_size": 64, "blocksize": 256, "fast_loop": True, "name": "Fast: group_size=64, blocksize=256"},
+        {"group_size": 128, "blocksize": 256, "fast_loop": True, "name": "Fast: group_size=128, blocksize=256"},
+        {"group_size": 128, "blocksize": 256, "fast_loop": False, "name": "Original: group_size=128, blocksize=256"},
         # Original loop tests for comparison
-        {"group_size": 128, "blocksize": 1024, "fast_loop": False, "name": "Original: group_size=128, blocksize=1024"},
-        {"group_size": 64, "blocksize": 256, "fast_loop": False, "name": "Original: group_size=64, blocksize=256"},
+        {"group_size": 128, "blocksize": 64, "fast_loop": True, "name": "Fast: group_size=128, blocksize=64"},
+        {"group_size": 128, "blocksize": 64, "fast_loop": False, "name": "Original: group_size=128, blocksize=64"},
     ]
     
     # Create model and data
