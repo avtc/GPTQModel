@@ -461,6 +461,8 @@ class GPTQ:
                                 # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
                                 # Use group_mapping to select the correct scale for each column
                                 selected_scales = block_scales[group_mapping[group_mask]]
+                                # Reshape selected_scales to match the grouped columns for broadcasting
+                                selected_scales = selected_scales.view(1, -1)
                                 grouped_cols = selected_scales * torch.clamp(
                                     torch.round(W1[:, group_mask] / selected_scales),
                                     -(maxq_val // 2),
@@ -471,6 +473,9 @@ class GPTQ:
                                 # Use group_mapping to select the correct scale and zero for each column
                                 selected_scales = block_scales[group_mapping[group_mask]]
                                 selected_zeros = block_zeros[group_mapping[group_mask]]
+                                # Reshape for proper broadcasting
+                                selected_scales = selected_scales.view(1, -1)
+                                selected_zeros = selected_zeros.view(1, -1)
                                 quantized = torch.clamp(
                                     torch.round(W1[:, group_mask] / selected_scales) + selected_zeros,
                                     0,
