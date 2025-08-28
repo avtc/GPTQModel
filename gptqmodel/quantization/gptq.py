@@ -455,19 +455,26 @@ class GPTQ:
                             # Vectorized quantization for grouped columns
                             if self.qcfg.sym:
                                 # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
-                                grouped_cols = block_scales * torch.clamp(
-                                    torch.round(W1[:, group_mask] / block_scales),
+                                # Reshape scales for proper broadcasting across all grouped columns
+                                num_grouped_cols = group_mask.sum().item()
+                                repeated_scales = block_scales.repeat(1, num_grouped_cols)
+                                grouped_cols = repeated_scales * torch.clamp(
+                                    torch.round(W1[:, group_mask] / repeated_scales),
                                     -(maxq_val // 2),
                                     maxq_val // 2
                                 )
                             else:
                                 # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
+                                # Reshape scales and zeros for proper broadcasting across all grouped columns
+                                num_grouped_cols = group_mask.sum().item()
+                                repeated_scales = block_scales.repeat(1, num_grouped_cols)
+                                repeated_zeros = block_zeros.repeat(1, num_grouped_cols)
                                 quantized = torch.clamp(
-                                    torch.round(W1[:, group_mask] / block_scales) + block_zeros,
+                                    torch.round(W1[:, group_mask] / repeated_scales) + repeated_zeros,
                                     0,
                                     maxq_val
                                 )
-                                grouped_cols = block_scales * (quantized - block_zeros)
+                                grouped_cols = repeated_scales * (quantized - repeated_zeros)
                             
                             log.debug(f"Completed 7.{i1}.Vectorized quantization for grouped columns for {self.name} in {time.time() - start_tmp:.3f}s")
 
