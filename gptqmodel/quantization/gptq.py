@@ -394,6 +394,9 @@ class GPTQ:
                                 self.quantizer.find_params(W[:, col_idx: min(col_idx + self.qcfg.group_size, self.columns)], weight=True)
                                 block_scales.append(self.quantizer.scale)
                                 block_zeros.append(self.quantizer.zero)
+                                # Also add to the global scale/zero lists for later use
+                                scale.append(self.quantizer.scale)
+                                zero.append(self.quantizer.zero)
                         
                         # Convert to tensors and reshape for broadcasting
                         if len(block_scales) > 0:
