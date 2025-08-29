@@ -223,7 +223,7 @@ class QuantizeConfig():
     mock_hessian_inverse: bool = field(default=False, metadata={"help": "Use simplified hessian inverse (identity matrix), v1, experimental, use with fast_loop for MoE models"})
     fast_loop: bool = field(default=False, metadata={"help": "Alternative fast quantization loop, does not follow GPTQ striclty, v1, experimental"})
     fast_loop_start_block: int = field(default=0, metadata={"help": "Use original GPTQ method to quantize first blocks and only then use fast_loop, 0-based"})
-    fast_loop_weight_update: bool = field(default=True, metadata={"help": "Error propagation to other columns in fast loop, default True"})
+    fast_loop_weight_update: bool = field(default=True, metadata={"help": "Error propagation to other columns in fast loop, default True, when turned off could require mock_hessian_inverse to be True for MoE models"})
     
     # Block size for GPTQ quantization (default: 128)
     # Controls the number of columns processed in each block during quantization
