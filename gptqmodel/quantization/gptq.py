@@ -751,7 +751,7 @@ class GPTQ:
                     Err1 = errors.T
                     
                     # Update remaining weights using exact cross-block interactions
-                    if i2 < self.columns:
+                    if i2 < self.columns and self.qcfg.fast_loop_weight_update:
                         # Use the correct Hessian submatrix for cross-block interactions
                         # Err1 has shape (rows, blocksize), Hinv_cross has shape (blocksize, remaining_columns)
                         # The result will have shape (rows, remaining_columns) - perfect match for W[:, i2:]
