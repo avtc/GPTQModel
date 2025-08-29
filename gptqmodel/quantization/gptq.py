@@ -887,15 +887,27 @@ class GPTQ:
                     log.debug(f"fast_loop2 DEBUG - Losses1 shape: {Losses1.shape}")
                     
                     # Store errors for final update - ensure correct shape
+                    # In the original loop, Err1 accumulates errors column by column
+                    # Here we need to make sure the shape is compatible for matrix multiplication
                     Err1 = errors.T  # Should be (rows, count) = (64, 8)
                     log.debug(f"fast_loop2 DEBUG - Err1 shape: {Err1.shape}, Hinv1 shape: {Hinv1.shape}")
                     
-                    # Update remaining weights in one matrix operation
+                    # Update remaining weights - follow original heavy loop logic more closely
                     if i2 < self.columns:
-                        # Hinv1 has shape (blocksize, blocksize), we need to use all of it
                         log.debug(f"fast_loop2 DEBUG - W[:, i2:] shape: {W[:, i2:].shape}")
-                        log.debug(f"fast_loop2 DEBUG - Err1.matmul(Hinv1) shape: {Err1.matmul(Hinv1).shape}")
-                        W[:, i2:] -= Err1.matmul(Hinv1)
+                        log.debug(f"fast_loop2 DEBUG - Err1 shape: {Err1.shape}")
+                        
+                        # In the original loop, they update W1[:, i:] for each column i
+                        # For vectorization, we need to broadcast Err1 appropriately
+                        # Err1 has shape (rows, blocksize), we need to update each remaining column
+                        for j in range(count):
+                            # For column j, update W1[:, j:] using Err1[:, j] and Hinv1[j, j:]
+                            if j < Hinv1.shape[1]:  # Make sure we don't go out of bounds
+                                err_j = Err1[:, j:j+1]  # Shape: (rows, 1)
+                                hinv_j = Hinv1[j, j:]   # Shape: (blocksize - j,)
+                                # Update the weight matrix
+                                if i2 + j < self.columns:
+                                    W[:, i2 + j:] -= err_j @ hinv_j.unsqueeze(0)
             
             # Store results
             Q[:, i1:i2] = Q1
