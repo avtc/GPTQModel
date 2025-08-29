@@ -898,15 +898,18 @@ class GPTQ:
                         log.debug(f"fast_loop2 DEBUG - Err1 shape: {Err1.shape}")
                         
                         # In the original loop, they update W1[:, i:] for each column i
-                        # For vectorization, we need to broadcast Err1 appropriately
+                        # In vectorization, we need to broadcast Err1 appropriately
                         # Err1 has shape (rows, blocksize), we need to update each remaining column
                         for j in range(count):
                             # For column j, update W1[:, j:] using Err1[:, j] and Hinv1[j, j:]
                             if j < Hinv1.shape[1]:  # Make sure we don't go out of bounds
                                 err_j = Err1[:, j:j+1]  # Shape: (rows, 1)
                                 hinv_j = Hinv1[j, j:]   # Shape: (blocksize - j,)
+                                log.debug(f"fast_loop2 DEBUG - j={j}, err_j shape: {err_j.shape}, hinv_j shape: {hinv_j.shape}")
+                                log.debug(f"fast_loop2 DEBUG - i2+j={i2+j}, W[:, i2+j:] shape: {W[:, i2+j:].shape}")
                                 # Update the weight matrix
                                 if i2 + j < self.columns:
+                                    log.debug(f"fast_loop2 DEBUG - About to update W[:, {i2+j}:]")
                                     W[:, i2 + j:] -= err_j @ hinv_j.unsqueeze(0)
             
             # Store results
