@@ -784,9 +784,9 @@ class GPTQ:
                             group_cols = min(group_end - group_start, count - i if group_idx == block_end_group else self.qcfg.group_size)
                             log.debug(f"fast_loop2 DEBUG - Adding 1 scale/zero for group {group_idx} that covers {group_cols} columns")
                             
-                            # Only append one scale/zero for the entire group
-                            col_to_group_scale.append(self.quantizer.scale)
-                            col_to_group_zero.append(self.quantizer.zero)
+                            # Only append one scale/zero for the entire group - squeeze to remove the last dimension
+                            col_to_group_scale.append(self.quantizer.scale.squeeze(-1))  # Shape: [64]
+                            col_to_group_zero.append(self.quantizer.zero.squeeze(-1))    # Shape: [64]
                         else:
                             # Use cached parameters for this group
                             cached = group_cache[group_idx]
@@ -794,9 +794,9 @@ class GPTQ:
                             
                             log.debug(f"fast_loop2 DEBUG - Using cached group {group_idx} for {group_cols} columns")
                             
-                            # Only append one cached scale/zero for the entire group
-                            col_to_group_scale.append(cached['scale'])
-                            col_to_group_zero.append(cached['zero'])
+                            # Only append one cached scale/zero for the entire group - squeeze to remove the last dimension
+                            col_to_group_scale.append(cached['scale'].squeeze(-1))  # Shape: [64]
+                            col_to_group_zero.append(cached['zero'].squeeze(-1))    # Shape: [64]
                     
                     log.debug(f"fast_loop2 DEBUG - Total scales collected: {len(col_to_group_scale)}")
                     log.debug(f"fast_loop2 DEBUG - Total zeros collected: {len(col_to_group_zero)}")
