@@ -625,6 +625,7 @@ class GPTQ:
             
             # Use original heavy loop logic if we haven't reached fast_loop_start_block
             if i1 // blocksize < fast_loop_start_block:
+                log.debug(f"Using original loop for block with index {i1} {self.name}")
                 Q, Losses, W, scale, zero, now_idx = self._original_loop_block(
                     W, Q, Losses, Hinv, i1, i2, count, perm, groups, scale, zero, now_idx
                 )

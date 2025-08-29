@@ -77,6 +77,7 @@ def test_direct_gptq():
                 mock_hessian_inverse=False,
                 fast_loop=config['fast_loop'],
                 block_size=config['blocksize'],
+                fast_loop_start_block=2,
             )
             
             # Create GPTQ instance
