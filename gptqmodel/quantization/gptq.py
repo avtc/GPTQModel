@@ -462,6 +462,7 @@ class GPTQ:
                 Q = Q.to(device=DEVICE_0)
             except Exception as e:
                 log.warn(f"Failed to move Q from {Q.device.type}:{Q.device.index} to {DEVICE_0.type}:{DEVICE_0.index}, {e}")
+                # it works on second attempt usually
                 if Q.device != DEVICE_0:
                     try:
                         Q = Q.to(device=DEVICE_0)
