@@ -27,8 +27,12 @@ def test_direct_gptq():
     
     # Test configurations - compare fast_loop=True vs fast_loop=False
     test_configs = [
+        # Baseline test (same size)
         {"group_size": 8, "blocksize": 8, "fast_loop": True, "name": "Fast: group_size=8, blocksize=8 (baseline)"},
         {"group_size": 8, "blocksize": 8, "fast_loop": False, "name": "Original: group_size=8, blocksize=8 (baseline)"},
+        {"group_size": 4, "blocksize": 8, "fast_loop": True, "name": "Fast: group_size=4, blocksize=8"},
+        {"group_size": 8, "blocksize": 4, "fast_loop": True, "name": "Fast: group_size=8, blocksize=4"},
+        #{"group_size": 8, "blocksize": 8, "fast_loop": False, "name": "Original: group_size=8, blocksize=8 (baseline)"},
         # # Baseline test (same size)
         # {"group_size": 128, "blocksize": 128, "fast_loop": True, "name": "Fast: group_size=128, blocksize=128 (baseline)"},
         # {"group_size": 128, "blocksize": 128, "fast_loop": False, "name": "Original: group_size=128, blocksize=128 (baseline)"},
