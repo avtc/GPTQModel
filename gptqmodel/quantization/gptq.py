@@ -444,19 +444,37 @@ class GPTQ:
                                 maxq_val = 2 ** self.qcfg.bits - 1
                                 
                                 # Simple vectorized quantization for the entire block
+                                # Create scale and zero tensors that match the block structure
+                                # Each group gets its scale/zero applied to its columns in the block
+                                # Since block_size is a multiple of group_size, all groups are exactly equal
+                                block_scales_full = []
+                                block_zeros_full = []
+                                
+                                for group_idx in range(len(block_scales)):
+                                    # Repeat each group's scale/zero for all columns in that group
+                                    group_cols = self.qcfg.group_size
+                                    
+                                    # Repeat the scale/zero for each column in the group
+                                    block_scales_full.extend([block_scales[group_idx]] * group_cols)
+                                    block_zeros_full.extend([block_zeros[group_idx]] * group_cols)
+                                
+                                # Convert to tensors and reshape for broadcasting
+                                block_scales_full = torch.stack(block_scales_full).view(1, -1)  # Shape: (1, block_size)
+                                block_zeros_full = torch.stack(block_zeros_full).view(1, -1)  # Shape: (1, block_size)
+                                
                                 if self.qcfg.sym:
-                                    Q1 = block_scales * torch.clamp(
-                                        torch.round(W1 / block_scales),
+                                    Q1 = block_scales_full * torch.clamp(
+                                        torch.round(W1 / block_scales_full),
                                         -(maxq_val // 2),
                                         maxq_val // 2
                                     )
                                 else:
                                     quantized = torch.clamp(
-                                        torch.round(W1 / block_scales) + block_zeros,
+                                        torch.round(W1 / block_scales_full) + block_zeros_full,
                                         0,
                                         maxq_val
                                     )
-                                    Q1 = block_scales * (quantized - block_zeros)
+                                    Q1 = block_scales_full * (quantized - block_zeros_full)
                                 
                                 log.debug(f"Completed 6.{i1}.Simple vectorized quantization for aligned groups for {self.name} in {time.time() - start_tmp:.3f}s")
                             else:
