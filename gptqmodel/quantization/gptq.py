@@ -764,18 +764,23 @@ class GPTQ:
                                 'zero': self.quantizer.zero
                             }
                             
-                            # Add to global lists
+                            # Add to global lists only once per group
                             scale.append(self.quantizer.scale)
                             zero.append(self.quantizer.zero)
                             now_idx += 1
                             
-                            col_to_group_scale.append(self.quantizer.scale)
-                            col_to_group_zero.append(self.quantizer.zero)
+                            # Create scale/zero for each column in this group
+                            group_cols = min(group_end - group_start, count - i if group_idx == block_end_group else self.qcfg.group_size)
+                            for _ in range(group_cols):
+                                col_to_group_scale.append(self.quantizer.scale)
+                                col_to_group_zero.append(self.quantizer.zero)
                         else:
-                            # Use cached parameters
+                            # Use cached parameters for each column in this group
                             cached = group_cache[group_idx]
-                            col_to_group_scale.append(cached['scale'])
-                            col_to_group_zero.append(cached['zero'])
+                            group_cols = min(self.qcfg.group_size, count - i if group_idx == block_end_group else self.qcfg.group_size)
+                            for _ in range(group_cols):
+                                col_to_group_scale.append(cached['scale'])
+                                col_to_group_zero.append(cached['zero'])
                     
                     # Vectorized quantization for all columns in the block
                     if len(col_to_group_scale) > 0:
