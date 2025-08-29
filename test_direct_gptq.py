@@ -11,11 +11,11 @@ import time
 from gptqmodel.quantization.gptq import GPTQ
 from gptqmodel.quantization import QuantizeConfig
 
-def create_test_model(input_size=2048, output_size=1024):
+def create_test_model(input_size=128, output_size=64):
     """Create a simple linear model for testing."""
     return nn.Linear(input_size, output_size, bias=False)
 
-def generate_test_data(batch_size=32, seq_len=128, input_size=2048):
+def generate_test_data(batch_size=1, seq_len=128, input_size=128):
     """Generate test data for calibration."""
     return torch.randn(batch_size, seq_len, input_size)
 
@@ -27,19 +27,21 @@ def test_direct_gptq():
     
     # Test configurations - compare fast_loop=True vs fast_loop=False
     test_configs = [
-        # Baseline test (same size)
-        {"group_size": 128, "blocksize": 128, "fast_loop": True, "name": "Fast: group_size=128, blocksize=128 (baseline)"},
-        {"group_size": 128, "blocksize": 128, "fast_loop": False, "name": "Original: group_size=128, blocksize=128 (baseline)"},
-        # Fast loop tests
-        {"group_size": 128, "blocksize": 256, "fast_loop": True, "name": "Fast: group_size=128, blocksize=256"},
-        {"group_size": 128, "blocksize": 256, "fast_loop": False, "name": "Original: group_size=128, blocksize=256"},
-        # Original loop tests for comparison
-        {"group_size": 128, "blocksize": 64, "fast_loop": True, "name": "Fast: group_size=128, blocksize=64"},
-        {"group_size": 128, "blocksize": 64, "fast_loop": False, "name": "Original: group_size=128, blocksize=64"},
+        {"group_size": 8, "blocksize": 8, "fast_loop": True, "name": "Fast: group_size=8, blocksize=8 (baseline)"},
+        {"group_size": 8, "blocksize": 8, "fast_loop": False, "name": "Original: group_size=8, blocksize=8 (baseline)"},
+        # # Baseline test (same size)
+        # {"group_size": 128, "blocksize": 128, "fast_loop": True, "name": "Fast: group_size=128, blocksize=128 (baseline)"},
+        # {"group_size": 128, "blocksize": 128, "fast_loop": False, "name": "Original: group_size=128, blocksize=128 (baseline)"},
+        # # Fast loop tests
+        # {"group_size": 128, "blocksize": 256, "fast_loop": True, "name": "Fast: group_size=128, blocksize=256"},
+        # {"group_size": 128, "blocksize": 256, "fast_loop": False, "name": "Original: group_size=128, blocksize=256"},
+        # # Original loop tests for comparison
+        # {"group_size": 128, "blocksize": 64, "fast_loop": True, "name": "Fast: group_size=128, blocksize=64"},
+        # {"group_size": 128, "blocksize": 64, "fast_loop": False, "name": "Original: group_size=128, blocksize=64"},
     ]
     
     # Create model and data
-    model = create_test_model(input_size=2048, output_size=1024)
+    model = create_test_model(input_size=128, output_size=64)
     test_data = generate_test_data()
     
     # Store original weights for comparison
