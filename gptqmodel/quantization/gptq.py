@@ -446,33 +446,52 @@ class GPTQ:
                             
                             # Create mask for columns that belong to computed groups
                             group_mask = torch.zeros(count, dtype=torch.bool, device=W1.device)
+                            group_to_block_map = []  # Maps group index to block column indices
+                            
                             # Mark all columns in each group as True, not just the starting index
-                            for idx in global_indices:
-                                group_start = idx
+                            for group_idx, block_col_idx in enumerate(global_indices):
+                                group_start = block_col_idx
                                 group_end = min(group_start + self.qcfg.group_size, count)
                                 group_mask[group_start:group_end] = True
+                                group_to_block_map.append(list(range(group_start, group_end)))
+                            
+                            # Get the grouped columns for vectorized processing
+                            grouped_cols = W1[:, group_mask]
+                            
+                            # Reshape group parameters to match the actual number of grouped columns
+                            # Each column in group_mask should have its corresponding scale and zero
+                            actual_grouped_scales = []
+                            actual_grouped_zeros = []
+                            
+                            for group_idx, block_cols in enumerate(group_to_block_map):
+                                for _ in block_cols:
+                                    actual_grouped_scales.append(block_scales[group_idx])
+                                    actual_grouped_zeros.append(block_zeros[group_idx])
+                            
+                            actual_grouped_scales = torch.stack(actual_grouped_scales).view(-1, 1)
+                            actual_grouped_zeros = torch.stack(actual_grouped_zeros).view(-1, 1)
                             
                             # Vectorized quantization for grouped columns
                             if self.qcfg.sym:
                                 # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
-                                grouped_cols = block_scales * torch.clamp(
-                                    torch.round(W1[:, group_mask] / block_scales),
+                                quantized_result = actual_grouped_scales * torch.clamp(
+                                    torch.round(grouped_cols / actual_grouped_scales),
                                     -(maxq_val // 2),
                                     maxq_val // 2
                                 )
                             else:
                                 # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
                                 quantized = torch.clamp(
-                                    torch.round(W1[:, group_mask] / block_scales) + block_zeros,
+                                    torch.round(grouped_cols / actual_grouped_scales) + actual_grouped_zeros,
                                     0,
                                     maxq_val
                                 )
-                                grouped_cols = block_scales * (quantized - block_zeros)
+                                quantized_result = actual_grouped_scales * (quantized - actual_grouped_zeros)
+                            
+                            # Assign quantized values to correct positions
+                            Q1[:, group_mask] = quantized_result
                             
                             log.debug(f"Completed 7.{i1}.Vectorized quantization for grouped columns for {self.name} in {time.time() - start_tmp:.3f}s")
-
-                            # Assign quantized values to correct positions
-                            Q1[:, group_mask] = grouped_cols
                             
                             start_tmp = time.time()
 
