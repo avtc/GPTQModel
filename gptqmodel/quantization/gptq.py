@@ -410,110 +410,82 @@ class GPTQ:
                 if Hinv is not None:
                     Hinv1 = Hinv[i1:i2, i1:i2]
 
-                # Handle group quantization parameters efficiently with reduced memory allocations
+                # Handle group quantization parameters efficiently with proper group/block handling
                 if self.qcfg.group_size != -1:
                     if not self.qcfg.static_groups:
-                        # Pre-compute all groups in the current block to avoid repeated find_params calls
-                        start_tmp = time.time()
-
-                        block_groups = []
-                        global_indices = []
+                        # Check if we can use simple vectorized processing (when block_size is multiple of group_size)
+                        can_vectorize_simple = (blocksize % self.qcfg.group_size == 0)
                         
-                        # Determine which groups are in the current block
-                        for i in range(count):
-                            col_idx = i1 + i  # Global column index
+                        if can_vectorize_simple:
+                            # Use simple vectorized processing for aligned group/block sizes
+                            start_tmp = time.time()
                             
-                            # Only compute scales/zeros for each unique group in this block
-                            if i == 0 or (col_idx % self.qcfg.group_size == 0):
-                                group_end = min(col_idx + self.qcfg.group_size, self.columns)
-                                self.quantizer.find_params(W[:, col_idx: group_end], weight=True)
-                                block_groups.append((self.quantizer.scale, self.quantizer.zero))
-                                global_indices.append(i)
-                                # Also add to the global scale/zero lists for later use
+                            # Compute scales/zeros for each group in this block
+                            num_groups_in_block = min(blocksize // self.qcfg.group_size,
+                                                    (self.columns - i1 + self.qcfg.group_size - 1) // self.qcfg.group_size)
+                            
+                            block_scales = []
+                            block_zeros = []
+                            
+                            for group_idx in range(num_groups_in_block):
+                                global_group_start = i1 + group_idx * self.qcfg.group_size
+                                global_group_end = min(global_group_start + self.qcfg.group_size, self.columns)
+                                self.quantizer.find_params(W[:, global_group_start:global_group_end], weight=True)
+                                block_scales.append(self.quantizer.scale)
+                                block_zeros.append(self.quantizer.zero)
+                                # Also add to global lists
                                 scale.append(self.quantizer.scale)
                                 zero.append(self.quantizer.zero)
-                        
-                        log.debug(f"Completed 6.{i1}.compute scales/zeros for {self.name} in {time.time() - start_tmp:.3f}s")
-
-                        # Vectorized quantization using pre-computed group parameters
-                        if len(block_groups) > 0:
-                            start_tmp = time.time()
-
-                            # Stack all group parameters for vectorized operations
-                            block_scales = torch.stack([g[0] for g in block_groups]).view(-1, 1)
-                            block_zeros = torch.stack([g[1] for g in block_groups]).view(-1, 1)
-                            maxq_val = 2 ** self.qcfg.bits - 1
                             
-                            # Create mask for columns that belong to computed groups
-                            group_mask = torch.zeros(count, dtype=torch.bool, device=W1.device)
-                            group_to_block_map = []  # Maps group index to block column indices
-                            
-                            # Mark all columns in each group as True, not just the starting index
-                            for group_idx, block_col_idx in enumerate(global_indices):
-                                group_start = block_col_idx
-                                group_end = min(group_start + self.qcfg.group_size, count)
-                                group_mask[group_start:group_end] = True
-                                group_to_block_map.append(list(range(group_start, group_end)))
-                            
-                            # Get the grouped columns for vectorized processing
-                            grouped_cols = W1[:, group_mask]  # Shape: (rows, num_grouped_cols)
-                            
-                            # Create proper scale and zero tensors for each grouped column
-                            # Each column belongs to a specific group and should use that group's parameters
-                            group_assignments = []
-                            for group_idx, block_cols in enumerate(group_to_block_map):
-                                group_assignments.extend([group_idx] * len(block_cols))
-                            
-                            # Create scale and zero tensors that match the grouped columns
-                            actual_grouped_scales = block_scales[group_assignments].view(-1, 1)  # Shape: (num_grouped_cols, 1)
-                            actual_grouped_zeros = block_zeros[group_assignments].view(-1, 1)  # Shape: (num_grouped_cols, 1)
-                            
-                            # Vectorized quantization for grouped columns
-                            if self.qcfg.sym:
-                                # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
-                                quantized_result = actual_grouped_scales * torch.clamp(
-                                    torch.round(grouped_cols / actual_grouped_scales),
-                                    -(maxq_val // 2),
-                                    maxq_val // 2
-                                )
-                            else:
-                                # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
-                                quantized = torch.clamp(
-                                    torch.round(grouped_cols / actual_grouped_scales) + actual_grouped_zeros,
-                                    0,
-                                    maxq_val
-                                )
-                                quantized_result = actual_grouped_scales * (quantized - actual_grouped_zeros)
-                            
-                            # Assign quantized values to correct positions
-                            Q1[:, group_mask] = quantized_result
-                            
-                            log.debug(f"Completed 7.{i1}.Vectorized quantization for grouped columns for {self.name} in {time.time() - start_tmp:.3f}s")
-                            
-                            start_tmp = time.time()
-
-                            # Fill remaining columns with optimized individual quantization
-                            remaining_cols = ~group_mask
-                            if torch.any(remaining_cols):
-                                # Get indices of remaining columns
-                                remaining_indices = torch.where(remaining_cols)[0]
+                            # Stack group parameters and process all columns in block
+                            if len(block_scales) > 0:
+                                block_scales = torch.stack(block_scales).view(-1, 1)
+                                block_zeros = torch.stack(block_zeros).view(-1, 1)
+                                maxq_val = 2 ** self.qcfg.bits - 1
                                 
-                                # Process remaining columns with optimized loop
-                                # This maintains compatibility while reducing overhead
-                                for i in remaining_indices:
+                                # Simple vectorized quantization for the entire block
+                                if self.qcfg.sym:
+                                    Q1 = block_scales * torch.clamp(
+                                        torch.round(W1 / block_scales),
+                                        -(maxq_val // 2),
+                                        maxq_val // 2
+                                    )
+                                else:
+                                    quantized = torch.clamp(
+                                        torch.round(W1 / block_scales) + block_zeros,
+                                        0,
+                                        maxq_val
+                                    )
+                                    Q1 = block_scales * (quantized - block_zeros)
+                                
+                                log.debug(f"Completed 6.{i1}.Simple vectorized quantization for aligned groups for {self.name} in {time.time() - start_tmp:.3f}s")
+                            else:
+                                # Fallback to individual processing
+                                for i in range(count):
                                     w = W1[:, i]
                                     q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                                     Q1[:, i] = q
-
-                            log.debug(f"Completed 8.{i1}.Fill remaining columns with optimized batch quantization for {self.name} in {time.time() - start_tmp:.3f}s")
-
                         else:
-                            # Fallback to optimized individual quantization if no valid groups found
-                            # Process all columns with optimized loop for better performance
+                            # Use individual column processing for complex group/block relationships
+                            start_tmp = time.time()
+                            
                             for i in range(count):
+                                col_idx = i1 + i  # Global column index
+                                
+                                # Only compute scales/zeros for each unique group
+                                if i == 0 or (col_idx % self.qcfg.group_size == 0):
+                                    group_end = min(col_idx + self.qcfg.group_size, self.columns)
+                                    self.quantizer.find_params(W[:, col_idx: group_end], weight=True)
+                                    # Also add to the global scale/zero lists for later use
+                                    scale.append(self.quantizer.scale)
+                                    zero.append(self.quantizer.zero)
+                                
+                                # Get the column and quantize it
                                 w = W1[:, i]
                                 q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                                 Q1[:, i] = q
+                            
+                            log.debug(f"Completed 6.{i1}.Individual quantization for complex groups for {self.name} in {time.time() - start_tmp:.3f}s")
                     else:
                         # Static groups - optimized individual processing
                         # Process columns with optimized loop while maintaining group logic
