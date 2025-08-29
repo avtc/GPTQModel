@@ -758,29 +758,44 @@ class GPTQ:
                             
                             self.quantizer.find_params(W[:, group_start:group_end], weight=True)
                             
-                            # Store parameters for this group
+                            # Store parameters for this group - ensure we store scalar values
+                            scale_val = self.quantizer.scale
+                            zero_val = self.quantizer.zero
+                            if hasattr(scale_val, 'item'):
+                                scale_val = scale_val.item()
+                            if hasattr(zero_val, 'item'):
+                                zero_val = zero_val.item()
+                                
                             group_cache[group_idx] = {
-                                'scale': self.quantizer.scale,
-                                'zero': self.quantizer.zero
+                                'scale': scale_val,
+                                'zero': zero_val
                             }
                             
-                            # Add to global lists only once per group
-                            scale.append(self.quantizer.scale)
-                            zero.append(self.quantizer.zero)
+                            # Add to global lists only once per group - store scalar values
+                            scale.append(scale_val)
+                            zero.append(zero_val)
                             now_idx += 1
                             
                             # Create scale/zero for each column in this group
                             group_cols = min(group_end - group_start, count - i if group_idx == block_end_group else self.qcfg.group_size)
                             for _ in range(group_cols):
-                                col_to_group_scale.append(self.quantizer.scale)
-                                col_to_group_zero.append(self.quantizer.zero)
+                                # Ensure we're appending the actual scalar values, not tensors
+                                col_to_group_scale.append(self.quantizer.scale.item() if hasattr(self.quantizer.scale, 'item') else self.quantizer.scale)
+                                col_to_group_zero.append(self.quantizer.zero.item() if hasattr(self.quantizer.zero, 'item') else self.quantizer.zero)
                         else:
                             # Use cached parameters for each column in this group
                             cached = group_cache[group_idx]
                             group_cols = min(self.qcfg.group_size, count - i if group_idx == block_end_group else self.qcfg.group_size)
                             for _ in range(group_cols):
-                                col_to_group_scale.append(cached['scale'])
-                                col_to_group_zero.append(cached['zero'])
+                                # Ensure we're appending the actual scalar values, not tensors
+                                scale_val = cached['scale']
+                                zero_val = cached['zero']
+                                if hasattr(scale_val, 'item'):
+                                    scale_val = scale_val.item()
+                                if hasattr(zero_val, 'item'):
+                                    zero_val = zero_val.item()
+                                col_to_group_scale.append(scale_val)
+                                col_to_group_zero.append(zero_val)
                     
                     # Vectorized quantization for all columns in the block
                     if len(col_to_group_scale) > 0:
