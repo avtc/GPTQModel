@@ -739,35 +739,35 @@ class GPTQ:
             if self.qcfg.group_size != -1:
                 if not self.qcfg.static_groups:
                     # Pre-compute group mappings for the entire block
-                    block_start_group = i1 // self.qcfg.group_size
-                    block_end_group = (i2 - 1) // self.qcfg.group_size
+                    #block_start_group = i1 // self.qcfg.group_size
+                    #block_end_group = (i2 - 1) // self.qcfg.group_size
                     
                     # Cache group quantization parameters to avoid repeated calls
                     group_cache = {}
                     col_to_group_scale = []
                     col_to_group_zero = []
                     
-                    log.debug(f"fast_loop2 DEBUG - Processing block from {i1} to {i2}, count={count}")
-                    log.debug(f"fast_loop2 DEBUG - Total columns: {self.columns}, group_size: {self.qcfg.group_size}")
+                    #log.debug(f"fast_loop2 DEBUG - Processing block from {i1} to {i2}, count={count}")
+                    #log.debug(f"fast_loop2 DEBUG - Total columns: {self.columns}, group_size: {self.qcfg.group_size}")
                     
                     for i in range(count):
                         col_idx = i1 + i
                         group_idx = col_idx // self.qcfg.group_size
                         
-                        log.debug(f"fast_loop2 DEBUG - Column {col_idx}, group {group_idx}")
+                        #log.debug(f"fast_loop2 DEBUG - Column {col_idx}, group {group_idx}")
                         
                         if group_idx not in group_cache:
                             # First time processing this group - compute parameters
                             group_start = group_idx * self.qcfg.group_size
                             group_end = min(group_start + self.qcfg.group_size, self.columns)
                             
-                            log.debug(f"fast_loop2 DEBUG - New group {group_idx}: range {group_start} to {group_end}")
+                            #log.debug(f"fast_loop2 DEBUG - New group {group_idx}: range {group_start} to {group_end}")
                             
                             self.quantizer.find_params(W[:, group_start:group_end], weight=True)
                             
                             # DEBUG: Log what the quantizer returns
-                            log.debug(f"fast_loop2 DEBUG - quantizer.scale shape: {self.quantizer.scale.shape if hasattr(self.quantizer.scale, 'shape') else 'no shape'}")
-                            log.debug(f"fast_loop2 DEBUG - quantizer.zero shape: {self.quantizer.zero.shape if hasattr(self.quantizer.zero, 'shape') else 'no shape'}")
+                            #log.debug(f"fast_loop2 DEBUG - quantizer.scale shape: {self.quantizer.scale.shape if hasattr(self.quantizer.scale, 'shape') else 'no shape'}")
+                            #log.debug(f"fast_loop2 DEBUG - quantizer.zero shape: {self.quantizer.zero.shape if hasattr(self.quantizer.zero, 'shape') else 'no shape'}")
                             
                             # Store parameters for this group - keep the original tensor shapes
                             group_cache[group_idx] = {
@@ -781,8 +781,8 @@ class GPTQ:
                             now_idx += 1
                             
                             # Create scale/zero for this group (only one per group, not per column)
-                            group_cols = min(group_end - group_start, count - i if group_idx == block_end_group else self.qcfg.group_size)
-                            log.debug(f"fast_loop2 DEBUG - Adding 1 scale/zero for group {group_idx} that covers {group_cols} columns")
+                            #group_cols = min(group_end - group_start, count - i if group_idx == block_end_group else self.qcfg.group_size)
+                            #log.debug(f"fast_loop2 DEBUG - Adding 1 scale/zero for group {group_idx} that covers {group_cols} columns")
                             
                             # Only append one scale/zero for the entire group - squeeze to remove the last dimension
                             col_to_group_scale.append(self.quantizer.scale.squeeze(-1))  # Shape: [64]
@@ -790,20 +790,20 @@ class GPTQ:
                         else:
                             # Use cached parameters for this group
                             cached = group_cache[group_idx]
-                            group_cols = min(self.qcfg.group_size, count - i if group_idx == block_end_group else self.qcfg.group_size)
+                            #group_cols = min(self.qcfg.group_size, count - i if group_idx == block_end_group else self.qcfg.group_size)
                             
-                            log.debug(f"fast_loop2 DEBUG - Using cached group {group_idx} for {group_cols} columns")
+                            #log.debug(f"fast_loop2 DEBUG - Using cached group {group_idx} for {group_cols} columns")
                             
                             # Only append one cached scale/zero for the entire group - squeeze to remove the last dimension
                             col_to_group_scale.append(cached['scale'].squeeze(-1))  # Shape: [64]
                             col_to_group_zero.append(cached['zero'].squeeze(-1))    # Shape: [64]
                     
-                    log.debug(f"fast_loop2 DEBUG - Total scales collected: {len(col_to_group_scale)}")
-                    log.debug(f"fast_loop2 DEBUG - Total zeros collected: {len(col_to_group_zero)}")
+                    #log.debug(f"fast_loop2 DEBUG - Total scales collected: {len(col_to_group_scale)}")
+                    #log.debug(f"fast_loop2 DEBUG - Total zeros collected: {len(col_to_group_zero)}")
                     
                     # Vectorized quantization for all columns in the block
                     if len(col_to_group_scale) > 0:
-                        start_tmp = time.time()
+                        #start_tmp = time.time()
                         
                         # Stack all group parameters for vectorized operations
                         block_scales = torch.stack(col_to_group_scale)  # Shape: (count, 1024, 1)
@@ -811,18 +811,18 @@ class GPTQ:
                         maxq_val = 2 ** self.qcfg.bits - 1
                         
                         # DEBUG: Log tensor shapes for debugging
-                        log.debug(f"fast_loop2 DEBUG - W1 shape: {W1.shape}")
-                        log.debug(f"fast_loop2 DEBUG - block_scales shape before view: {block_scales.shape}")
-                        log.debug(f"fast_loop2 DEBUG - block_zeros shape before view: {block_zeros.shape}")
-                        log.debug(f"fast_loop2 DEBUG - count: {count}, rows: {W1.shape[0]}")
+                        #log.debug(f"fast_loop2 DEBUG - W1 shape: {W1.shape}")
+                        #log.debug(f"fast_loop2 DEBUG - block_scales shape before view: {block_scales.shape}")
+                        #log.debug(f"fast_loop2 DEBUG - block_zeros shape before view: {block_zeros.shape}")
+                        #log.debug(f"fast_loop2 DEBUG - count: {count}, rows: {W1.shape[0]}")
                         
                         # We need to reshape from (count, rows) to (rows, count) for proper broadcasting with W1
                         # W1 has shape (rows, count), so we need scales/zeros with shape (rows, count)
                         block_scales = block_scales.T  # Shape: (64, 8)
                         block_zeros = block_zeros.T    # Shape: (64, 8)
                         
-                        log.debug(f"fast_loop2 DEBUG - block_scales shape after view: {block_scales.shape}")
-                        log.debug(f"fast_loop2 DEBUG - block_zeros shape after view: {block_zeros.shape}")
+                        #log.debug(f"fast_loop2 DEBUG - block_scales shape after view: {block_scales.shape}")
+                        #log.debug(f"fast_loop2 DEBUG - block_zeros shape after view: {block_zeros.shape}")
                         
                         # Vectorized quantization following the working pattern
                         if self.qcfg.sym:
@@ -833,7 +833,7 @@ class GPTQ:
                                 maxq_val // 2
                             )
                         else:
-                            log.debug(f"fast_loop2 DEBUG - About to perform quantized calculation")
+                            #log.debug(f"fast_loop2 DEBUG - About to perform quantized calculation")
                             # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
                             quantized = torch.clamp(
                                 torch.round(W1 / block_scales) + block_zeros,
@@ -841,9 +841,9 @@ class GPTQ:
                                 maxq_val
                             )
                             Q1 = block_scales * (quantized - block_zeros)
-                            log.debug(f"fast_loop2 DEBUG - Quantized calculation completed")
+                            #log.debug(f"fast_loop2 DEBUG - Quantized calculation completed")
                         
-                        log.debug(f"fast_loop2 DEBUG - Completed vectorized quantization for {self.name} in {time.time() - start_tmp:.3f}s")
+                        #log.debug(f"fast_loop2 DEBUG - Completed vectorized quantization for {self.name} in {time.time() - start_tmp:.3f}s")
                 else:
                     # Static groups - optimized processing
                     for i in range(count):
@@ -869,58 +869,58 @@ class GPTQ:
                 W_cols = W1.T  # Transpose for column-wise operations
                 Q_cols = Q1.T
                 
-                log.debug(f"fast_loop2 DEBUG - W_cols shape: {W_cols.shape}, Q_cols shape: {Q_cols.shape}")
+                #log.debug(f"fast_loop2 DEBUG - W_cols shape: {W_cols.shape}, Q_cols shape: {Q_cols.shape}")
                 
                 # Compute differences and errors for all columns
                 diff = W_cols - Q_cols
-                log.debug(f"fast_loop2 DEBUG - diff shape: {diff.shape}")
+                #log.debug(f"fast_loop2 DEBUG - diff shape: {diff.shape}")
                 
                 # Use pre-computed inverse diagonal values
-                if i1 < len(inv_diag):
-                    block_inv_diag = inv_diag[i1:i2].view(-1, 1)
-                    log.debug(f"fast_loop2 DEBUG - block_inv_diag shape: {block_inv_diag.shape}")
-                    errors = diff * block_inv_diag
-                    log.debug(f"fast_loop2 DEBUG - errors shape: {errors.shape}")
+                assert i1 < len(inv_diag), f"Block index i1={i1} exceeds inverse diagonal length {len(inv_diag)}. This indicates a logic error in block processing."
+                block_inv_diag = inv_diag[i1:i2].view(-1, 1)
+                #log.debug(f"fast_loop2 DEBUG - block_inv_diag shape: {block_inv_diag.shape}")
+                errors = diff * block_inv_diag
+                #log.debug(f"fast_loop2 DEBUG - errors shape: {errors.shape}")
+                
+                # Vectorized loss computation
+                Losses1 = (diff * errors).T
+                #log.debug(f"fast_loop2 DEBUG - Losses1 shape: {Losses1.shape}")
+                
+                # Store errors for final update - ensure correct shape
+                # In the original loop, Err1 accumulates errors column by column
+                # Here we need to make sure the shape is compatible for matrix multiplication
+                Err1 = errors.T  # Should be (rows, count) = (64, 8)
+                #log.debug(f"fast_loop2 DEBUG - Err1 shape: {Err1.shape}, Hinv1 shape: {Hinv1.shape}")
+                
+                # Update remaining weights - simple vectorized approach
+                if i2 < self.columns:
+                    #log.debug(f"fast_loop2 DEBUG - W[:, i2:] shape: {W[:, i2:].shape}")
+                    #log.debug(f"fast_loop2 DEBUG - Err1 shape: {Err1.shape}")
+                    #log.debug(f"fast_loop2 DEBUG - Hinv1 shape: {Hinv1.shape}")
                     
-                    # Vectorized loss computation
-                    Losses1 = (diff * errors).T
-                    log.debug(f"fast_loop2 DEBUG - Losses1 shape: {Losses1.shape}")
+                    # Since we're processing all columns in the block independently and simultaneously,
+                    # we can use a simple matrix multiplication
+                    # Err1 has shape (rows, blocksize), Hinv1 has shape (blocksize, blocksize)
+                    # The result will have shape (rows, blocksize), which we can broadcast to W[:, i2:]
+                    error_update = Err1 @ Hinv1  # Shape: (rows, blocksize)
+                    #log.debug(f"fast_loop2 DEBUG - error_update shape: {error_update.shape}")
                     
-                    # Store errors for final update - ensure correct shape
-                    # In the original loop, Err1 accumulates errors column by column
-                    # Here we need to make sure the shape is compatible for matrix multiplication
-                    Err1 = errors.T  # Should be (rows, count) = (64, 8)
-                    log.debug(f"fast_loop2 DEBUG - Err1 shape: {Err1.shape}, Hinv1 shape: {Hinv1.shape}")
+                    # We need to broadcast this to all remaining columns
+                    # Since each column in the block affects all remaining columns equally,
+                    # we repeat the error update for each remaining column
+                    remaining_columns = self.columns - i2
+                    #log.debug(f"fast_loop2 DEBUG - remaining_columns: {remaining_columns}")
                     
-                    # Update remaining weights - simple vectorized approach
-                    if i2 < self.columns:
-                        log.debug(f"fast_loop2 DEBUG - W[:, i2:] shape: {W[:, i2:].shape}")
-                        log.debug(f"fast_loop2 DEBUG - Err1 shape: {Err1.shape}")
-                        log.debug(f"fast_loop2 DEBUG - Hinv1 shape: {Hinv1.shape}")
-                        
-                        # Since we're processing all columns in the block independently and simultaneously,
-                        # we can use a simple matrix multiplication
-                        # Err1 has shape (rows, blocksize), Hinv1 has shape (blocksize, blocksize)
-                        # The result will have shape (rows, blocksize), which we can broadcast to W[:, i2:]
-                        error_update = Err1 @ Hinv1  # Shape: (rows, blocksize)
-                        log.debug(f"fast_loop2 DEBUG - error_update shape: {error_update.shape}")
-                        
-                        # We need to broadcast this to all remaining columns
-                        # Since each column in the block affects all remaining columns equally,
-                        # we repeat the error update for each remaining column
-                        remaining_columns = self.columns - i2
-                        log.debug(f"fast_loop2 DEBUG - remaining_columns: {remaining_columns}")
-                        
-                        # Repeat the error update to match the number of remaining columns
-                        if remaining_columns > count:
-                            # We need to repeat the error update
-                            repeats = (remaining_columns + count - 1) // count
-                            error_update_repeated = error_update.repeat(1, repeats)[:, :remaining_columns]
-                        else:
-                            error_update_repeated = error_update[:, :remaining_columns]
-                        
-                        log.debug(f"fast_loop2 DEBUG - error_update_repeated shape: {error_update_repeated.shape}")
-                        W[:, i2:] -= error_update_repeated
+                    # Repeat the error update to match the number of remaining columns
+                    if remaining_columns > count:
+                        # We need to repeat the error update
+                        repeats = (remaining_columns + count - 1) // count
+                        error_update_repeated = error_update.repeat(1, repeats)[:, :remaining_columns]
+                    else:
+                        error_update_repeated = error_update[:, :remaining_columns]
+                    
+                    #log.debug(f"fast_loop2 DEBUG - error_update_repeated shape: {error_update_repeated.shape}")
+                    W[:, i2:] -= error_update_repeated
             
             # Store results
             Q[:, i1:i2] = Q1
