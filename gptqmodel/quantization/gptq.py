@@ -365,6 +365,9 @@ class GPTQ:
 
         start_loop = time.time()
 
+        perm = None
+        invperm = None
+        
         if self.qcfg.desc_act:
             start_tmp = time.time()
 
