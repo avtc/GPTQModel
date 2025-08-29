@@ -222,6 +222,7 @@ class QuantizeConfig():
     # can produce quants of slighlty less quality but much faster (at least in 8 bit)
     mock_hessian_inverse: bool = field(default=False, metadata={"help": "Use simplified hessian inverse (identity matrix), v1, experimental, use with fast_loop for MoE models"})
     fast_loop: bool = field(default=False, metadata={"help": "Optimized version of quantization loop, v1, experimental"})
+    fast_loop_start_block: int = field(default=0, metadata={"help": "Use original GPTQ method to quantize first blocks and only then use fast_loop"})
     
     # Block size for GPTQ quantization (default: 128)
     # Controls the number of columns processed in each block during quantization

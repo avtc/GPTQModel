@@ -367,7 +367,6 @@ class GPTQ:
         start_loop = time.time()
 
         perm = None
-        invperm = None
         
         if self.qcfg.desc_act:
             start_tmp = time.time()
@@ -398,57 +397,16 @@ class GPTQ:
         Hinv, damp = self.hessian_inverse(H)
         
         if self.qcfg.fast_loop:
-            Q, Losses, W, scale, zero, now_idx = self.fast_loop(W, Q, Losses, Hinv, blocksize, perm, invperm, groups, scale, zero, now_idx)
+            Q, Losses, W, scale, zero, now_idx = self._fast_loop(W, Q, Losses, Hinv, blocksize, perm, groups, scale, zero, now_idx)
         else:
             # Original heavy loop for normal quantization
             for i1 in range(0, self.columns, blocksize):
                 i2 = min(i1 + blocksize, self.columns)
                 count = i2 - i1
-
-                W1 = W[:, i1:i2].clone()
-                Q1 = torch.zeros_like(W1)
-                Err1 = torch.zeros_like(W1)
-                Losses1 = torch.zeros_like(W1)
-
-                if Hinv is not None:
-                    Hinv1 = Hinv[i1:i2, i1:i2]
-
-                for i in range(count):
-                    w = W1[:, i]
-                    if Hinv is not None:
-                        d = Hinv1[i, i]
-
-                    if self.qcfg.group_size != -1:
-                        if not self.qcfg.static_groups:
-                            # Only compute scales/zeros when we're at the start of a new group
-                            if (i1 + i) % self.qcfg.group_size == 0:
-                                group_end = min(i1 + i + self.qcfg.group_size, self.columns)
-                                self.quantizer.find_params(W[:, (i1 + i):group_end], weight=True)
-
-                            # Add scale/zero to global list when we complete a group
-                            if ((i1 + i) // self.qcfg.group_size) - now_idx == -1:
-                                scale.append(self.quantizer.scale)
-                                zero.append(self.quantizer.zero)
-                                now_idx += 1
-                        else:
-                            idx = i1 + i
-                            if self.qcfg.desc_act:
-                                idx = perm[idx]
-
-                            self.quantizer = groups[idx // self.qcfg.group_size]
-
-                    q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
-                    Q1[:, i] = q
-                    if Hinv is not None:
-                        Losses1[:, i] = (w - q) ** 2 / d**2
-                        err1 = (w - q) / d
-                        W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
-                        Err1[:, i] = err1
-
-                Q[:, i1:i2] = Q1
-                if Hinv is not None:
-                    Losses[:, i1:i2] = Losses1 / 2
-                    W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
+                
+                Q, Losses, W, scale, zero, now_idx = self._original_loop_block(
+                    W, Q, Losses, Hinv, i1, i2, count, perm, groups, scale, zero, now_idx
+                )
 
         log.debug(f"Completed Loop for {self.name} in {time.time() - start_loop:.3f}s")
 
@@ -529,7 +487,89 @@ class GPTQ:
 
         return Q, scale, zero, g_idx, duration, avg_loss, damp, self.nsamples
 
-    def fast_loop(
+    def _original_loop_block(
+        self,
+        W: torch.Tensor,
+        Q: torch.Tensor,
+        Losses: torch.Tensor,
+        Hinv: torch.Tensor,
+        i1: int,
+        i2: int,
+        count: int,
+        perm: Optional[torch.Tensor] = None,
+        groups: Optional[list] = None,
+        scale: Optional[list] = None,
+        zero: Optional[list] = None,
+        now_idx: int = 1,
+    ):
+        """
+        Process a single block using the original heavy loop logic.
+        
+        Args:
+            W: Weight matrix to quantize
+            Q: Output quantized weight matrix
+            Losses: Output loss matrix
+            Hinv: Hessian inverse matrix
+            i1: Starting index of the block
+            i2: Ending index of the block
+            count: Number of columns in the block
+            perm: Optional permutation for desc_act
+            groups: Optional list of quantizers for static groups
+            scale: List to store scale values
+            zero: List to store zero values
+            now_idx: Current index for group tracking
+            
+        Returns:
+            Updated Q, Losses, W, scale, zero, now_idx for this block
+        """
+        W1 = W[:, i1:i2].clone()
+        Q1 = torch.zeros_like(W1)
+        Err1 = torch.zeros_like(W1)
+        Losses1 = torch.zeros_like(W1)
+
+        if Hinv is not None:
+            Hinv1 = Hinv[i1:i2, i1:i2]
+
+        for i in range(count):
+            w = W1[:, i]
+            if Hinv is not None:
+                d = Hinv1[i, i]
+
+            if self.qcfg.group_size != -1:
+                if not self.qcfg.static_groups:
+                    # Only compute scales/zeros when we're at the start of a new group
+                    if (i1 + i) % self.qcfg.group_size == 0:
+                        group_end = min(i1 + i + self.qcfg.group_size, self.columns)
+                        self.quantizer.find_params(W[:, (i1 + i):group_end], weight=True)
+
+                    # Add scale/zero to global list when we complete a group
+                    if ((i1 + i) // self.qcfg.group_size) - now_idx == -1:
+                        scale.append(self.quantizer.scale)
+                        zero.append(self.quantizer.zero)
+                        now_idx += 1
+                else:
+                    idx = i1 + i
+                    if self.qcfg.desc_act:
+                        idx = perm[idx]
+
+                    self.quantizer = groups[idx // self.qcfg.group_size]
+
+            q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+            Q1[:, i] = q
+            if Hinv is not None:
+                Losses1[:, i] = (w - q) ** 2 / d**2
+                err1 = (w - q) / d
+                W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
+                Err1[:, i] = err1
+
+        Q[:, i1:i2] = Q1
+        if Hinv is not None:
+            Losses[:, i1:i2] = Losses1 / 2
+            W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
+        
+        return Q, Losses, W, scale, zero, now_idx
+
+    def _fast_loop(
         self,
         W: torch.Tensor,
         Q: torch.Tensor,
@@ -537,7 +577,6 @@ class GPTQ:
         Hinv: torch.Tensor,
         blocksize: int,
         perm: Optional[torch.Tensor] = None,
-        invperm: Optional[torch.Tensor] = None,
         groups: Optional[list] = None,
         scale: Optional[list] = None,
         zero: Optional[list] = None,
@@ -546,6 +585,7 @@ class GPTQ:
         """
         Optimized fast loop implementation with improved memory efficiency and vectorization.
         Based on the original heavy loop but with significant performance optimizations.
+        Uses original heavy loop logic until fast_loop_start_block, then switches to fast loop.
         
         Args:
             W: Weight matrix to quantize
@@ -554,7 +594,6 @@ class GPTQ:
             Hinv: Hessian inverse matrix
             blocksize: Size of processing blocks
             perm: Optional permutation for desc_act
-            invperm: Optional inverse permutation for desc_act
             groups: Optional list of quantizers for static groups
             scale: List to store scale values
             zero: List to store zero values
@@ -572,7 +611,10 @@ class GPTQ:
         if Hinv is not None:
             Hinv = Hinv.to(device=W.device)
         
-        # Pre-compute diagonal values for error computation
+        # Get the fast_loop_start_block from config
+        fast_loop_start_block = self.qcfg.fast_loop_start_block
+        
+        # Pre-compute diagonal values for error computation (needed for fast loop)
         if Hinv is not None:
             diag_vals = torch.diag(Hinv)
             inv_diag = 1.0 / diag_vals
@@ -581,138 +623,142 @@ class GPTQ:
             i2 = min(i1 + blocksize, self.columns)
             count = i2 - i1
             
-            # Clone only the current block to reduce memory usage
-            W1 = W[:, i1:i2].clone()
-            Q1 = torch.zeros_like(W1)
-            Losses1 = torch.zeros_like(W1)
-            
-            if Hinv is not None:
-                Hinv1 = Hinv[i1:i2, i1:i2]
-            
-            # Optimized group quantization with pre-computation
-            if self.qcfg.group_size != -1:
-                if not self.qcfg.static_groups:
-                    # Pre-compute group mappings for the entire block
-                    # Cache group quantization parameters to avoid repeated calls
-                    group_cache = {}
-                    col_to_group_scale = []
-                    col_to_group_zero = []
-                    
-                    for i in range(count):
-                        col_idx = i1 + i
-                        group_idx = col_idx // self.qcfg.group_size
+            # Use original heavy loop logic if we haven't reached fast_loop_start_block
+            if i1 // blocksize < fast_loop_start_block:
+                Q, Losses, W, scale, zero, now_idx = self._original_loop_block(
+                    W, Q, Losses, Hinv, i1, i2, count, perm, groups, scale, zero, now_idx
+                )
+            else:
+                # Fast loop logic for this block
+                # Clone only the current block to reduce memory usage
+                W1 = W[:, i1:i2].clone()
+                Q1 = torch.zeros_like(W1)
+                Losses1 = torch.zeros_like(W1)
+       
+                # Optimized group quantization with pre-computation
+                if self.qcfg.group_size != -1:
+                    if not self.qcfg.static_groups:
+                        # Pre-compute group mappings for the entire block
+                        # Cache group quantization parameters to avoid repeated calls
+                        group_cache = {}
+                        col_to_group_scale = []
+                        col_to_group_zero = []
                         
-                        if group_idx not in group_cache:
-                            # First time processing this group - compute parameters
-                            group_start = group_idx * self.qcfg.group_size
-                            group_end = min(group_start + self.qcfg.group_size, self.columns)
+                        for i in range(count):
+                            col_idx = i1 + i
+                            group_idx = col_idx // self.qcfg.group_size
                             
-                            self.quantizer.find_params(W[:, group_start:group_end], weight=True)
-                            
-                            # Store parameters for this group - keep the original tensor shapes
-                            group_cache[group_idx] = {
-                                'scale': self.quantizer.scale,
-                                'zero': self.quantizer.zero
-                            }
-                            
-                            # Add to global lists only once per group
-                            scale.append(self.quantizer.scale)
-                            zero.append(self.quantizer.zero)
-                            now_idx += 1
-                            
-                            # Create scale/zero for this group (only one per group, not per column)
-                            # Only append one scale/zero for the entire group - squeeze to remove the last dimension
-                            col_to_group_scale.append(self.quantizer.scale.squeeze(-1))
-                            col_to_group_zero.append(self.quantizer.zero.squeeze(-1))
-                        else:
-                            # Use cached parameters for this group
-                            cached = group_cache[group_idx]
-                            
-                            # Only append one cached scale/zero for the entire group - squeeze to remove the last dimension
-                            col_to_group_scale.append(cached['scale'].squeeze(-1))
-                            col_to_group_zero.append(cached['zero'].squeeze(-1))
-                    
-                    # Vectorized quantization for all columns in the block
-                    if len(col_to_group_scale) > 0:
-                        #start_tmp = time.time()
+                            if group_idx not in group_cache:
+                                # First time processing this group - compute parameters
+                                group_start = group_idx * self.qcfg.group_size
+                                group_end = min(group_start + self.qcfg.group_size, self.columns)
+                                
+                                self.quantizer.find_params(W[:, group_start:group_end], weight=True)
+                                
+                                # Store parameters for this group - keep the original tensor shapes
+                                group_cache[group_idx] = {
+                                    'scale': self.quantizer.scale,
+                                    'zero': self.quantizer.zero
+                                }
+                                
+                                # Add to global lists only once per group
+                                scale.append(self.quantizer.scale)
+                                zero.append(self.quantizer.zero)
+                                now_idx += 1
+                                
+                                # Create scale/zero for this group (only one per group, not per column)
+                                # Only append one scale/zero for the entire group - squeeze to remove the last dimension
+                                col_to_group_scale.append(self.quantizer.scale.squeeze(-1))
+                                col_to_group_zero.append(self.quantizer.zero.squeeze(-1))
+                            else:
+                                # Use cached parameters for this group
+                                cached = group_cache[group_idx]
+                                
+                                # Only append one cached scale/zero for the entire group - squeeze to remove the last dimension
+                                col_to_group_scale.append(cached['scale'].squeeze(-1))
+                                col_to_group_zero.append(cached['zero'].squeeze(-1))
                         
-                        # Stack all group parameters for vectorized operations
-                        block_scales = torch.stack(col_to_group_scale)
-                        block_zeros = torch.stack(col_to_group_zero)
-                        maxq_val = 2 ** self.qcfg.bits - 1
-                        
-                        # We need to reshape from (count, rows) to (rows, count) for proper broadcasting with W1
-                        # W1 has shape (rows, count), so we need scales/zeros with shape (rows, count)
-                        block_scales = block_scales.T  # Shape: (64, 8)
-                        block_zeros = block_zeros.T    # Shape: (64, 8)
-                        
-                        # Vectorized quantization following the working pattern
-                        if self.qcfg.sym:
-                            # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
-                            Q1 = block_scales * torch.clamp(
-                                torch.round(W1 / block_scales),
-                                -(maxq_val // 2),
-                                maxq_val // 2
-                            )
-                        else:
-                            # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
-                            quantized = torch.clamp(
-                                torch.round(W1 / block_scales) + block_zeros,
-                                0,
-                                maxq_val
-                            )
-                            Q1 = block_scales * (quantized - block_zeros)
+                        # Vectorized quantization for all columns in the block
+                        if len(col_to_group_scale) > 0:
+                            #start_tmp = time.time()
+                            
+                            # Stack all group parameters for vectorized operations
+                            block_scales = torch.stack(col_to_group_scale)
+                            block_zeros = torch.stack(col_to_group_zero)
+                            maxq_val = 2 ** self.qcfg.bits - 1
+                            
+                            # We need to reshape from (count, rows) to (rows, count) for proper broadcasting with W1
+                            # W1 has shape (rows, count), so we need scales/zeros with shape (rows, count)
+                            block_scales = block_scales.T  # Shape: (64, 8)
+                            block_zeros = block_zeros.T    # Shape: (64, 8)
+                            
+                            # Vectorized quantization following the working pattern
+                            if self.qcfg.sym:
+                                # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
+                                Q1 = block_scales * torch.clamp(
+                                    torch.round(W1 / block_scales),
+                                    -(maxq_val // 2),
+                                    maxq_val // 2
+                                )
+                            else:
+                                # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
+                                quantized = torch.clamp(
+                                    torch.round(W1 / block_scales) + block_zeros,
+                                    0,
+                                    maxq_val
+                                )
+                                Q1 = block_scales * (quantized - block_zeros)
+                    else:
+                        # Static groups
+                        for i in range(count):
+                            idx = i1 + i
+                            if self.qcfg.desc_act and perm is not None:
+                                idx = perm[idx]
+                            self.quantizer = groups[idx // self.qcfg.group_size]
+                            
+                            w = W1[:, i]
+                            q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
+                            Q1[:, i] = q
                 else:
-                    # Static groups
+                    # No grouping - individual processing
                     for i in range(count):
-                        idx = i1 + i
-                        if self.qcfg.desc_act and perm is not None:
-                            idx = perm[idx]
-                        self.quantizer = groups[idx // self.qcfg.group_size]
-                        
                         w = W1[:, i]
                         q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                         Q1[:, i] = q
-            else:
-                # No grouping - individual processing
-                for i in range(count):
-                    w = W1[:, i]
-                    q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
-                    Q1[:, i] = q
-            
-            # Optimized error computation with vectorized operations
-            if Hinv is not None:
-                # Vectorized computation of all errors and losses
-                W_cols = W1.T  # Transpose for column-wise operations
-                Q_cols = Q1.T
                 
-                # Compute differences and errors for all columns
-                diff = W_cols - Q_cols
+                # Optimized error computation with vectorized operations
+                if Hinv is not None:
+                    # Vectorized computation of all errors and losses
+                    W_cols = W1.T  # Transpose for column-wise operations
+                    Q_cols = Q1.T
+                    
+                    # Compute differences and errors for all columns
+                    diff = W_cols - Q_cols
+                    
+                    # Use pre-computed inverse diagonal values
+                    assert i1 < len(inv_diag), f"Block index i1={i1} exceeds inverse diagonal length {len(inv_diag)}. This indicates a logic error in block processing."
+                    block_inv_diag = inv_diag[i1:i2].view(-1, 1)
+                    errors = diff * block_inv_diag
+                    
+                    # Vectorized loss computation
+                    Losses1 = (diff * errors).T
+                    Losses[:, i1:i2] = Losses1 / 2
+                    
+                    # Store errors for final update - ensure correct shape
+                    # In the original loop, Err1 accumulates errors column by column
+                    # Here we need to make sure the shape is compatible for matrix multiplication
+                    Err1 = errors.T
+                    
+                    # Update remaining weights using exact cross-block interactions
+                    if i2 < self.columns:
+                        # Use the correct Hessian submatrix for cross-block interactions
+                        # Err1 has shape (rows, blocksize), Hinv_cross has shape (blocksize, remaining_columns)
+                        # The result will have shape (rows, remaining_columns) - perfect match for W[:, i2:]
+                        Hinv_cross = Hinv[i1:i2, i2:]  # Cross-block interactions
+                        W[:, i2:] -= Err1 @ Hinv_cross  # Direct matrix multiplication
                 
-                # Use pre-computed inverse diagonal values
-                assert i1 < len(inv_diag), f"Block index i1={i1} exceeds inverse diagonal length {len(inv_diag)}. This indicates a logic error in block processing."
-                block_inv_diag = inv_diag[i1:i2].view(-1, 1)
-                errors = diff * block_inv_diag
-                
-                # Vectorized loss computation
-                Losses1 = (diff * errors).T
-                Losses[:, i1:i2] = Losses1 / 2
-                
-                # Store errors for final update - ensure correct shape
-                # In the original loop, Err1 accumulates errors column by column
-                # Here we need to make sure the shape is compatible for matrix multiplication
-                Err1 = errors.T
-                
-                # Update remaining weights using exact cross-block interactions
-                if i2 < self.columns:
-                    # Use the correct Hessian submatrix for cross-block interactions
-                    # Err1 has shape (rows, blocksize), Hinv_cross has shape (blocksize, remaining_columns)
-                    # The result will have shape (rows, remaining_columns) - perfect match for W[:, i2:]
-                    Hinv_cross = Hinv[i1:i2, i2:]  # Cross-block interactions
-                    W[:, i2:] -= Err1 @ Hinv_cross  # Direct matrix multiplication
-            
-            # Store results
-            Q[:, i1:i2] = Q1
+                # Store results
+                Q[:, i1:i2] = Q1
         
         return Q, Losses, W, scale, zero, now_idx
 
