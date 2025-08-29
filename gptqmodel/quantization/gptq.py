@@ -769,7 +769,7 @@ class GPTQ:
                             log.debug(f"fast_loop2 DEBUG - quantizer.scale shape: {self.quantizer.scale.shape if hasattr(self.quantizer.scale, 'shape') else 'no shape'}")
                             log.debug(f"fast_loop2 DEBUG - quantizer.zero shape: {self.quantizer.zero.shape if hasattr(self.quantizer.zero, 'shape') else 'no shape'}")
                             
-                            # Store parameters for this group - the quantizer returns tensors
+                            # Store parameters for this group - keep the original tensor shapes
                             group_cache[group_idx] = {
                                 'scale': self.quantizer.scale,
                                 'zero': self.quantizer.zero
@@ -805,10 +805,11 @@ class GPTQ:
                     
                     # Vectorized quantization for all columns in the block
                     if len(col_to_group_scale) > 0:
-                        # Stack scales and zeros for vectorized operations
-                        # Each scale/zero should have shape (1,) for broadcasting with W1 shape (rows, count)
-                        block_scales = torch.stack(col_to_group_scale)  # Shape: (count,)
-                        block_zeros = torch.stack(col_to_group_zero)    # Shape: (count,)
+                        start_tmp = time.time()
+                        
+                        # Stack all group parameters for vectorized operations
+                        block_scales = torch.stack(col_to_group_scale)  # Shape: (count, 1024, 1)
+                        block_zeros = torch.stack(col_to_group_zero)    # Shape: (count, 1024, 1)
                         maxq_val = 2 ** self.qcfg.bits - 1
                         
                         # DEBUG: Log tensor shapes for debugging
@@ -817,16 +818,16 @@ class GPTQ:
                         log.debug(f"fast_loop2 DEBUG - block_zeros shape before view: {block_zeros.shape}")
                         log.debug(f"fast_loop2 DEBUG - count: {count}, rows: {W1.shape[0]}")
                         
-                        # Ensure scales and zeros have correct shape for broadcasting
-                        # block_scales and block_zeros should be (1, count) to match W1 shape (rows, count)
-                        block_scales = block_scales.view(1, -1)
-                        block_zeros = block_zeros.view(1, -1)
+                        # Reshape to (count, 1) for proper broadcasting - following the working pattern
+                        block_scales = block_scales.view(-1, 1)  # Shape: (count, 1)
+                        block_zeros = block_zeros.view(-1, 1)    # Shape: (count, 1)
                         
                         log.debug(f"fast_loop2 DEBUG - block_scales shape after view: {block_scales.shape}")
                         log.debug(f"fast_loop2 DEBUG - block_zeros shape after view: {block_zeros.shape}")
                         
-                        # Vectorized quantization - ensure proper broadcasting
+                        # Vectorized quantization following the working pattern
                         if self.qcfg.sym:
+                            # Symmetric quantization: Q = scale * clamp(round(x/scale), -maxq/2, maxq/2)
                             Q1 = block_scales * torch.clamp(
                                 torch.round(W1 / block_scales),
                                 -(maxq_val // 2),
@@ -834,6 +835,7 @@ class GPTQ:
                             )
                         else:
                             log.debug(f"fast_loop2 DEBUG - About to perform quantized calculation")
+                            # Asymmetric quantization: Q = scale * (clamp(round(x/scale) + zero, 0, maxq) - zero)
                             quantized = torch.clamp(
                                 torch.round(W1 / block_scales) + block_zeros,
                                 0,
@@ -841,6 +843,8 @@ class GPTQ:
                             )
                             Q1 = block_scales * (quantized - block_zeros)
                             log.debug(f"fast_loop2 DEBUG - Quantized calculation completed")
+                        
+                        log.debug(f"fast_loop2 DEBUG - Completed vectorized quantization for {self.name} in {time.time() - start_tmp:.3f}s")
                 else:
                     # Static groups - optimized processing
                     for i in range(count):
