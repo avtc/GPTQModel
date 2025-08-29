@@ -892,25 +892,35 @@ class GPTQ:
                     Err1 = errors.T  # Should be (rows, count) = (64, 8)
                     log.debug(f"fast_loop2 DEBUG - Err1 shape: {Err1.shape}, Hinv1 shape: {Hinv1.shape}")
                     
-                    # Update remaining weights - follow original heavy loop logic more closely
+                    # Update remaining weights - simple vectorized approach
                     if i2 < self.columns:
                         log.debug(f"fast_loop2 DEBUG - W[:, i2:] shape: {W[:, i2:].shape}")
                         log.debug(f"fast_loop2 DEBUG - Err1 shape: {Err1.shape}")
+                        log.debug(f"fast_loop2 DEBUG - Hinv1 shape: {Hinv1.shape}")
                         
-                        # In the original loop, they update W1[:, i:] for each column i
-                        # In vectorization, we need to broadcast Err1 appropriately
-                        # Err1 has shape (rows, blocksize), we need to update each remaining column
-                        for j in range(count):
-                            # For column j, update W1[:, j:] using Err1[:, j] and Hinv1[j, j:]
-                            if j < Hinv1.shape[1]:  # Make sure we don't go out of bounds
-                                err_j = Err1[:, j:j+1]  # Shape: (rows, 1)
-                                hinv_j = Hinv1[j, j:]   # Shape: (blocksize - j,)
-                                log.debug(f"fast_loop2 DEBUG - j={j}, err_j shape: {err_j.shape}, hinv_j shape: {hinv_j.shape}")
-                                log.debug(f"fast_loop2 DEBUG - i2+j={i2+j}, W[:, i2+j:] shape: {W[:, i2+j:].shape}")
-                                # Update the weight matrix
-                                if i2 + j < self.columns:
-                                    log.debug(f"fast_loop2 DEBUG - About to update W[:, {i2+j}:]")
-                                    W[:, i2 + j:] -= err_j @ hinv_j.unsqueeze(0)
+                        # Since we're processing all columns in the block independently and simultaneously,
+                        # we can use a simple matrix multiplication
+                        # Err1 has shape (rows, blocksize), Hinv1 has shape (blocksize, blocksize)
+                        # The result will have shape (rows, blocksize), which we can broadcast to W[:, i2:]
+                        error_update = Err1 @ Hinv1  # Shape: (rows, blocksize)
+                        log.debug(f"fast_loop2 DEBUG - error_update shape: {error_update.shape}")
+                        
+                        # We need to broadcast this to all remaining columns
+                        # Since each column in the block affects all remaining columns equally,
+                        # we repeat the error update for each remaining column
+                        remaining_columns = self.columns - i2
+                        log.debug(f"fast_loop2 DEBUG - remaining_columns: {remaining_columns}")
+                        
+                        # Repeat the error update to match the number of remaining columns
+                        if remaining_columns > count:
+                            # We need to repeat the error update
+                            repeats = (remaining_columns + count - 1) // count
+                            error_update_repeated = error_update.repeat(1, repeats)[:, :remaining_columns]
+                        else:
+                            error_update_repeated = error_update[:, :remaining_columns]
+                        
+                        log.debug(f"fast_loop2 DEBUG - error_update_repeated shape: {error_update_repeated.shape}")
+                        W[:, i2:] -= error_update_repeated
             
             # Store results
             Q[:, i1:i2] = Q1
