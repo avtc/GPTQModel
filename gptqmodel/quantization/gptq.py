@@ -869,16 +869,22 @@ class GPTQ:
                 W_cols = W1.T  # Transpose for column-wise operations
                 Q_cols = Q1.T
                 
+                log.debug(f"fast_loop2 DEBUG - W_cols shape: {W_cols.shape}, Q_cols shape: {Q_cols.shape}")
+                
                 # Compute differences and errors for all columns
                 diff = W_cols - Q_cols
+                log.debug(f"fast_loop2 DEBUG - diff shape: {diff.shape}")
                 
                 # Use pre-computed inverse diagonal values
                 if i1 < len(inv_diag):
                     block_inv_diag = inv_diag[i1:i2].view(-1, 1)
+                    log.debug(f"fast_loop2 DEBUG - block_inv_diag shape: {block_inv_diag.shape}")
                     errors = diff * block_inv_diag
+                    log.debug(f"fast_loop2 DEBUG - errors shape: {errors.shape}")
                     
                     # Vectorized loss computation
                     Losses1 = (diff * errors).T
+                    log.debug(f"fast_loop2 DEBUG - Losses1 shape: {Losses1.shape}")
                     
                     # Store errors for final update - ensure correct shape
                     Err1 = errors.T  # Should be (rows, count) = (64, 8)
@@ -887,6 +893,8 @@ class GPTQ:
                     # Update remaining weights in one matrix operation
                     if i2 < self.columns:
                         # Hinv1 has shape (blocksize, blocksize), we need to use all of it
+                        log.debug(f"fast_loop2 DEBUG - W[:, i2:] shape: {W[:, i2:].shape}")
+                        log.debug(f"fast_loop2 DEBUG - Err1.matmul(Hinv1) shape: {Err1.matmul(Hinv1).shape}")
                         W[:, i2:] -= Err1.matmul(Hinv1)
             
             # Store results
