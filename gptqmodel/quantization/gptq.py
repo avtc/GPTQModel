@@ -456,20 +456,17 @@ class GPTQ:
                                 group_to_block_map.append(list(range(group_start, group_end)))
                             
                             # Get the grouped columns for vectorized processing
-                            grouped_cols = W1[:, group_mask]
+                            grouped_cols = W1[:, group_mask]  # Shape: (rows, num_grouped_cols)
                             
-                            # Reshape group parameters to match the actual number of grouped columns
-                            # Each column in group_mask should have its corresponding scale and zero
-                            actual_grouped_scales = []
-                            actual_grouped_zeros = []
-                            
+                            # Create proper scale and zero tensors for each grouped column
+                            # Each column belongs to a specific group and should use that group's parameters
+                            group_assignments = []
                             for group_idx, block_cols in enumerate(group_to_block_map):
-                                for _ in block_cols:
-                                    actual_grouped_scales.append(block_scales[group_idx])
-                                    actual_grouped_zeros.append(block_zeros[group_idx])
+                                group_assignments.extend([group_idx] * len(block_cols))
                             
-                            actual_grouped_scales = torch.stack(actual_grouped_scales).view(-1, 1)
-                            actual_grouped_zeros = torch.stack(actual_grouped_zeros).view(-1, 1)
+                            # Create scale and zero tensors that match the grouped columns
+                            actual_grouped_scales = block_scales[group_assignments].view(-1, 1)  # Shape: (num_grouped_cols, 1)
+                            actual_grouped_zeros = block_zeros[group_assignments].view(-1, 1)  # Shape: (num_grouped_cols, 1)
                             
                             # Vectorized quantization for grouped columns
                             if self.qcfg.sym:
