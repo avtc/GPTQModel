@@ -880,8 +880,9 @@ class GPTQ:
                     # Vectorized loss computation
                     Losses1 = (diff * errors).T
                     
-                    # Store errors for final update
-                    Err1 = errors.T
+                    # Store errors for final update - ensure correct shape
+                    Err1 = errors.T  # Should be (rows, count) = (64, 8)
+                    log.debug(f"fast_loop2 DEBUG - Err1 shape: {Err1.shape}, Hinv1 shape: {Hinv1.shape}")
                     
                     # Update remaining weights in one matrix operation
                     if i2 < self.columns:
