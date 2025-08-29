@@ -747,16 +747,27 @@ class GPTQ:
                     col_to_group_scale = []
                     col_to_group_zero = []
                     
+                    log.debug(f"fast_loop2 DEBUG - Processing block from {i1} to {i2}, count={count}")
+                    log.debug(f"fast_loop2 DEBUG - Total columns: {self.columns}, group_size: {self.qcfg.group_size}")
+                    
                     for i in range(count):
                         col_idx = i1 + i
                         group_idx = col_idx // self.qcfg.group_size
+                        
+                        log.debug(f"fast_loop2 DEBUG - Column {col_idx}, group {group_idx}")
                         
                         if group_idx not in group_cache:
                             # First time processing this group - compute parameters
                             group_start = group_idx * self.qcfg.group_size
                             group_end = min(group_start + self.qcfg.group_size, self.columns)
                             
+                            log.debug(f"fast_loop2 DEBUG - New group {group_idx}: range {group_start} to {group_end}")
+                            
                             self.quantizer.find_params(W[:, group_start:group_end], weight=True)
+                            
+                            # DEBUG: Log what the quantizer returns
+                            log.debug(f"fast_loop2 DEBUG - quantizer.scale shape: {self.quantizer.scale.shape if hasattr(self.quantizer.scale, 'shape') else 'no shape'}")
+                            log.debug(f"fast_loop2 DEBUG - quantizer.zero shape: {self.quantizer.zero.shape if hasattr(self.quantizer.zero, 'shape') else 'no shape'}")
                             
                             # Store parameters for this group - the quantizer returns tensors
                             group_cache[group_idx] = {
@@ -771,6 +782,8 @@ class GPTQ:
                             
                             # Create scale/zero for each column in this group
                             group_cols = min(group_end - group_start, count - i if group_idx == block_end_group else self.qcfg.group_size)
+                            log.debug(f"fast_loop2 DEBUG - Adding {group_cols} scales/zeros for group {group_idx}")
+                            
                             for _ in range(group_cols):
                                 # Append the scale and zero tensors directly for each column
                                 col_to_group_scale.append(self.quantizer.scale)
@@ -779,10 +792,16 @@ class GPTQ:
                             # Use cached parameters for each column in this group
                             cached = group_cache[group_idx]
                             group_cols = min(self.qcfg.group_size, count - i if group_idx == block_end_group else self.qcfg.group_size)
+                            
+                            log.debug(f"fast_loop2 DEBUG - Using cached group {group_idx} for {group_cols} columns")
+                            
                             for _ in range(group_cols):
                                 # Append the cached scale and zero tensors directly for each column
                                 col_to_group_scale.append(cached['scale'])
                                 col_to_group_zero.append(cached['zero'])
+                    
+                    log.debug(f"fast_loop2 DEBUG - Total scales collected: {len(col_to_group_scale)}")
+                    log.debug(f"fast_loop2 DEBUG - Total zeros collected: {len(col_to_group_zero)}")
                     
                     # Vectorized quantization for all columns in the block
                     if len(col_to_group_scale) > 0:
