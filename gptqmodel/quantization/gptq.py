@@ -816,9 +816,10 @@ class GPTQ:
                         log.debug(f"fast_loop2 DEBUG - block_zeros shape before view: {block_zeros.shape}")
                         log.debug(f"fast_loop2 DEBUG - count: {count}, rows: {W1.shape[0]}")
                         
-                        # Reshape to (count, 1) for proper broadcasting - following the working pattern
-                        block_scales = block_scales.view(-1, 1)  # Shape: (count, 1)
-                        block_zeros = block_zeros.view(-1, 1)    # Shape: (count, 1)
+                        # We need to reshape from (count, rows) to (rows, count) for proper broadcasting with W1
+                        # W1 has shape (rows, count), so we need scales/zeros with shape (rows, count)
+                        block_scales = block_scales.T  # Shape: (64, 8)
+                        block_zeros = block_zeros.T    # Shape: (64, 8)
                         
                         log.debug(f"fast_loop2 DEBUG - block_scales shape after view: {block_scales.shape}")
                         log.debug(f"fast_loop2 DEBUG - block_zeros shape after view: {block_zeros.shape}")
