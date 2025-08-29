@@ -790,20 +790,36 @@ class GPTQ:
                         block_zeros = torch.stack(col_to_group_zero)    # Shape: (count,)
                         maxq_val = 2 ** self.qcfg.bits - 1
                         
-                        # Vectorized quantization - use proper broadcasting
+                        # DEBUG: Log tensor shapes for debugging
+                        log.debug(f"fast_loop2 DEBUG - W1 shape: {W1.shape}")
+                        log.debug(f"fast_loop2 DEBUG - block_scales shape before view: {block_scales.shape}")
+                        log.debug(f"fast_loop2 DEBUG - block_zeros shape before view: {block_zeros.shape}")
+                        log.debug(f"fast_loop2 DEBUG - count: {count}, rows: {W1.shape[0]}")
+                        
+                        # Ensure scales and zeros have correct shape for broadcasting
+                        # block_scales and block_zeros should be (1, count) to match W1 shape (rows, count)
+                        block_scales = block_scales.view(1, -1)
+                        block_zeros = block_zeros.view(1, -1)
+                        
+                        log.debug(f"fast_loop2 DEBUG - block_scales shape after view: {block_scales.shape}")
+                        log.debug(f"fast_loop2 DEBUG - block_zeros shape after view: {block_zeros.shape}")
+                        
+                        # Vectorized quantization - ensure proper broadcasting
                         if self.qcfg.sym:
                             Q1 = block_scales * torch.clamp(
-                                torch.round(W1 / block_scales.view(1, -1)),
+                                torch.round(W1 / block_scales),
                                 -(maxq_val // 2),
                                 maxq_val // 2
                             )
                         else:
+                            log.debug(f"fast_loop2 DEBUG - About to perform quantized calculation")
                             quantized = torch.clamp(
-                                torch.round(W1 / block_scales.view(1, -1)) + block_zeros.view(1, -1),
+                                torch.round(W1 / block_scales) + block_zeros,
                                 0,
                                 maxq_val
                             )
-                            Q1 = block_scales * (quantized - block_zeros.view(1, -1))
+                            Q1 = block_scales * (quantized - block_zeros)
+                            log.debug(f"fast_loop2 DEBUG - Quantized calculation completed")
                 else:
                     # Static groups - optimized processing
                     for i in range(count):
