@@ -885,7 +885,8 @@ class GPTQ:
                     
                     # Update remaining weights in one matrix operation
                     if i2 < self.columns:
-                        W[:, i2:] -= Err1.matmul(Hinv1[:, i2-i1:])
+                        # Hinv1 has shape (blocksize, blocksize), we need to use all of it
+                        W[:, i2:] -= Err1.matmul(Hinv1)
             
             # Store results
             Q[:, i1:i2] = Q1
