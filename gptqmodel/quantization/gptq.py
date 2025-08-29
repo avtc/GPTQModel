@@ -696,39 +696,23 @@ class GPTQ:
                 
                 # Vectorized loss computation
                 Losses1 = (diff * errors).T
+                Losses[:, i1:i2] = Losses1 / 2
                 
                 # Store errors for final update - ensure correct shape
                 # In the original loop, Err1 accumulates errors column by column
                 # Here we need to make sure the shape is compatible for matrix multiplication
                 Err1 = errors.T
                 
-                # Update remaining weights - simple vectorized approach
+                # Update remaining weights using exact cross-block interactions
                 if i2 < self.columns:
-                    # Since we're processing all columns in the block independently and simultaneously,
-                    # we can use a simple matrix multiplication
-                    # Err1 has shape (rows, blocksize), Hinv1 has shape (blocksize, blocksize)
-                    # The result will have shape (rows, blocksize), which we can broadcast to W[:, i2:]
-                    error_update = Err1 @ Hinv1  # Shape: (rows, blocksize)
-                    
-                    # We need to broadcast this to all remaining columns
-                    # Since each column in the block affects all remaining columns equally,
-                    # we repeat the error update for each remaining column
-                    remaining_columns = self.columns - i2
-                    
-                    # Repeat the error update to match the number of remaining columns
-                    if remaining_columns > count:
-                        # We need to repeat the error update
-                        repeats = (remaining_columns + count - 1) // count
-                        error_update_repeated = error_update.repeat(1, repeats)[:, :remaining_columns]
-                    else:
-                        error_update_repeated = error_update[:, :remaining_columns]
-                    
-                    W[:, i2:] -= error_update_repeated
+                    # Use the correct Hessian submatrix for cross-block interactions
+                    # Err1 has shape (rows, blocksize), Hinv_cross has shape (blocksize, remaining_columns)
+                    # The result will have shape (rows, remaining_columns) - perfect match for W[:, i2:]
+                    Hinv_cross = Hinv[i1:i2, i2:]  # Cross-block interactions
+                    W[:, i2:] -= Err1 @ Hinv_cross  # Direct matrix multiplication
             
             # Store results
             Q[:, i1:i2] = Q1
-            if Hinv is not None:
-                Losses[:, i1:i2] = Losses1 / 2
         
         return Q, Losses, W, scale, zero, now_idx
 
