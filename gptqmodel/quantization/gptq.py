@@ -780,24 +780,25 @@ class GPTQ:
                     # Vectorized quantization for all columns in the block
                     if len(col_to_group_scale) > 0:
                         # Stack scales and zeros for vectorized operations
-                        block_scales = torch.stack(col_to_group_scale).view(-1, 1)
-                        block_zeros = torch.stack(col_to_group_zero).view(-1, 1)
+                        # Each scale/zero should have shape (1,) for broadcasting with W1 shape (rows, count)
+                        block_scales = torch.stack(col_to_group_scale)  # Shape: (count,)
+                        block_zeros = torch.stack(col_to_group_zero)    # Shape: (count,)
                         maxq_val = 2 ** self.qcfg.bits - 1
                         
-                        # Vectorized quantization
+                        # Vectorized quantization - use proper broadcasting
                         if self.qcfg.sym:
                             Q1 = block_scales * torch.clamp(
-                                torch.round(W1 / block_scales),
+                                torch.round(W1 / block_scales.view(1, -1)),
                                 -(maxq_val // 2),
                                 maxq_val // 2
                             )
                         else:
                             quantized = torch.clamp(
-                                torch.round(W1 / block_scales) + block_zeros,
+                                torch.round(W1 / block_scales.view(1, -1)) + block_zeros.view(1, -1),
                                 0,
                                 maxq_val
                             )
-                            Q1 = block_scales * (quantized - block_zeros)
+                            Q1 = block_scales * (quantized - block_zeros.view(1, -1))
                 else:
                     # Static groups - optimized processing
                     for i in range(count):
