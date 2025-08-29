@@ -780,25 +780,23 @@ class GPTQ:
                             zero.append(self.quantizer.zero)
                             now_idx += 1
                             
-                            # Create scale/zero for each column in this group
+                            # Create scale/zero for this group (only one per group, not per column)
                             group_cols = min(group_end - group_start, count - i if group_idx == block_end_group else self.qcfg.group_size)
-                            log.debug(f"fast_loop2 DEBUG - Adding {group_cols} scales/zeros for group {group_idx}")
+                            log.debug(f"fast_loop2 DEBUG - Adding 1 scale/zero for group {group_idx} that covers {group_cols} columns")
                             
-                            for _ in range(group_cols):
-                                # Append the scale and zero tensors directly for each column
-                                col_to_group_scale.append(self.quantizer.scale)
-                                col_to_group_zero.append(self.quantizer.zero)
+                            # Only append one scale/zero for the entire group
+                            col_to_group_scale.append(self.quantizer.scale)
+                            col_to_group_zero.append(self.quantizer.zero)
                         else:
-                            # Use cached parameters for each column in this group
+                            # Use cached parameters for this group
                             cached = group_cache[group_idx]
                             group_cols = min(self.qcfg.group_size, count - i if group_idx == block_end_group else self.qcfg.group_size)
                             
                             log.debug(f"fast_loop2 DEBUG - Using cached group {group_idx} for {group_cols} columns")
                             
-                            for _ in range(group_cols):
-                                # Append the cached scale and zero tensors directly for each column
-                                col_to_group_scale.append(cached['scale'])
-                                col_to_group_zero.append(cached['zero'])
+                            # Only append one cached scale/zero for the entire group
+                            col_to_group_scale.append(cached['scale'])
+                            col_to_group_zero.append(cached['zero'])
                     
                     log.debug(f"fast_loop2 DEBUG - Total scales collected: {len(col_to_group_scale)}")
                     log.debug(f"fast_loop2 DEBUG - Total zeros collected: {len(col_to_group_zero)}")
