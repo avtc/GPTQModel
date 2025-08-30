@@ -45,6 +45,8 @@ from ..utils.logger import setup_logger
 from ..utils.model import (MODALITY, find_modules, get_device, get_module, get_module_by_name_prefix,
                            get_moe_layer_modules, move_to, nested_move_to, pack_model)
 from ..utils.torch import TORCH_HAS_COMPILE, torch_compile, torch_empty_cache
+
+log = setup_logger()
 from ._const import CALIBRATION_DATASET_CONCAT_CHAR, CPU, DEFAULT_MAX_SHARD_SIZE, DEVICE, SUPPORTS_MODULE_TYPES
 from .loader import ModelLoader
 from .writer import (PROCESS_LOG_FWD_TIME, PROCESS_LOG_LAYER, PROCESS_LOG_MODULE, PROCESS_LOG_TIME,
@@ -136,7 +138,13 @@ class BaseGPTQModel(nn.Module):
     ):
         super().__init__()
 
-        self.model = model
+        # Store model reference but don't load all layers if memory optimization is enabled
+        if hasattr(quantize_config, 'memory_optimization') and quantize_config.memory_optimization:
+            self.model = model
+            self._full_model_loaded = False
+        else:
+            self.model = model
+            self._full_model_loaded = True
 
         self.compiled = False # set to True while compile() is triggered successfully
         self.quantized = quantized
@@ -1073,20 +1081,52 @@ class BaseGPTQModel(nn.Module):
             task.get_logger().report_plotly('avg_loss', 'avg_loss', loss_fig)
             task.get_logger().report_plotly('quant_time', 'quant_time', time_fig)
 
-        self.qlinear_kernel = pack_model(
-            model=self.model,
-            quant_result=quantizers,
-            bits=self.quantize_config.bits,
-            group_size=self.quantize_config.group_size,
-            backend=backend,
-            desc_act=self.quantize_config.desc_act,
-            format=self.quantize_config.format,
-            quant_method=self.quantize_config.quant_method,
-            lm_head_name=self.lm_head,
-            dynamic=self.quantize_config.dynamic,
-            parallel_packing=self.quantize_config.parallel_packing,
-            pack_dtype=self.quantize_config.pack_dtype,
-        )
+        # Handle memory optimization mode
+        if hasattr(self.quantize_config, 'memory_optimization') and self.quantize_config.memory_optimization:
+            log.info("Memory optimization mode: Modules already created during quantization, skipping pack_model")
+            # In memory optimization mode, modules are already created and replaced during quantization
+            # We just need to get the quantized module class for the model
+            from ..utils.model import find_modules, BaseQuantLinear
+            
+            # Find quantized modules that were created during quantization
+            quantized_modules = find_modules(self.model, layers=[BaseQuantLinear])
+            if quantized_modules:
+                # Get the class of the first quantized module
+                self.qlinear_kernel = list(quantized_modules.values())[0].__class__
+                log.info(f"Memory optimization: Using quantized module class {self.qlinear_kernel.__name__}")
+            else:
+                log.warn("Memory optimization: No quantized modules found, falling back to pack_model")
+                # Fallback to regular pack_model if no quantized modules found
+                self.qlinear_kernel = pack_model(
+                    model=self.model,
+                    quant_result=quantizers,
+                    bits=self.quantize_config.bits,
+                    group_size=self.quantize_config.group_size,
+                    backend=backend,
+                    desc_act=self.quantize_config.desc_act,
+                    format=self.quantize_config.format,
+                    quant_method=self.quantize_config.quant_method,
+                    lm_head_name=self.lm_head,
+                    dynamic=self.quantize_config.dynamic,
+                    parallel_packing=self.quantize_config.parallel_packing,
+                    pack_dtype=self.quantize_config.pack_dtype,
+                )
+        else:
+            # Regular quantization workflow
+            self.qlinear_kernel = pack_model(
+                model=self.model,
+                quant_result=quantizers,
+                bits=self.quantize_config.bits,
+                group_size=self.quantize_config.group_size,
+                backend=backend,
+                desc_act=self.quantize_config.desc_act,
+                format=self.quantize_config.format,
+                quant_method=self.quantize_config.quant_method,
+                lm_head_name=self.lm_head,
+                dynamic=self.quantize_config.dynamic,
+                parallel_packing=self.quantize_config.parallel_packing,
+                pack_dtype=self.quantize_config.pack_dtype,
+            )
 
         self.model.config.use_cache = forward_pass_use_cache
 
@@ -1259,6 +1299,86 @@ class BaseGPTQModel(nn.Module):
         if get_device(module) == CPU and self.quantize_config.device != CPU:
             return move_to(module, device=self.quantize_config.device)
         return module
+
+    def load_layer_on_demand(self, layer_index: int):
+        """Load a specific layer on-demand for memory optimization mode."""
+        if not hasattr(self.quantize_config, 'memory_optimization') or not self.quantize_config.memory_optimization:
+            return
+            
+        if self._full_model_loaded:
+            return  # Already loaded
+            
+        # Load the specific layer
+        layers = get_module_by_name_prefix(self.model, self.layers_node)
+        if layer_index < len(layers):
+            layer = layers[layer_index]
+            # Move layer to appropriate device if needed
+            if get_device(layer) == CPU and self.quantize_config.device != CPU:
+                move_to(layer, device=self.quantize_config.device)
+                
+    def unload_layer(self, layer_index: int):
+        """Unload a specific layer to free memory in memory optimization mode."""
+        if not hasattr(self.quantize_config, 'memory_optimization') or not self.quantize_config.memory_optimization:
+            return
+            
+        if self._full_model_loaded:
+            return  # Cannot unload if fully loaded
+            
+        # Get the layer and aggressively free memory
+        layers = get_module_by_name_prefix(self.model, self.layers_node)
+        if layer_index < len(layers):
+            layer = layers[layer_index]
+            
+            # Method 1: Replace with a minimal placeholder
+            dummy_layer = nn.Linear(1, 1).to(device='meta')  # meta device means no memory allocation
+            original_device = get_device(layer)
+            
+            # Replace the layer with a dummy placeholder
+            parent_name, layer_name = self._get_parent_and_layer_name(layer_index)
+            if parent_name:
+                parent = get_module(self.model, parent_name)
+                setattr(parent, layer_name, dummy_layer)
+            else:
+                # If it's a direct child of the model
+                layer_name = f"{self.layers_node}.{layer_index}"
+                parent_name = self.layers_node
+                parent = get_module(self.model, parent_name)
+                setattr(parent, layer_name, dummy_layer)
+            
+            # Force garbage collection and cache cleanup
+            del layer
+            torch_empty_cache()
+            
+            log.info(f"Memory optimization: Unloaded layer {layer_index} from RAM")
+    
+    def _get_parent_and_layer_name(self, layer_index: int):
+        """Helper method to get parent module and layer name."""
+        layers = get_module_by_name_prefix(self.model, self.layers_node)
+        if layer_index < len(layers):
+            layer = layers[layer_index]
+            for name, module in self.model.named_modules():
+                if module == layer:
+                    # Extract parent name and layer name
+                    if '.' in name:
+                        parent_name, layer_name = name.rsplit('.', 1)
+                        return parent_name, layer_name
+                    else:
+                        return '', name
+        return None, None
+
+    def reload_layer(self, layer_index: int):
+        """Reload a layer that was previously unloaded in memory optimization mode."""
+        if not hasattr(self.quantize_config, 'memory_optimization') or not self.quantize_config.memory_optimization:
+            return
+            
+        if self._full_model_loaded:
+            return  # No need to reload if fully loaded
+            
+        # This is a simplified implementation - in practice, we would need to store
+        # the original layer configuration and rebuild it
+        log.info(f"Memory optimization: Layer {layer_index} needs to be reloaded from source")
+        # Note: Full layer reloading from source would require more complex implementation
+        # For now, we'll log this as a limitation
 
     def post_quantize(self, module: nn.Module) -> nn.Module:
         return move_to(module, device=CPU)

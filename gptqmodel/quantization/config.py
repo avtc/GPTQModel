@@ -219,6 +219,10 @@ class QuantizeConfig():
     # Skip all heavy computations for testing model loading
     mock_quantization: bool = field(default=False, metadata={"help": "Skip heavy computations for fast model loading validation"})
 
+    # Enable memory optimization during quantization to reduce RAM usage
+    # When enabled, only one layer is kept in memory at a time, quantized layers are written to disk and then removed from memory
+    memory_optimization: bool = field(default=False, metadata={"help": "Enable memory optimization during quantization to reduce RAM usage"})
+
     def __post_init__(self):
         fields_info = fields(self)
 

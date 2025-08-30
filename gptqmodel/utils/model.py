@@ -560,6 +560,154 @@ def convert_gptq_v2_to_v1_format(
     return model
 
 
+def _pack_model_memory_optimized(model, qcfg, backend, lm_head_name):
+    """Special handling for memory optimization mode in pack_model.
+    
+    In memory optimization mode, quantization data is already packed as final quantized modules
+    in the model during quantization. This function simply detects and returns the quantized module class.
+    """
+    import os
+    import glob
+    import safetensors
+    
+    # Find all modules in the model that need to be quantized
+    modules = find_modules(model)
+    
+    # Get quantization config to determine quant linear class candidates
+    bits = qcfg.bits
+    group_size = qcfg.group_size
+    desc_act = qcfg.desc_act
+    sym = qcfg.sym
+    pack_dtype = qcfg.pack_dtype
+    
+    # Determine quant linear class candidates
+    quant_linear_candidates = select_quant_linear(
+        bits=bits,
+        group_size=group_size,
+        desc_act=desc_act,
+        sym=sym,
+        backend=backend,
+        format=qcfg.format,
+        pack=True,
+        dynamic=qcfg.dynamic,
+        device=qcfg.device,
+        pack_dtype=pack_dtype,
+        multi_select=True,
+    )
+    
+    # Check if we already have quantized modules in the model (created during quantization)
+    quantized_modules = find_modules(model, quant_linear_candidates if quant_linear_candidates else [BaseQuantLinear])
+    
+    if quantized_modules:
+        log.info(f"Found {len(quantized_modules)} pre-quantized modules in model (created during quantization)")
+        # Return the class of the first quantized module found
+        return list(quantized_modules.values())[0].__class__
+    
+    # If no quantized modules found, check for safetensors files
+    safet_files = glob.glob("*.safetensors")
+    if safet_files:
+        log.info(f"Found {len(safet_files)} safetensors files for loading quantized modules")
+        loaded_modules = []
+        
+        for safet_file in safet_files:
+            try:
+                # Load tensors from safetensors file
+                tensors = safetensors.torch.load_file(safet_file)
+                
+                # Extract module name from file
+                module_name = os.path.splitext(os.path.basename(safet_file))[0]
+                # Clean up module name (remove layer prefixes that might be added during quantization)
+                module_name = module_name.replace('layer_', '').replace('_temp_quantized', '')
+                
+                # Find the corresponding module in the model
+                target_module = None
+                for possible_name in [module_name, f"model.{module_name}", f"{module_name}", f"layers.{module_name}"]:
+                    if possible_name in modules:
+                        target_module = modules[possible_name]
+                        break
+                
+                if target_module is None:
+                    log.warn(f"No module found for {module_name} in {safet_file}")
+                    continue
+                
+                # Get original module properties
+                if isinstance(target_module, nn.Linear):
+                    in_features = target_module.in_features
+                    out_features = target_module.out_features
+                    bias = target_module.bias is not None
+                elif isinstance(target_module, transformers.Conv1D):
+                    in_features = target_module.weight.shape[0]
+                    out_features = target_module.weight.shape[1]
+                    bias = target_module.bias is not None
+                else:
+                    log.warn(f"Unsupported module type: {type(target_module)}")
+                    continue
+                
+                # Create quantized module
+                for quant_linear_cls in quant_linear_candidates:
+                    try:
+                        # Validate the quant linear class
+                        _, err = quant_linear_cls.validate(
+                            bits=bits,
+                            group_size=group_size,
+                            desc_act=desc_act,
+                            sym=sym,
+                            pack_dtype=pack_dtype,
+                            in_features=in_features,
+                            out_features=out_features,
+                            device=qcfg.device,
+                        )
+                        if err is not None:
+                            continue
+                        
+                        # Create new quantized module
+                        quantized_module = quant_linear_cls(
+                            bits=bits,
+                            group_size=group_size,
+                            desc_act=desc_act,
+                            sym=sym,
+                            in_features=in_features,
+                            out_features=out_features,
+                            pack_dtype=pack_dtype,
+                            bias=bias,
+                            name=module_name,
+                            lm_head_name=lm_head_name,
+                            backend=backend,
+                        )
+                        
+                        # Load quantization data from tensors
+                        if '.qweight' in tensors:
+                            quantized_module.qweight = torch.tensor(tensors['.qweight'])
+                        if '.scales' in tensors:
+                            quantized_module.scales = torch.tensor(tensors['.scales'])
+                        if '.zeros' in tensors:
+                            quantized_module.zeros = torch.tensor(tensors['.zeros'])
+                        if '.g_idx' in tensors:
+                            quantized_module.g_idx = torch.tensor(tensors['.g_idx'])
+                        
+                        # Replace the original module with the quantized one
+                        recurse_setattr(model, module_name, quantized_module)
+                        loaded_modules.append(quantized_module)
+                        log.info(f"Loaded quantized module from file: {module_name}")
+                        break
+                        
+                    except Exception as e:
+                        log.warn(f"Failed to create quantized module {module_name} with {quant_linear_cls.__name__}: {e}")
+                        continue
+                
+            except Exception as e:
+                log.warn(f"Failed to process {safet_file}: {e}")
+                continue
+        
+        if loaded_modules:
+            log.info("Memory optimization mode: Successfully loaded pre-packed quantized modules from files")
+            return type(loaded_modules[0])
+    
+    # If we get here, something went wrong
+    log.error("No quantized modules found in model or files")
+    raise RuntimeError("Failed to find quantized modules in memory optimization mode")
+
+
 def pack_module(name, qModules, quant_result: Dict[str, Dict[str, Any]], layers, quant_linear_cls, lock: threading.Lock):
     # Limit pack() thread usage to avoid auto-parallizataion regression
     with tctl.threadpool_limits(limits=1):
@@ -623,6 +771,15 @@ def pack_model(
 
     log.info("Packing model...")
 
+    # Special handling for memory optimization mode
+    if hasattr(qcfg, 'memory_optimization') and qcfg.memory_optimization:
+        log.info("Memory optimization mode: Loading quantization data from files")
+        quant_linear_cls = _pack_model_memory_optimized(model, qcfg, backend, lm_head_name)
+        if quant_linear_cls is None:
+            log.error("Memory optimization mode: Failed to pack model")
+            raise RuntimeError("Failed to pack model in memory optimization mode")
+        return quant_linear_cls
+
     modules = find_modules(model)
 
     modules = {n: modules[n] for n in quant_result}
@@ -637,7 +794,7 @@ def pack_model(
 
     qModules = find_modules(model, [quant_linear_cls])
 
-    assert len(qModules) > 0, f"No quantizeed modules[{quant_linear_cls}] found in the model."
+    assert len(qModules) > 0, f"No quantized modules[{quant_linear_cls}] found in the model."
 
     names = list(qModules.keys())
     lock = threading.Lock()

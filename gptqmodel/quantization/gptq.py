@@ -33,6 +33,8 @@ from ..looper.named_module import NamedModule
 from ..quantization import QuantizeConfig
 from ..utils.logger import setup_logger
 from ..utils.torch import HAS_CUDA, HAS_XPU, TORCH_GTE_28, device_next, torch_compile, torch_sync
+from ..utils.importer import select_quant_linear
+from ..utils.model import get_module
 from .quantizer import HF_OPTIMUM, Quantizer
 
 log = setup_logger()
@@ -61,8 +63,23 @@ def get_number_of_rows_and_cols(layer: nn.Module):
         return layer.weight.shape[0], np.prod(layer.weight.shape[1:])
 
 
+def _get_parent_and_layer_name(gptq_instance):
+    """Helper function to get parent module and layer name for replacing modules"""
+    if not hasattr(gptq_instance, 'layers_node') or not hasattr(gptq_instance, 'layer_index'):
+        return None, gptq_instance.name
+    
+    # Split the name to get parent and layer name
+    name_parts = gptq_instance.name.split('.')
+    if len(name_parts) > 1:
+        parent_name = '.'.join(name_parts[:-1])
+        layer_name = name_parts[-1]
+        return parent_name, layer_name
+    else:
+        return gptq_instance.layers_node, f"{gptq_instance.layers_node}.{gptq_instance.layer_index}"
+
+
 class GPTQ:
-    def __init__(self, module: nn.Module, qcfg: Optional[QuantizeConfig] = None):
+    def __init__(self, module: nn.Module, qcfg: Optional[QuantizeConfig] = None, model=None, layers_node=None, layer_index=None, backend=None, lm_head_name=None):
         # self.lock = threading.Lock()
 
         # self.num_tied_handles = 0
@@ -102,6 +119,17 @@ class GPTQ:
 
         # fwd counter
         self.fwd_counter = 0
+
+        # Memory optimization support
+        self.temp_file_path = None
+        self.temp_file_written = False
+        
+        # Additional attributes for memory optimization
+        self.model = model
+        self.layers_node = layers_node
+        self.layer_index = layer_index
+        self.backend = backend
+        self.lm_head_name = lm_head_name
 
     @staticmethod
     def _validate_module(module):
@@ -579,7 +607,167 @@ class GPTQ:
 
         duration = time.time() - start
 
+        # Memory optimization: write quantized weights to file and clear memory
+        if self.qcfg.memory_optimization:
+            # For memory optimization, we'll pack directly to safetensors format
+            # This eliminates the need for temporary files and reload_layer calls
+            safet_file = self.pack_layer_to_safetensors(Q, scale, zero, g_idx, "quantized_layers")
+            log.info(f"Memory optimization: Layer {self.name} quantized and packed directly to {safet_file}")
+            # Return None for Q to indicate it's saved to disk
+            return None, scale, zero, g_idx, duration, avg_loss, damp, self.nsamples
+
         return Q, scale, zero, g_idx, duration, avg_loss, damp, self.nsamples
+
+    def pack_layer_to_safetensors(self, q, scale, zero, g_idx, save_dir):
+        """Pack quantized layer directly to final quantized modules for memory optimization"""
+        if not self.qcfg.memory_optimization:
+            return None
+            
+        import os
+        import safetensors
+        import torch
+        
+        # Create a temporary directory if it doesn't exist
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Create a unique filename for this layer
+        layer_name = self.name.replace('.', '_').replace('/', '_')
+        safet_file = os.path.join(save_dir, f"{layer_name}.safetensors")
+        
+        # Get original module properties
+        if isinstance(self.module, nn.Linear):
+            in_features = self.module.in_features
+            out_features = self.module.out_features
+            bias = self.module.bias is not None
+        elif isinstance(self.module, transformers.Conv1D):
+            in_features = self.module.weight.shape[0]
+            out_features = self.module.weight.shape[1]
+            bias = self.module.bias is not None
+        else:
+            log.warn(f"Unsupported module type: {type(self.module)}")
+            return None
+        
+        # Determine quant linear class
+        quant_linear_candidates = select_quant_linear(
+            bits=self.qcfg.bits,
+            group_size=self.qcfg.group_size,
+            desc_act=self.qcfg.desc_act,
+            sym=self.qcfg.sym,
+            backend=self.backend,
+            format=self.qcfg.format,
+            pack=True,
+            dynamic=self.qcfg.dynamic,
+            device=self.qcfg.device,
+            pack_dtype=self.qcfg.pack_dtype,
+            multi_select=True,
+        )
+        
+        # Create quantized module
+        quantized_module = None
+        for quant_linear_cls in quant_linear_candidates:
+            try:
+                # Validate the quant linear class
+                _, err = quant_linear_cls.validate(
+                    bits=self.qcfg.bits,
+                    group_size=self.qcfg.group_size,
+                    desc_act=self.qcfg.desc_act,
+                    sym=self.qcfg.sym,
+                    pack_dtype=self.qcfg.pack_dtype,
+                    in_features=in_features,
+                    out_features=out_features,
+                    device=self.qcfg.device,
+                )
+                if err is not None:
+                    continue
+                
+                # Create new quantized module
+                quantized_module = quant_linear_cls(
+                    bits=self.qcfg.bits,
+                    group_size=self.qcfg.group_size,
+                    desc_act=self.qcfg.desc_act,
+                    sym=self.qcfg.sym,
+                    in_features=in_features,
+                    out_features=out_features,
+                    pack_dtype=self.qcfg.pack_dtype,
+                    bias=bias,
+                    name=self.name,
+                    lm_head_name=self.lm_head_name,
+                    backend=self.backend,
+                )
+                
+                # Load quantization data into the module
+                quantized_module.qweight = q.to(device='cpu')
+                quantized_module.scales = scale.to(device='cpu')
+                quantized_module.zeros = zero.to(device='cpu')
+                if g_idx is not None:
+                    quantized_module.g_idx = g_idx.to(device='cpu')
+                
+                # Break after successful creation
+                break
+                
+            except Exception as e:
+                log.warn(f"Failed to create quantized module {self.name} with {quant_linear_cls.__name__}: {e}")
+                continue
+        
+        if quantized_module is None:
+            log.error(f"Failed to create quantized module for {self.name}")
+            return None
+        
+        # Prepare tensors for safetensors format
+        # Convert tensors to CPU and numpy format for safetensors
+        q_cpu = quantized_module.qweight.cpu().contiguous()
+        scale_cpu = quantized_module.scales.cpu().contiguous()
+        zero_cpu = quantized_module.zeros.cpu().contiguous()
+        g_idx_cpu = quantized_module.g_idx.cpu().contiguous() if quantized_module.g_idx is not None else None
+        
+        # Create tensors dictionary
+        tensors = {}
+        
+        # Handle different tensor shapes and names based on module type
+        if isinstance(self.module, transformers.Conv1D):
+            # For Conv1D, we need to transpose back to original format
+            q_data = q_cpu.t().numpy()
+            tensors[f"{self.name}.qweight"] = q_data
+        else:
+            # For Linear and Conv2D
+            q_data = q_cpu.numpy()
+            tensors[f"{self.name}.qweight"] = q_data
+            
+        scale_data = scale_cpu.numpy()
+        tensors[f"{self.name}.scales"] = scale_data
+        
+        zero_data = zero_cpu.numpy()
+        tensors[f"{self.name}.zeros"] = zero_data
+        
+        if g_idx_cpu is not None:
+            g_idx_data = g_idx_cpu.numpy()
+            tensors[f"{self.name}.g_idx"] = g_idx_data
+        
+        # Save to safetensors format
+        safetensors.torch.save_file(tensors, safet_file)
+        
+        # Replace the original module with the quantized one in the model
+        parent_name, layer_name = _get_parent_and_layer_name(self)
+        if parent_name:
+            parent = get_module(self.model, parent_name)
+            setattr(parent, layer_name, quantized_module)
+        else:
+            # If it's a direct child of the model
+            layer_name = f"{self.layers_node}.{self.layer_index}"
+            parent_name = self.layers_node
+            parent = get_module(self.model, parent_name)
+            setattr(parent, layer_name, quantized_module)
+        
+        log.info(f"Memory optimization: Layer {self.name} packed directly to {safet_file}")
+        
+        # Clean up memory
+        if hasattr(self, "H"):
+            del self.H
+        if hasattr(self, "module_copy"):
+            del self.module_copy
+        torch.cuda.empty_cache()
+        
+        return safet_file
 
     def free(self):
         if hasattr(self, "H"):
@@ -588,6 +776,13 @@ class GPTQ:
         if hasattr(self, "module_copy"):
             del self.module_copy
         del self.module
+        
+        # Clean up temp file if it exists
+        if self.qcfg.memory_optimization and hasattr(self, 'temp_file_written') and self.temp_file_written and hasattr(self, 'temp_file_path') and self.temp_file_path:
+            try:
+                os.remove(self.temp_file_path)
+            except:
+                pass
 
         # torch_empty_cache(self.device)
 

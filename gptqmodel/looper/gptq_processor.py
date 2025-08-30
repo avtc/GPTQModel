@@ -66,6 +66,11 @@ class GPTQProcessor(LoopProcessor):
         raise NotImplementedError("GPTQProcessor's calibration_dataset cannot be modified")
 
     def preprocess(self, module: NamedModule, buffered_fwd: bool):
+        # Load layer on-demand if memory optimization is enabled
+        if hasattr(self.qcfg, 'memory_optimization') and self.qcfg.memory_optimization:
+            if hasattr(self.model, 'load_layer_on_demand'):
+                self.model.load_layer_on_demand(module.layer_index)
+
         # entire module is skipped
         if self.qcfg.dynamic_get(layer_name=module.full_name) == False:
             return
@@ -141,6 +146,13 @@ class GPTQProcessor(LoopProcessor):
             g = self.tasks[module.name]
 
         wq, scale, zero, g_idx, duration, avg_loss, damp_percent, nsamples = g.quantize()
+
+        # Handle memory optimization mode
+        if self.qcfg.memory_optimization:
+            # In memory optimization mode, we expect wq to be available since we pack directly during quantization
+            if wq is None:
+                log.error(f"Memory optimization: wq is None for {module.name}, this indicates an implementation issue")
+                raise RuntimeError(f"Memory optimization: Quantization did not return weights for {module.name}")
 
         with self.lock:
             self.result_save(module.full_name, {
@@ -222,6 +234,11 @@ class GPTQProcessor(LoopProcessor):
         with self.lock:
             self.tasks[module.name].free()
 
+        # Unload layer after processing if memory optimization is enabled
+        if hasattr(self.qcfg, 'memory_optimization') and self.qcfg.memory_optimization:
+            if hasattr(self.model, 'unload_layer'):
+                self.model.unload_layer(module.layer_index)
+
         # prepare for module.forward post generate
         # module.weight.data = torch.empty(1,1) # hack to remove weight.data
         # if auto_gc:
@@ -253,25 +270,61 @@ class GPTQProcessor(LoopProcessor):
             torch_sync()
 
         backend = kwargs.pop("backend")
-        model.qlinear_kernel = pack_model(
-            model=model.model,
-            quant_result=self.results(),
-            bits=self.qcfg.bits,
-            group_size=self.qcfg.group_size,
-            backend=backend,
-            desc_act=self.qcfg.desc_act,
-            format=self.qcfg.format,
-            quant_method=self.qcfg.quant_method,
-            lm_head_name=model.lm_head,
-            dynamic=self.qcfg.dynamic,
-            parallel_packing=self.qcfg.parallel_packing,
-            pack_dtype=self.qcfg.pack_dtype,
-        )
+        
+        # Handle memory optimization mode
+        if hasattr(self.qcfg, 'memory_optimization') and self.qcfg.memory_optimization:
+            log.info("Memory optimization mode: Modules already created during quantization, skipping pack_model")
+            # In memory optimization mode, modules are already created and replaced during quantization
+            # We just need to get the quantized module class for the model
+            from ..utils.model import find_modules, BaseQuantLinear
+            
+            # Find quantized modules that were created during quantization
+            quantized_modules = find_modules(model.model, layers=[BaseQuantLinear])
+            if quantized_modules:
+                # Get the class of the first quantized module
+                model.qlinear_kernel = list(quantized_modules.values())[0].__class__
+                log.info(f"Memory optimization: Using quantized module class {model.qlinear_kernel.__name__}")
+            else:
+                log.warn("Memory optimization: No quantized modules found, falling back to pack_model")
+                # Fallback to regular pack_model if no quantized modules found
+                model.qlinear_kernel = pack_model(
+                    model=model.model,
+                    quant_result=self.results(),
+                    bits=self.qcfg.bits,
+                    group_size=self.qcfg.group_size,
+                    backend=backend,
+                    desc_act=self.qcfg.desc_act,
+                    format=self.qcfg.format,
+                    quant_method=self.qcfg.quant_method,
+                    lm_head_name=model.lm_head,
+                    dynamic=self.qcfg.dynamic,
+                    parallel_packing=self.qcfg.parallel_packing,
+                    pack_dtype=self.qcfg.pack_dtype,
+                )
+        else:
+            # Regular quantization workflow
+            model.qlinear_kernel = pack_model(
+                model=model.model,
+                quant_result=self.results(),
+                bits=self.qcfg.bits,
+                group_size=self.qcfg.group_size,
+                backend=backend,
+                desc_act=self.qcfg.desc_act,
+                format=self.qcfg.format,
+                quant_method=self.qcfg.quant_method,
+                lm_head_name=model.lm_head,
+                dynamic=self.qcfg.dynamic,
+                parallel_packing=self.qcfg.parallel_packing,
+                pack_dtype=self.qcfg.pack_dtype,
+            )
 
         # set quantized state
         model.quantized = True
 
         model.quantize_config.quant_method = QUANT_METHOD.GPTQ
+
+        # Note: With direct safetensors packing, no temporary files need cleanup
+        # The quantized layers are saved directly to final safetensors format
 
         super().finalize(model=model, **kwargs)
 
