@@ -371,8 +371,8 @@ class GPTQ:
                 i2 = min(i1 + blocksize, self.columns)
                 count = i2 - i1
 
-                # weights are not modified
-                W1 = W[:, i1:i2]
+                # Clone the weights like the original code to maintain device/dtype consistency
+                W1 = W[:, i1:i2].clone()
                 Q1 = torch.zeros_like(W1)
 
                 # Handle group quantization parameters efficiently (similar to original)
