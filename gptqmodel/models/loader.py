@@ -189,7 +189,20 @@ def ModelLoader(cls):
         model_init_kwargs["_fast_init"] = cls.require_fast_init
         # model_init_kwargs["low_cpu_mem_usage"] = True
 
-        model = cls.loader.from_pretrained(model_local_path, config=config, **model_init_kwargs)
+        # Check if layer-wise loading is enabled for memory optimization
+        if hasattr(quantize_config, 'memory_optimization') and quantize_config.memory_optimization:
+            # Use layer-wise loading for memory optimization
+            model, original_layers, layers_prefix, layer_count = cls._load_model_layer_by_layer(model_local_path, config, **model_init_kwargs)
+            # Store layer-wise loading information on the model for later use during quantization
+            model._layer_wise_info = {
+                'original_layers': original_layers,
+                'layers_prefix': layers_prefix,
+                'layer_count': layer_count,
+                'memory_optimization': True
+            }
+        else:
+            # Use standard loading
+            model = cls.loader.from_pretrained(model_local_path, config=config, **model_init_kwargs)
 
         # from concurrent.futures import ThreadPoolExecutor
         #
@@ -242,6 +255,107 @@ def ModelLoader(cls):
             trust_remote_code=trust_remote_code,
             model_local_path=model_local_path,
         )
+
+    @classmethod
+    def _load_model_layer_by_layer(cls, model_local_path: str, config: PretrainedConfig, **model_init_kwargs):
+        """
+        Load model layer by layer for memory optimization.
+        This method creates a model skeleton and loads only the specific layer needed for quantization,
+        significantly reducing memory usage for large models.
+        """
+        import gc
+        import os
+        from pathlib import Path
+        from ..utils.model import get_module_by_name_prefix
+        
+        log.info("Loading model layer by layer for memory optimization")
+        
+        # Create a basic model skeleton without loading weights
+        with torch.no_grad():
+            # Create model with empty weights
+            model = cls.loader.from_config(config, **model_init_kwargs)
+            
+            # Get layer information
+            layers, layers_prefix = get_module_by_name_prefix(model, cls.layers_node)
+            layer_count = len(layers)
+            
+            log.info(f"Model has {layer_count} layers to load")
+            
+            # Store original layer references
+            original_layers = []
+            for i, layer in enumerate(layers):
+                original_layers.append(layer)
+                # Replace with None to free memory
+                layers[i] = None
+                gc.collect()
+        
+        log.info("Layer-by-layer loading completed - skeleton ready for quantization")
+        return model, original_layers, layers_prefix, layer_count
+    
+    @classmethod
+    def _load_single_layer(cls, model_local_path: str, config: PretrainedConfig, layers_prefix: str,
+                          layer_index: int, layer_modules: list, **model_init_kwargs):
+        """
+        Load only a single layer from the model checkpoint for quantization.
+        This method loads the entire model but extracts only the required layer,
+        then immediately cleans up everything except that layer.
+        """
+        import gc
+        from ..utils.model import get_module_by_name_prefix, find_modules
+        
+        log.info(f"Loading single layer {layer_index} for quantization")
+        
+        # Load the full model temporarily
+        temp_model = cls.loader.from_pretrained(model_local_path, config=config, **model_init_kwargs)
+        
+        # Get the specific layer
+        temp_layers, _ = get_module_by_name_prefix(temp_model, cls.layers_node)
+        if layer_index >= len(temp_layers):
+            del temp_model
+            gc.collect()
+            raise ValueError(f"Layer index {layer_index} out of range (0-{len(temp_layers)-1})")
+        
+        target_layer = temp_layers[layer_index]
+        
+        # Find all modules within this layer that need quantization
+        layer_modules_dict = {}
+        if layer_modules:
+            for module_group in layer_modules:
+                for module_name in module_group:
+                    full_name = f"{layers_prefix}.{layer_index}.{module_name}"
+                    module = get_module(temp_model, full_name)
+                    if module:
+                        layer_modules_dict[module_name] = module
+        
+        # Create a minimal layer object with only the required modules
+        class MinimalLayer:
+            def __init__(self, original_layer, modules_dict):
+                self.original_layer = original_layer
+                self.modules_dict = modules_dict
+                
+                # Copy only the essential attributes
+                for attr_name in dir(original_layer):
+                    if not attr_name.startswith('_'):
+                        try:
+                            setattr(self, attr_name, getattr(original_layer, attr_name))
+                        except:
+                            pass
+                
+                # Replace the main modules with our minimal versions
+                for name, module in modules_dict.items():
+                    setattr(self, name, module)
+            
+            def __call__(self, *args, **kwargs):
+                return self.original_layer(*args, **kwargs)
+        
+        minimal_layer = MinimalLayer(target_layer, layer_modules_dict)
+        
+        # Clean up the temporary model completely
+        del temp_model
+        gc.collect()
+        
+        log.info(f"Successfully loaded layer {layer_index} with {len(layer_modules_dict)} modules")
+        return minimal_layer
 
     cls.from_pretrained = from_pretrained
 

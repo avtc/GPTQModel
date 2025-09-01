@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import copy
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -30,6 +31,7 @@ from ..looper.named_module import NamedModule
 from ..looper.native_processor import NativeProcessor
 from ..models import BaseGPTQModel
 from ..models._const import SUPPORTS_MODULE_TYPES
+from ..models.loader import ModelLoader
 from ..nn_modules.hooked_linear import HookedLinear, replace_module_with_hooked_legacy, replace_module_with_hooked_tree
 from ..utils.logger import setup_logger
 from ..utils.model import (find_modules, get_device, get_module, get_module_by_name_prefix,
@@ -162,7 +164,22 @@ class ModuleLooper():
 
         forward_pass_use_cache = self.gptq_model.model.config.use_cache if hasattr(self.gptq_model.model.config, "use_cache") else False
         self.gptq_model.model.config.use_cache = False
-        layers, layers_prefix = get_module_by_name_prefix(self.gptq_model.model, self.gptq_model.layers_node)
+        
+        # Check if memory optimization is enabled via quantize config
+        memory_optimization = any(p.qcfg.memory_optimization for p in self.processors if hasattr(p, 'qcfg'))
+        
+        if memory_optimization:
+            # Memory optimization enabled - _layer_wise_info is guaranteed to exist
+            layer_wise_info = self.gptq_model.model._layer_wise_info
+            original_layers = layer_wise_info['original_layers']
+            layers_prefix = layer_wise_info['layers_prefix']
+            layer_count = layer_wise_info['layer_count']
+            layers = [None] * layer_count  # Initialize with None placeholders
+        else:
+            # Standard loading (NO memory optimization)
+            layers, layers_prefix = get_module_by_name_prefix(self.gptq_model.model, self.gptq_model.layers_node)
+            layer_count = len(layers)
+            original_layers = None  # No original_layers array needed
 
         for p_index, processor in enumerate(self.processors):
             if not processor.verify_calibration_dataset(p_index):
@@ -179,10 +196,32 @@ class ModuleLooper():
 
                 continue
 
-            input_cache = self.cache_inputs(layers=layers, auto_gc=auto_gc,
-                                            calibration_data=processor.calibration_dataset,
-                                            calibration_enable_gpu_cache=calibration_enable_gpu_cache,
-                                            use_cache=False)
+            if memory_optimization:
+                # In memory optimization mode, we need to get one layer to cache inputs
+                # Since layers array contains None placeholders, we load the first layer temporarily
+                if layer_count > 0:
+                    temp_layer = ModelLoader._load_single_layer(
+                        model_local_path=self.gptq_model.model_local_path,
+                        config=self.gptq_model.model.config,
+                        layers_prefix=layers_prefix,
+                        layer_index=0,  # Load first layer for input caching
+                        layer_modules=self.gptq_model.layer_modules,
+                        **{"trust_remote_code": self.gptq_model.trust_remote_code}
+                    )
+                    input_cache = self.cache_inputs(layers=[temp_layer], auto_gc=auto_gc,
+                                                    calibration_data=processor.calibration_dataset,
+                                                    calibration_enable_gpu_cache=calibration_enable_gpu_cache,
+                                                    use_cache=False)
+                    # Clean up the temporary layer
+                    del temp_layer
+                else:
+                    input_cache = InputCache([], [], [], [])
+            else:
+                # Standard mode - use layers array directly
+                input_cache = self.cache_inputs(layers=layers, auto_gc=auto_gc,
+                                                calibration_data=processor.calibration_dataset,
+                                                calibration_enable_gpu_cache=calibration_enable_gpu_cache,
+                                                use_cache=False)
             processor.receive_input_cache(input_cache)
 
         # release calibration_dataset
@@ -236,7 +275,22 @@ class ModuleLooper():
                 module = get_module(self.gptq_model.model, key=self.gptq_model.lm_head)
             else:
                 quant_modules_pb.title(f"Quantizing layer {layer_index} of {layer_count - 1}").draw()
-                module = layers[layer_index]
+                
+                # Memory optimization enabled - use true layer-by-layer loading
+                if memory_optimization:
+                    # Load only the specific layer needed for quantization
+                    layer = ModelLoader._load_single_layer(
+                        model_local_path=self.gptq_model.model_local_path,
+                        config=self.gptq_model.model.config,
+                        layers_prefix=layers_prefix,
+                        layer_index=layer_index,
+                        layer_modules=self.gptq_model.layer_modules,
+                        **{"trust_remote_code": self.gptq_model.trust_remote_code}
+                    )
+                    module = layer
+                else:
+                    # Standard loading (no memory optimization): load layer directly
+                    module = layers[layer_index]
 
             if module.__class__.__name__.lower() == "MllamaCrossAttentionDecoderLayer".lower():
                 # TODO FIXME: currently we not support quantizing cross attention layer (pixel_values)
@@ -514,7 +568,19 @@ class ModuleLooper():
                     torch_sync()
 
                     if not is_lm_head_module:
-                        layers[layer_index] = self.gptq_model.post_quantize(module)
+                        quantized_layer = self.gptq_model.post_quantize(module)
+                        
+                        if memory_optimization:
+                            # In memory optimization mode, save quantized layer to file
+                            layer_file_path = os.path.join(self.gptq_model.model_local_path,
+                                                       f"quantized_layer_{layer_index}.safetensors")
+                            # Save the quantized layer state
+                            state_dict = quantized_layer.state_dict()
+                            torch.save(state_dict, layer_file_path)
+                            log.info(f"Saved quantized layer {layer_index} to {layer_file_path}")
+                        else:
+                            # Standard mode - store quantized layer back in layers array
+                            layers[layer_index] = quantized_layer
                     else:
                         self.gptq_model.post_quantize(module)
 
@@ -532,7 +598,7 @@ class ModuleLooper():
                         for name in processed_subset:
                             reverse_p.submodule_finalize(processed_subset[name])
                     del module
-
+                    
                 if auto_gc:
                     torch_empty_cache()
 
@@ -567,4 +633,67 @@ class ModuleLooper():
         if auto_gc:
             torch_empty_cache()
 
+        # In memory optimization mode, reconstruct the final model from saved layers
+        if memory_optimization:
+            reconstructed_model = self.reconstruct_model_from_quantized_layers()
+            if reconstructed_model:
+                # Update the model reference
+                self.gptq_model.model = reconstructed_model
+                log.info("Model reconstruction from quantized layers completed")
+            else:
+                log.warning("Failed to reconstruct model from quantized layers")
+
         return total_log
+
+    def reconstruct_model_from_quantized_layers(self):
+        """
+        Reconstruct the final quantized model from saved layer files.
+        This method should be called after all layers are processed in memory optimization mode.
+        """
+        if not hasattr(self.gptq_model.model, '_layer_wise_info'):
+            log.warning("No layer-wise info found - cannot reconstruct model from saved layers")
+            return None
+            
+        layer_wise_info = self.gptq_model.model._layer_wise_info
+        layer_count = layer_wise_info['layer_count']
+        layers_prefix = layer_wise_info['layers_prefix']
+        
+        # Create a new model with the same configuration
+        model = self.gptq_model.model.__class__.from_config(self.gptq_model.model.config)
+        
+        # Load each quantized layer from file and replace in the model
+        for layer_index in range(layer_count):
+            layer_file_path = os.path.join(self.gptq_model.model_local_path,
+                                       f"quantized_layer_{layer_index}.safetensors")
+            
+            if os.path.exists(layer_file_path):
+                # Load the quantized layer state
+                state_dict = torch.load(layer_file_path, map_location='cpu')
+                
+                # Get the layer module name
+                layer_modules = self.gptq_model.layer_modules[0] if self.gptq_model.layer_modules else []
+                if layer_modules:
+                    # Find the actual layer in the model
+                    layer_name = f"{layers_prefix}.{layer_index}"
+                    layer_module = get_module(model, layer_name)
+                    
+                    if layer_module:
+                        # Load the quantized state into the layer
+                        layer_module.load_state_dict(state_dict, strict=False)
+                        log.info(f"Loaded quantized layer {layer_index} from {layer_file_path}")
+                    else:
+                        log.error(f"Could not find layer {layer_name} in model")
+                else:
+                    log.error(f"No layer modules defined for layer {layer_index}")
+            else:
+                log.error(f"Quantized layer file not found: {layer_file_path}")
+        
+        # Clean up layer files
+        for layer_index in range(layer_count):
+            layer_file_path = os.path.join(self.gptq_model.model_local_path,
+                                       f"quantized_layer_{layer_index}.safetensors")
+            if os.path.exists(layer_file_path):
+                os.remove(layer_file_path)
+                log.info(f"Cleaned up layer file: {layer_file_path}")
+        
+        return model
