@@ -12,6 +12,7 @@ Enhanced to test single layer packing functionality and excluded modules handlin
 import os
 import sys
 import tempfile
+from gptqmodel.models.base import BaseGPTQModel
 import torch
 import shutil
 import json
