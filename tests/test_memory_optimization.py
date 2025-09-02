@@ -133,6 +133,7 @@ def test_layer_wise_loading():
         
     except Exception as e:
         print(f"Layer-wise loading test failed: {e}")
+        raise  # Re-raise the exception to actually fail the test
 
 def test_memory_optimization_flag():
     """Test that memory optimization flag is properly passed through the system"""
@@ -211,6 +212,7 @@ def test_single_layer_packing():
         
     except Exception as e:
         print(f"Single layer packing test failed: {e}")
+        raise  # Re-raise the exception to actually fail the test
 
 def test_excluded_modules_handling():
     """Test handling of modules excluded from quantization via dynamic config"""
@@ -249,6 +251,7 @@ def test_excluded_modules_handling():
         
     except Exception as e:
         print(f"Excluded modules test failed: {e}")
+        raise  # Re-raise the exception to actually fail the test
 
 def test_layer_file_saving():
     """Test that layers are saved in proper format for memory optimization"""
@@ -309,6 +312,7 @@ def test_layer_file_saving():
             
     except Exception as e:
         print(f"Layer file saving test failed: {e}")
+        raise  # Re-raise the exception to actually fail the test
 
 def test_memory_optimization_integration():
     """Test memory optimization with complete workflow"""
@@ -344,6 +348,7 @@ def test_memory_optimization_integration():
         
     except Exception as e:
         print(f"Memory optimization integration test failed: {e}")
+        raise  # Re-raise the exception to actually fail the test
 
 def test_optimized_single_layer_loading():
     """Test the optimized single layer loading functionality"""
@@ -377,6 +382,7 @@ def test_optimized_single_layer_loading():
         
     except Exception as e:
         print(f"Optimized single layer loading test failed: {e}")
+        raise  # Re-raise the exception to actually fail the test
 
 def test_improved_attribute_copying():
     """Test the improved attribute copying in MinimalLayer"""
@@ -409,6 +415,7 @@ def test_improved_attribute_copying():
         
     except Exception as e:
         print(f"Improved attribute copying test failed: {e}")
+        raise  # Re-raise the exception to actually fail the test
 
 def test_selective_checkpoint_loading():
     """Test selective checkpoint loading functionality"""
@@ -445,6 +452,7 @@ def test_selective_checkpoint_loading():
         
     except Exception as e:
         print(f"Selective checkpoint loading test failed: {e}")
+        raise  # Re-raise the exception to actually fail the test
 
 def test_memory_optimization_error_handling():
     """Test error handling in memory optimization features"""
@@ -489,6 +497,7 @@ def test_memory_optimization_error_handling():
         
     except Exception as e:
         print(f"Memory optimization error handling test failed: {e}")
+        raise  # Re-raise the exception to actually fail the test
 
 def test_layer_specific_attribute_handling():
     """Test layer-specific attribute handling in MinimalLayer"""
@@ -526,6 +535,7 @@ def test_layer_specific_attribute_handling():
         
     except Exception as e:
         print(f"Layer-specific attribute handling test failed: {e}")
+        raise  # Re-raise the exception to actually fail the test
 
 def test_fallback_compatibility():
     """Test that fallback mechanism maintains compatibility"""
@@ -559,6 +569,7 @@ def test_fallback_compatibility():
         
     except Exception as e:
         print(f"Fallback compatibility test failed: {e}")
+        raise  # Re-raise the exception to actually fail the test
 
 def test_moe_model_compatibility():
     """Test that the fixes work properly with MoE (Mixture of Experts) models"""
@@ -626,6 +637,7 @@ def test_moe_model_compatibility():
         
     except Exception as e:
         print(f"MoE model compatibility test failed: {e}")
+        raise  # Re-raise the exception to actually fail the test
 
 def test_complex_layer_architecture_support():
     """Test support for complex layer architectures beyond standard transformers"""
@@ -683,6 +695,7 @@ def test_complex_layer_architecture_support():
         
     except Exception as e:
         print(f"Complex layer architecture support test failed: {e}")
+        raise  # Re-raise the exception to actually fail the test
 
 def test_memory_optimization_with_moe():
     """Test complete memory optimization workflow with MoE models"""
@@ -762,58 +775,49 @@ def test_memory_optimization_with_moe():
         
     except Exception as e:
         print(f"Memory optimization with MoE test failed: {e}")
+        raise  # Re-raise the exception to actually fail the test
 
 if __name__ == "__main__":
     print("Running enhanced memory optimization tests...")
     print("=" * 60)
     
-    test_memory_optimization_config()
-    test_memory_optimization_flag()
-    test_layer_wise_loading()
-    test_memory_optimization_quantization()
-    test_single_layer_packing()
-    test_excluded_modules_handling()
-    test_layer_file_saving()
-    test_memory_optimization_integration()
+    tests = [
+        test_memory_optimization_config,
+        test_memory_optimization_flag,
+        test_layer_wise_loading,
+        test_memory_optimization_quantization,
+        test_single_layer_packing,
+        test_excluded_modules_handling,
+        test_layer_file_saving,
+        test_memory_optimization_integration,
+        test_optimized_single_layer_loading,
+        test_improved_attribute_copying,
+        test_selective_checkpoint_loading,
+        test_memory_optimization_error_handling,
+        test_layer_specific_attribute_handling,
+        test_fallback_compatibility,
+        test_moe_model_compatibility,
+        test_complex_layer_architecture_support,
+        test_memory_optimization_with_moe,
+    ]
     
-    # New tests for the fixes
-    test_optimized_single_layer_loading()
-    test_improved_attribute_copying()
-    test_selective_checkpoint_loading()
-    test_memory_optimization_error_handling()
-    test_layer_specific_attribute_handling()
-    test_fallback_compatibility()
+    passed_tests = 0
+    failed_tests = 0
     
-    # Tests for MoE and complex architectures
-    test_moe_model_compatibility()
-    test_complex_layer_architecture_support()
-    test_memory_optimization_with_moe()
+    for test_func in tests:
+        try:
+            test_func()
+            passed_tests += 1
+        except Exception as e:
+            failed_tests += 1
+            print(f"\n❌ Test {test_func.__name__} failed with exception: {e}")
+            # Continue with other tests but track failures
     
     print("=" * 60)
-    print("All tests completed successfully!")
-    print("\nEnhanced memory optimization feature with single layer packing is ready to use!")
-    print("To enable memory optimization during quantization:")
-    print("  config = QuantizeConfig(memory_optimization=True)")
-    print("  model.quantize(..., quantize_config=config)")
-    print("\nFeatures included:")
-    print("  ✓ Immediate source layer cleanup after quantization")
-    print("  ✓ Enhanced garbage collection with torch_empty_cache()")
-    print("  ✓ Layer-wise model loading (reduces initial memory footprint)")
-    print("  ✓ Strategic memory cleanup throughout quantization pipeline")
-    print("  ✓ Single layer packing and saving in final inference state")
-    print("  ✓ Proper handling of modules excluded from quantization")
-    print("  ✓ Format conversion and metadata preservation")
-    print("  ✓ Standard HuggingFace sharded format compatibility")
-    print("\n🚀 NEW IMPROVEMENTS:")
-    print("  ✓ Optimized single layer loading with selective checkpoint reading")
-    print("  ✓ Improved attribute copying with safe whitelisting and error handling")
-    print("  ✓ Enhanced memory efficiency for large models (>100B parameters)")
-    print("  ✓ Better compatibility with complex layer architectures")
-    print("  ✓ Robust fallback mechanisms for maximum compatibility")
-    print("\n🔧 ADVANCED ARCHITECTURE SUPPORT:")
-    print("  ✓ Full MoE (Mixture of Experts) model compatibility")
-    print("  ✓ Complex attention mechanisms handling")
-    print("  ✓ Various normalization layer types support")
-    print("  ✓ MLP components and variants handling")
-    print("  ✓ Expert-specific and shared expert module support")
-    print("  ✓ Dynamic configuration with expert indices")
+    if failed_tests == 0:
+        print(f"✅ All {passed_tests} tests completed successfully!")
+    else:
+        print(f"❌ {failed_tests} out of {passed_tests + failed_tests} tests failed!")
+        print(f"   Passed: {passed_tests}, Failed: {failed_tests}")
+        sys.exit(1)  # Exit with error code if any test failed
+    
