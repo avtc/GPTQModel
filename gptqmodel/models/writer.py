@@ -223,47 +223,114 @@ def ModelWriter(cls):
                 weight_map = {}
                 total_size_mb = 0
                 
+                # Verify all expected shard files exist
+                expected_shards = []
                 for layer_index in range(layer_count):
-                    # Format layer number with leading zeros
                     layer_number = f"{layer_index + 1:05d}"  # 1-based indexing
                     total_number = f"{layer_count:05d}"
-                    
-                    # Shard filename - must not include module name for standard format
                     shard_filename = f"model-{layer_number}-of-{total_number}.safetensors"
+                    expected_shards.append(shard_filename)
+                
+                # Check for missing shard files
+                missing_shards = []
+                for shard_filename in expected_shards:
                     final_shard_path = os.path.join(save_dir, shard_filename)
-
-                    # Files are already saved in correct location by _save_quantized_layer_to_file
-                    if os.path.exists(final_shard_path):
-                        log.info(f"Found shard {shard_filename} at final location")
+                    if not os.path.exists(final_shard_path):
+                        missing_shards.append(shard_filename)
+                    else:
                         total_size_mb += os.path.getsize(final_shard_path) / (1024 * 1024)
-
-                    layer_modules = self.layer_modules[0] if self.layer_modules else []
+                        log.info(f"Found shard {shard_filename} at final location")
+                
+                if missing_shards:
+                    error_msg = f"Missing expected shard files: {missing_shards}"
+                    log.error(error_msg)
+                    raise FileNotFoundError(error_msg)
+                
+                # Create comprehensive weight map including all model modules
+                layer_modules = self.layer_modules[0] if self.layer_modules else []
+                
+                # Map layer modules
+                for layer_index in range(layer_count):
+                    layer_number = f"{layer_index + 1:05d}"
+                    total_number = f"{layer_count:05d}"
+                    shard_filename = f"model-{layer_number}-of-{total_number}.safetensors"
+                    
                     for module_name in layer_modules:
                         weight_map[f"{self.layers_node}.{layer_index}.{module_name}.weight"] = shard_filename
+                        # Add bias mapping if it exists
+                        weight_map[f"{self.layers_node}.{layer_index}.{module_name}.bias"] = shard_filename
+                
+                # Map non-layer modules (lm_head, base_modules)
+                # These need to be mapped to the appropriate shard or handled separately
+                # For now, map them to the first shard as a fallback
+                first_shard = expected_shards[0] if expected_shards else None
+                
+                # Map lm_head if it exists and is quantized
+                if self.lm_head and hasattr(self, 'quantized') and self.quantized:
+                    weight_map[f"{self.lm_head}.weight"] = first_shard
+                    weight_map[f"{self.lm_head}.bias"] = first_shard
+                
+                # Map base modules (excluding layer modules)
+                for module_name in self.base_modules:
+                    # Only include if not already covered by layer modules
+                    if not any(module_name.endswith(layer_module) for layer_modules_list in self.layer_modules for layer_module in layer_modules_list):
+                        weight_map[f"{module_name}.weight"] = first_shard
+                        weight_map[f"{module_name}.bias"] = first_shard
+                
+                # Create enhanced metadata with all fields from original implementation
+                metadata = {
+                    "format": "pt",
+                    "total_layers": layer_count,
+                    "quant_method": self.quantize_config.quant_method,
+                    "bits": str(self.quantize_config.bits),
+                    "group_size": str(self.quantize_config.group_size),
+                    "sym": str(self.quantize_config.sym),
+                    "desc_act": str(self.quantize_config.desc_act),
+                    # Additional metadata fields from original implementation
+                    "damp_percent": str(self.quantize_config.damp_percent),
+                    "static_groups": str(self.quantize_config.static_groups),
+                    "true_sequential": str(self.quantize_config.true_sequential),
+                    "mse": str(self.quantize_config.mse),
+                    "v2_enabled": str(self.quantize_config.v2),
+                    "v2_alpha": str(self.quantize_config.v2_alpha),
+                }
+                
+                # Add quantizer metadata
+                quantizers = [f"{META_QUANTIZER_GPTQMODEL}:{__version__}"]
+                if meta_quantizer:
+                    if len(meta_quantizer.split(":")) == 2:
+                        quantizers.append(meta_quantizer.replace(" ",""))
+                    else:
+                        log.warn(f"meta_quantizer: '{meta_quantizer}' format is invalid, expected: 'quantizer_name:version'")
+                
+                metadata.update({
+                    META_FIELD_QUANTIZER: ",".join(quantizers),
+                    META_FIELD_URI: META_VALUE_URI,
+                    META_FIELD_DAMP_PERCENT: str(self.quantize_config.damp_percent),
+                    META_FIELD_DAMP_AUTO_INCREMENT: str(self.quantize_config.damp_auto_increment),
+                    META_FIELD_STATIC_GROUPS: str(self.quantize_config.static_groups),
+                    META_FIELD_TRUE_SEQUENTIAL: str(self.quantize_config.true_sequential),
+                    META_FIELD_MSE: str(self.quantize_config.mse),
+                    META_FIELD_V2_ENABLED: str(self.quantize_config.v2),
+                    META_FIELD_V2_ALPHA: str(self.quantize_config.v2_alpha),
+                })
                 
                 # Create index.json for the sharded model
                 if weight_map:
                     index_data = {
-                        "metadata": {
-                            "format": "pt",
-                            "total_layers": layer_count,
-                            "quant_method": self.quantize_config.quant_method,
-                            "bits": str(self.quantize_config.bits),
-                            "group_size": str(self.quantize_config.group_size),
-                            "sym": str(self.quantize_config.sym),
-                            "desc_act": str(self.quantize_config.desc_act),
-                        },
+                        "metadata": metadata,
                         "weight_map": weight_map
                     }
                     
                     index_path = os.path.join(save_dir, "model.safetensors.index.json")
                     with open(index_path, "w", encoding="utf-8") as f:
                         json.dump(index_data, f, indent=2)
-                    log.info(f"Created sharded model index: {index_path}")
+                    log.info(f"Created enhanced sharded model index: {index_path}")
+                    log.info(f"Weight map contains {len(weight_map)} module mappings")
                 
                 # Note: The model reconstruction is now handled by the index.json
                 # The sharded format is standard HuggingFace format that can be loaded directly
-                # Non-layer modules are handled by the standard save process below
+                # Non-layer modules are mapped to appropriate shards
             
             # # internal is always gptq v2 but allow users to pass gptq (v1) via config
             # Apply format conversion before saving in standard mode (when _layer_wise_info is not set)
