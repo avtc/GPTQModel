@@ -111,12 +111,15 @@ def test_layer_wise_loading():
     print("Testing layer-wise model loading...")
     
     try:
+        import inspect
+        from gptqmodel.models.base import BaseGPTQModel
         from gptqmodel.models.loader import ModelLoader
         from transformers import AutoConfig
         
-        # Test that the layer-wise loading methods exist
-        assert hasattr(ModelLoader, '_load_model_layer_by_layer'), "Layer-wise loading method not found"
-        assert hasattr(ModelLoader, '_load_single_layer'), "Single layer loading method not found"
+        # Test that the layer-wise loading methods exist in the BaseGPTQModel class
+        # Note: ModelLoader is a decorator, so we need to check methods on BaseGPTQModel
+        assert hasattr(BaseGPTQModel, '_load_model_layer_by_layer'), "Layer-wise loading method not found"
+        assert hasattr(BaseGPTQModel, '_load_single_layer'), "Single layer loading method not found"
         
         # Test that _load_single_layer has the correct signature
         import inspect
@@ -159,7 +162,7 @@ def test_single_layer_packing():
     
     try:
         from gptqmodel.looper.module_looper import ModuleLooper
-        from gptqmodels.models.base import BaseGPTQModel
+        from gptqmodel.models.base import BaseGPTQModel
         
         # Create a mock model with layer structure
         class MockGPTQModel(BaseGPTQModel):
@@ -290,7 +293,7 @@ def test_layer_file_saving():
                 "group_size": "128",
                 "sym": "True",
                 "desc_act": "True",
-                "total_modules": "3",
+                "total_modules": 3,  # Fix: should be string for metadata
             }
             
             save_file(mock_state_dict, file_path, metadata=metadata)
@@ -333,13 +336,13 @@ def test_memory_optimization_integration():
             }
         )
         
-        # Test that ModelLoader has required methods for memory optimization
-        assert hasattr(ModelLoader, '_load_single_layer'), "Single layer loading not available"
-        assert hasattr(ModelLoader, '_load_model_layer_by_layer'), "Layer-by-layer loading not available"
+        # Test that BaseGPTQModel has required methods for memory optimization
+        assert hasattr(BaseGPTQModel, '_load_single_layer'), "Single layer loading not available"
+        assert hasattr(BaseGPTQModel, '_load_model_layer_by_layer'), "Layer-by-layer loading not available"
         
         # Test that the methods have correct signatures
         import inspect
-        single_layer_sig = inspect.signature(ModelLoader._load_single_layer)
+        single_layer_sig = inspect.signature(BaseGPTQModel._load_single_layer)
         expected_params = ['model_local_path', 'config', 'layers_prefix', 'layer_index', 'layer_modules']
         for param in expected_params:
             assert param in single_layer_sig.parameters, f"Parameter {param} not found in _load_single_layer"
@@ -359,11 +362,11 @@ def test_optimized_single_layer_loading():
         from transformers import AutoConfig
         import inspect
         
-        # Test that the optimized methods exist
-        assert hasattr(ModelLoader, '_load_single_layer_optimized'), "Optimized loading method not found"
-        assert hasattr(ModelLoader, '_load_single_layer_fallback'), "Fallback loading method not found"
-        assert hasattr(ModelLoader, '_load_layer_weights_only'), "Layer weights loading method not found"
-        assert hasattr(ModelLoader, '_create_minimal_layer_optimized'), "Optimized minimal layer creation not found"
+        # Test that the optimized methods exist in BaseGPTQModel
+        assert hasattr(BaseGPTQModel, '_load_single_layer_optimized'), "Optimized loading method not found"
+        assert hasattr(BaseGPTQModel, '_load_single_layer_fallback'), "Fallback loading method not found"
+        assert hasattr(BaseGPTQModel, '_load_layer_weights_only'), "Layer weights loading method not found"
+        assert hasattr(BaseGPTQModel, '_create_minimal_layer_optimized'), "Optimized minimal layer creation not found"
         
         # Test method signatures
         optimized_sig = inspect.signature(ModelLoader._load_single_layer_optimized)
@@ -392,7 +395,7 @@ def test_improved_attribute_copying():
         from gptqmodel.models.loader import ModelLoader
         
         # Test that MinimalLayer has safe attribute whitelisting
-        source_code = inspect.getsource(ModelLoader._create_minimal_layer_base)
+        source_code = inspect.getsource(BaseGPTQModel._create_minimal_layer_base)
         
         # Check for safe attributes list
         assert "SAFE_ATTRIBUTES" in source_code, "SAFE_ATTRIBUTES not found in MinimalLayer"
@@ -425,10 +428,10 @@ def test_selective_checkpoint_loading():
         from gptqmodel.models.loader import ModelLoader
         import inspect
         
-        # Test that selective loading methods exist
-        assert hasattr(ModelLoader, '_load_layer_weights_only'), "Layer weights loading not found"
-        assert hasattr(ModelLoader, '_load_layer_from_single_checkpoint'), "Single checkpoint loading not found"
-        assert hasattr(ModelLoader, '_load_layer_from_sharded_checkpoint'), "Sharded checkpoint loading not found"
+        # Test that selective loading methods exist in BaseGPTQModel
+        assert hasattr(BaseGPTQModel, '_load_layer_weights_only'), "Layer weights loading not found"
+        assert hasattr(BaseGPTQModel, '_load_layer_from_single_checkpoint'), "Single checkpoint loading not found"
+        assert hasattr(BaseGPTQModel, '_load_layer_from_sharded_checkpoint'), "Sharded checkpoint loading not found"
         
         # Test method signatures
         weights_sig = inspect.signature(ModelLoader._load_layer_weights_only)
@@ -464,7 +467,7 @@ def test_memory_optimization_error_handling():
         import inspect
         
         # Test that _load_single_layer handles edge cases
-        source_code = inspect.getsource(ModelLoader._load_single_layer)
+        source_code = inspect.getsource(BaseGPTQModel._load_single_layer)
         
         # Check for index validation
         assert "layer_index >= len(temp_layers)" in source_code, "Layer index validation not found"
@@ -508,7 +511,7 @@ def test_layer_specific_attribute_handling():
         import inspect
         
         # Test that layer-specific attributes are handled
-        source_code = inspect.getsource(ModelLoader._create_minimal_layer_base)
+        source_code = inspect.getsource(BaseGPTQModel._create_minimal_layer_base)
         
         # Check for attention-specific attributes
         assert "attention" in source_code, "Attention attribute handling not found"
@@ -546,20 +549,20 @@ def test_fallback_compatibility():
         import inspect
         
         # Test that fallback method exists and has correct signature
-        assert hasattr(ModelLoader, '_load_single_layer_fallback'), "Fallback method not found"
+        assert hasattr(BaseGPTQModel, '_load_single_layer_fallback'), "Fallback method not found"
         
-        source_code = inspect.getsource(ModelLoader._load_single_layer)
+        source_code = inspect.getsource(BaseGPTQModel._load_single_layer)
         
         # Check that fallback is triggered on errors
         assert "Optimized loading failed" in source_code, "Fallback trigger not found"
         assert "falling back" in source_code, "Fallback message not found"
         
-        # Check that both optimized and fallback methods exist
-        assert hasattr(ModelLoader, '_create_minimal_layer_optimized'), "Optimized minimal layer creation not found"
-        assert hasattr(ModelLoader, '_create_minimal_layer_fallback'), "Fallback minimal layer creation not found"
+        # Test that both optimized and fallback methods exist
+        assert hasattr(BaseGPTQModel, '_create_minimal_layer_optimized'), "Optimized minimal layer creation not found"
+        assert hasattr(BaseGPTQModel, '_create_minimal_layer_fallback'), "Fallback minimal layer creation not found"
         
         # Check that the original broad copying method is preserved for compatibility
-        fallback_source = inspect.getsource(ModelLoader._create_minimal_layer_base)
+        fallback_source = inspect.getsource(BaseGPTQModel._create_minimal_layer_base)
         assert "_copy_attributes_broad" in fallback_source, "Broad attribute copying not preserved"
         assert "not attr_name.startswith('_')" in fallback_source, "Original copying logic not preserved"
         
@@ -591,7 +594,7 @@ def test_moe_model_compatibility():
         assert len(layer_modules) > 6, "MoE layer modules should have multiple component groups"
         
         # Check for expert-specific modules
-        expert_modules = [mod for mod in layer_modules if EXPERT_INDEX_PLACEHOLDER in str(mod)]
+        expert_modules = [mod for mod in layer_modules if "EXPERT_INDEX_PLACEHOLDER" in str(mod)]
         assert len(expert_modules) > 0, "MoE model should have expert-specific modules"
         
         # Check for shared expert modules
@@ -614,8 +617,8 @@ def test_moe_model_compatibility():
         assert config.dynamic_get("model.layers.0.mlp.experts.0.gate_proj") == False, "Expert exclusion not working"
         assert config.dynamic_get("model.layers.0.mlp.shared_experts.gate_proj") == {"bits": 8}, "Shared expert inclusion not working"
         
-        # Test that ModelLoader can handle MoE expert expansion
-        source_code = inspect.getsource(ModelLoader._load_single_layer_optimized)
+        # Test that BaseGPTQModel can handle MoE expert expansion
+        source_code = inspect.getsource(BaseGPTQModel._load_single_layer_optimized)
         assert "layer_modules" in source_code, "Layer modules handling not found in optimized loading"
         
         # Test that our attribute copying includes MoE-specific attributes
@@ -652,7 +655,7 @@ def test_complex_layer_architecture_support():
         config = QuantizeConfig(memory_optimization=True)
         
         # Test that the attribute copying includes various layer types
-        minimal_layer_source = inspect.getsource(ModelLoader._create_minimal_layer_base)
+        minimal_layer_source = inspect.getsource(BaseGPTQModel._create_minimal_layer_base)
         
         # Check for attention mechanisms
         attention_attrs = ["attention", "self_attn", "q_proj", "k_proj", "v_proj", "o_proj"]
@@ -674,12 +677,12 @@ def test_complex_layer_architecture_support():
         assert "log.warning" in minimal_layer_source, "Warning logging not found"
         
         # Test that the optimized loading can handle complex module structures
-        optimized_source = inspect.getsource(ModelLoader._load_single_layer_optimized)
+        optimized_source = inspect.getsource(BaseGPTQModel._load_single_layer_optimized)
         assert "layer_modules_dict" in optimized_source, "Layer modules dictionary handling not found"
         assert "get_module" in optimized_source, "Module retrieval not found"
         
         # Test that selective checkpoint loading works with complex structures
-        checkpoint_source = inspect.getsource(ModelLoader._load_layer_weights_only)
+        checkpoint_source = inspect.getsource(BaseGPTQModel._load_layer_weights_only)
         assert "safetensors" in checkpoint_source, "Safetensors support not found"
         assert "sharded" in checkpoint_source, "Sharded checkpoint support not found"
         
@@ -740,22 +743,22 @@ def test_memory_optimization_with_moe():
             }
         )
         
-        # Test that ModelLoader methods work with MoE structure
+        # Test that BaseGPTQModel methods work with MoE structure
         import inspect
         
         # Check _load_single_layer signature compatibility
-        single_layer_sig = inspect.signature(ModelLoader._load_single_layer)
+        single_layer_sig = inspect.signature(BaseGPTQModel._load_single_layer)
         expected_params = ['model_local_path', 'config', 'layers_prefix', 'layer_index', 'layer_modules']
         for param in expected_params:
             assert param in single_layer_sig.parameters, f"Parameter {param} not found in _load_single_layer"
         
         # Check that the method can handle MoE layer modules
-        source_code = inspect.getsource(ModelLoader._load_single_layer)
+        source_code = inspect.getsource(BaseGPTQModel._load_single_layer)
         assert "layer_modules" in source_code, "Layer modules not handled in single layer loading"
         assert "get_module" in source_code, "Module retrieval not implemented"
         
         # Test that our improved attribute copying works for complex MoE structures
-        minimal_source = inspect.getsource(ModelLoader._create_minimal_layer_base)
+        minimal_source = inspect.getsource(BaseGPTQModel._create_minimal_layer_base)
         
         # Check for MoE-specific attribute handling
         moe_attributes = ["experts", "shared_experts", "gate", "mlp"]
