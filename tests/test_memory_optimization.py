@@ -41,11 +41,11 @@ def test_memory_optimization_config():
     # Test serialization/deserialization
     config_dict = config.to_dict()
     # Note: memory_optimization is not included in serialized config by design
-    # The field exists in the config object but is not persisted to disk
+    # The field exists in the config object but is not persisted to disk as it doesn't affect model quality
     
-    # Test loading from dict
+    # Test loading from dict - should get default value (False) since field is not serialized
     config_loaded = QuantizeConfig.from_quant_config(config_dict)
-    assert config_loaded.memory_optimization == True, "Loaded config incorrect"
+    assert config_loaded.memory_optimization == False, "Loaded config should have default value"
     
     print("✓ memory_optimization configuration test passed")
 
@@ -477,10 +477,11 @@ def test_memory_optimization_error_handling():
         
         # Test serialization/deserialization with memory_optimization
         config_dict = config.to_dict()
-        # Note: memory_optimization is not included in serialized config by design
+        # Note: memory_optimization is not included in serialized config by design as it doesn't affect model quality
         
         loaded_config = QuantizeConfig.from_quant_config(config_dict)
         assert hasattr(loaded_config, 'memory_optimization'), "memory_optimization not in loaded config"
+        assert loaded_config.memory_optimization == False, "Loaded config should have default value"
         
         print("✓ Proper error handling for layer index validation")
         print("✓ Resource cleanup on errors implemented")
