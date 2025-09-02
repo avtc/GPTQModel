@@ -36,10 +36,11 @@ from ..models.loader import ModelLoader
 from ..nn_modules.hooked_linear import HookedLinear, replace_module_with_hooked_legacy, replace_module_with_hooked_tree
 from ..utils.logger import setup_logger
 from ..utils.model import (find_modules, get_device, get_module, get_module_by_name_prefix,
-                           get_moe_layer_modules, get_state_dict_for_save, move_to, nested_move_to)
+                           get_moe_layer_modules, get_state_dict_for_save, make_quant, move_to, nested_move_to)
 from ..utils.torch import (ALL_DEVICES, ALL_STREAMS, CPU, DEFAULT_BALANCE_STRATEGY,
                            HAS_CUDA, BalanceStrategy, device_next, device_next_reset,
                            torch_devices, torch_empty_cache, torch_streamCtx, torch_sync)
+from ..version import __version__
 
 log = setup_logger()
 
@@ -573,7 +574,7 @@ class ModuleLooper():
                         
                         if memory_optimization:
                             # In memory optimization mode, save quantized layer to file and free RAM
-                            self._save_quantized_layer_to_file(layer_index, quantized_layer, layer_count)
+                            self._pack_and_save_quantized_layer(layer_index, quantized_layer, layer_count)
                             # Free the quantized layer from memory
                             del quantized_layer
                             if auto_gc:
@@ -636,147 +637,211 @@ class ModuleLooper():
 
         return total_log
 
-    def _save_quantized_layer_to_file(self, layer_index: int, quantized_layer, total_layers: int):
+    def _pack_quantized_layer(self, layer_index: int, quantized_layer):
         """
-        Save quantized layer in sharded format like model-00001-of-00028.safetensors
+        Pack quantized layer based on single layer only.
+        This method performs the packing logic similar to pack_model but for a single layer.
+        Ensures proper packing by following the same steps as the finalize methods in processors.
+        Handles both quantized modules and modules excluded from quantization via dynamic config.
+        """
+        import threadpoolctl as tctl
+        
+        layer_modules = self.gptq_model.layer_modules[0] if self.gptq_model.layer_modules else []
+        
+        # Step 1: Create quant_result dictionary similar to what processors collect
+        quant_result = {}
+        excluded_modules = []
+        
+        # Collect quantization results from the quantized layer and check for excluded modules
+        for module_name in layer_modules:
+            full_name = f"{self.gptq_model.layers_node}.{layer_index}.{module_name}"
+            module = get_module(quantized_layer, module_name)
+            
+            if module is not None:
+                # Check if this module is excluded from quantization via dynamic config
+                if self.gptq_model.quantize_config.dynamic_get(full_name) == False:
+                    excluded_modules.append(module_name)
+                    log.info(f"Module {module_name} is excluded from quantization, will be saved in original state")
+                    continue
+                
+                # Check if this module has quantization results in its state
+                if hasattr(module, 'state') and module.state:
+                    # Extract quantization results from module state
+                    state = module.state
+                    if "scale" in state and "zero" in state:
+                        quant_result[full_name] = {
+                            "scale": state["scale"],
+                            "zero": state["zero"],
+                            "g_idx": state.get("g_idx", None)
+                        }
+                        
+                        # Handle QQQ-specific scale_extra if present
+                        if "scale_extra" in state:
+                            quant_result[full_name]["scale_extra"] = state["scale_extra"]
+                        
+                        log.info(f"Found quantization result for module {module_name} from module state")
+                    else:
+                        log.warning(f"Module {module_name} has state but missing scale/zero for packing")
+                else:
+                    log.warning(f"Module {module_name} has no state with quantization results")
+            else:
+                log.warning(f"Module {module_name} not found in quantized layer {layer_index}")
+        
+        # Step 2: Move the entire quantized layer to CPU for processing
+        quantized_layer = quantized_layer.to(CPU)
+        
+        # Step 3: Handle excluded modules - save them in their original state
+        if excluded_modules:
+            log.info(f"Handling {len(excluded_modules)} excluded modules for layer {layer_index + 1}")
+            for module_name in excluded_modules:
+                # Get the original module from the model (not quantized)
+                original_full_name = f"{self.gptq_model.layers_node}.{layer_index}.{module_name}"
+                original_module = get_module(self.gptq_model.model, original_full_name)
+                
+                if original_module is not None:
+                    # Clone the original module and move to CPU
+                    original_module_copy = copy.deepcopy(original_module)
+                    original_module_copy = original_module_copy.to(CPU)
+                    
+                    # Replace the module in the quantized layer with the original (unquantized) module
+                    setattr(quantized_layer, module_name, original_module_copy)
+                    log.info(f"Restored excluded module {module_name} to original state")
+                else:
+                    log.warning(f"Original module {module_name} not found for exclusion restoration")
+        
+        # Step 4: If we have quantization results, proceed with packing quantized modules
+        if quant_result:
+            log.info(f"Found {len(quant_result)} modules with quantization results for layer {layer_index + 1}")
+            
+            # Create a temporary model containing just this layer for proper quantization
+            temp_model = torch.nn.Module()
+            
+            # Add all modules from this layer to the temp model
+            for module_name in layer_modules:
+                module = get_module(quantized_layer, module_name)
+                if module is not None:
+                    temp_module_name = f"layer_{module_name}"
+                    setattr(temp_model, temp_module_name, module)
+            
+            # Step 5: Apply the same quantization logic as pack_model
+            with tctl.threadpool_limits(limits=1):
+                try:
+                    # Create quantized linear modules using make_quant (similar to pack_model)
+                    quant_linear_cls = make_quant(
+                        model=temp_model,
+                        quant_result=quant_result,
+                        qcfg=self.gptq_model.quantize_config,
+                        backend=self.gptq_model.qlinear_kernel if hasattr(self.gptq_model, 'qlinear_kernel') else self.gptq_model.backend,
+                        lm_head_name=self.gptq_model.lm_head,
+                        pack=True,
+                    )
+                    
+                    log.info(f"Created quantized linear modules for layer {layer_index + 1}")
+                    
+                    # Step 6: Find the quantized modules and pack them
+                    qModules = find_modules(temp_model, [quant_linear_cls])
+                    
+                    if len(qModules) == 0:
+                        log.warning(f"No quantized modules found in layer {layer_index + 1}")
+                        return quantized_layer
+                    
+                    # Step 7: Pack each module using the same logic as pack_module
+                    for name, qmodule in qModules.items():
+                        if name in quant_result:
+                            r = quant_result[name]
+                            scale = r["scale"]
+                            zero = r["zero"]
+                            g_idx = r.get("g_idx", None)
+                            
+                            # Get the original layer for packing
+                            original_layer_name = name.replace("layer_", "")
+                            original_layer = get_module(self.gptq_model.model, original_layer_name)
+                            
+                            if original_layer is not None:
+                                # Move all tensors to CPU for packing
+                                qmodule = qmodule.to(CPU)
+                                original_layer = original_layer.to(CPU)
+                                scale = scale.to(CPU)
+                                zero = zero.to(CPU)
+                                if g_idx is not None:
+                                    g_idx = g_idx.to(CPU)
+                                
+                                # Handle QQQ special case
+                                if hasattr(qmodule, 'QUANT_TYPE') and qmodule.QUANT_TYPE == "qqq":
+                                    if "scale_extra" in r:
+                                        scale_extra = r["scale_extra"].to(CPU)
+                                        qmodule.pack(linear=original_layer, scales=scale, s_extra=scale_extra)
+                                        log.info(f"Packed QQQ module {name} in layer {layer_index + 1}")
+                                    else:
+                                        log.warning(f"Missing scale_extra for QQQ module {name}")
+                                else:
+                                    # Standard GPTQ packing
+                                    qmodule.pack(linear=original_layer, scales=scale, zeros=zero, g_idx=g_idx)
+                                    log.info(f"Packed module {name} in layer {layer_index + 1}")
+                            else:
+                                log.warning(f"Original layer {original_layer_name} not found for module {name}")
+                        else:
+                            log.warning(f"No quantization result found for module {name}")
+                    
+                    # Step 8: Update the quantized layer with the properly packed modules
+                    for module_name in layer_modules:
+                        temp_module_name = f"layer_{module_name}"
+                        temp_module = getattr(temp_model, temp_module_name, None)
+                        if temp_module is not None:
+                            # Update the module in the quantized layer
+                            original_module = get_module(quantized_layer, module_name)
+                            if original_module is not None:
+                                setattr(quantized_layer, module_name, temp_module)
+                    
+                    log.info(f"Successfully packed layer {layer_index + 1}")
+                    
+                except Exception as e:
+                    log.error(f"Failed to pack layer {layer_index + 1}: {e}")
+                    # If packing fails, return the original quantized layer
+                    log.info(f"Returning unpacked layer {layer_index + 1} as fallback")
+        else:
+            log.warning(f"No quantization results found for layer {layer_index + 1}")
+        
+        return quantized_layer
+    
+    def _save_quantized_layer(self, layer_index: int, quantized_layer, total_layers: int):
+        """
+        Save packed quantized layer in sharded format like model-00001-of-00028.safetensors
         and free RAM immediately after quantization.
-        All weights of a layer are saved into a single file.
-        Modules are properly packed before saving.
+        All weights of a layer are saved into a single file in final ready-for-inference state.
         Format conversion is applied to ensure saved layer files are final.
         """
         from safetensors.torch import save_file
-        import threadpoolctl as tctl
         
         # Format layer number with leading zeros (5 digits for up to 99999 layers)
         layer_number = f"{layer_index + 1:05d}"  # +1 for 1-based indexing
         total_number = f"{total_layers:05d}"
         
-        # Create shard filename for the entire layer
+        # Create shard filename for the entire layer - must match standard HF sharded format
         shard_filename = f"model-{layer_number}-of-{total_number}.safetensors"
         shard_file_path = os.path.join(self.gptq_model.model_local_path, shard_filename)
         
-        # Accumulate all module states for this layer
-        combined_state_dict = {}
+        # Get layer modules
         layer_modules = self.gptq_model.layer_modules[0] if self.gptq_model.layer_modules else []
         
-        # Prepare quant_result for packing - this contains the quantization results
-        quant_result = {}
-        modules_to_pack = {}
-        
         try:
-            # First pass: collect quantization results and modules
+            # Step 1: Create a temporary model containing just this layer for proper processing
+            temp_model = torch.nn.Module()
+            
+            # Add all modules from this layer to the temp model
             for module_name in layer_modules:
-                # Get the quantized module
-                full_name = f"{self.gptq_model.layers_node}.{layer_index}.{module_name}"
                 module = get_module(quantized_layer, module_name)
-                
                 if module is not None:
-                    # Check if this is a quantized linear module that needs packing
-                    if hasattr(module, 'pack') and hasattr(module, 'quantize_config'):
-                        # Store module for packing
-                        modules_to_pack[module_name] = module
-                        
-                        # Try to get quantization results from module state if available
-                        if hasattr(module, 'state') and module.state:
-                            quant_result[module_name] = module.state
-                            log.info(f"Found quantization result for module {module_name} from module state")
-                    else:
-                        # Regular module - get its state dict directly
-                        if hasattr(module, 'state_dict'):
-                            module_state = module.state_dict()
-                            
-                            # Add module prefix to avoid key conflicts
-                            prefixed_state_dict = {}
-                            for key, value in module_state.items():
-                                prefixed_key = f"{module_name}.{key}"
-                                prefixed_state_dict[prefixed_key] = value
-                            
-                            combined_state_dict.update(prefixed_state_dict)
-                            log.info(f"Processed regular module {module_name} from layer {layer_index + 1}")
-                        else:
-                            log.warning(f"Module {module_name} has no state_dict method")
+                    # Add module to temp model with prefixed name to avoid conflicts
+                    temp_module_name = f"layer_{module_name}"
+                    setattr(temp_model, temp_module_name, module)
                 else:
                     log.warning(f"Module {module_name} not found in quantized layer {layer_index}")
             
-            # Second pass: pack modules that need packing
-            if modules_to_pack and quant_result:
-                # Limit pack() thread usage to avoid auto-parallizataion regression
-                with tctl.threadpool_limits(limits=1):
-                    log.info(f"Packing {len(modules_to_pack)} modules in layer {layer_index + 1}")
-                    
-                    for module_name, module in modules_to_pack.items():
-                        try:
-                            if module_name in quant_result:
-                                # Get the original layer for packing
-                                original_layer_name = f"{self.gptq_model.layers_node}.{layer_index}.{module_name}"
-                                original_layer = get_module(self.gptq_model.model, original_layer_name)
-                                
-                                if original_layer is not None:
-                                    # Pack the module with the original layer and quantization results
-                                    scale = quant_result[module_name].get("scale")
-                                    zero = quant_result[module_name].get("zero")
-                                    g_idx = quant_result[module_name].get("g_idx")
-                                    
-                                    if scale is not None and zero is not None:
-                                        # Move tensors to CPU for packing
-                                        module = module.to(CPU)
-                                        original_layer = original_layer.to(CPU)
-                                        scale = scale.to(CPU)
-                                        zero = zero.to(CPU)
-                                        if g_idx is not None:
-                                            g_idx = g_idx.to(CPU)
-                                        
-                                        # Perform the packing
-                                        module.pack(linear=original_layer, scales=scale, zeros=zero, g_idx=g_idx)
-                                        log.info(f"Packed module {module_name} in layer {layer_index + 1}")
-                                        
-                                        # Get the packed state dict
-                                        packed_state = module.state_dict()
-                                        
-                                        # Add module prefix to avoid key conflicts
-                                        prefixed_state_dict = {}
-                                        for key, value in packed_state.items():
-                                            prefixed_key = f"{module_name}.{key}"
-                                            prefixed_state_dict[prefixed_key] = value
-                                        
-                                        combined_state_dict.update(prefixed_state_dict)
-                                    else:
-                                        log.warning(f"Missing scale or zero for module {module_name}, skipping pack")
-                                else:
-                                    log.warning(f"Original layer {original_layer_name} not found for module {module_name}")
-                            else:
-                                log.warning(f"No quantization result found for module {module_name}")
-                        except Exception as e:
-                            log.error(f"Failed to pack module {module_name}: {e}")
-                            # Continue with unpacked module if packing fails
-                            if hasattr(module, 'state_dict'):
-                                try:
-                                    module_state = module.state_dict()
-                                    prefixed_state_dict = {}
-                                    for key, value in module_state.items():
-                                        prefixed_key = f"{module_name}.{key}"
-                                        prefixed_state_dict[prefixed_key] = value
-                                    combined_state_dict.update(prefixed_state_dict)
-                                    log.info(f"Saved unpacked module {module_name} as fallback")
-                                except Exception as e2:
-                                    log.error(f"Failed to get state dict for module {module_name}: {e2}")
-            
-            # Apply format conversion before saving (similar to save_quantized logic)
+            # Step 2: Apply format conversion if needed (same logic as save_quantized)
             if self.gptq_model.quantize_config.format == FORMAT.GPTQ:
                 log.info(f"Applying GPTQ v1 format conversion for layer {layer_index + 1}")
                 
-                # Create a temporary model containing just this layer for format conversion
-                temp_model = torch.nn.Module()
-                
-                # Add all modules from this layer to the temp model
-                for module_name in layer_modules:
-                    module = get_module(quantized_layer, module_name)
-                    if module is not None:
-                        # Add module to temp model with prefixed name
-                        temp_module_name = f"layer_{module_name}"
-                        setattr(temp_model, temp_module_name, module)
-                
-                # Apply format conversion to the temporary model
                 try:
                     from ..utils.model import convert_gptq_v2_to_v1_format
                     temp_model = convert_gptq_v2_to_v1_format(
@@ -785,33 +850,42 @@ class ModuleLooper():
                         qlinear_kernel=self.gptq_model.qlinear_kernel
                     )
                     log.info(f"Successfully applied GPTQ v1 format conversion to layer {layer_index + 1}")
-                    
-                    # Update combined_state_dict with converted modules
-                    converted_state_dict = {}
-                    for module_name in layer_modules:
-                        temp_module_name = f"layer_{module_name}"
-                        temp_module = getattr(temp_model, temp_module_name, None)
-                        if temp_module is not None and hasattr(temp_module, 'state_dict'):
-                            module_state = temp_module.state_dict()
-                            
-                            # Add module prefix to avoid key conflicts
-                            prefixed_state_dict = {}
-                            for key, value in module_state.items():
-                                prefixed_key = f"{module_name}.{key}"
-                                prefixed_state_dict[prefixed_key] = value
-                            
-                            converted_state_dict.update(prefixed_state_dict)
-                    
-                    # Replace the original state dict with the converted one
-                    combined_state_dict.update(converted_state_dict)
-                    
                 except Exception as e:
                     log.error(f"Failed to apply GPTQ v1 format conversion for layer {layer_index + 1}: {e}")
-                    log.info(f"Proceeding with original format for layer {layer_index + 1}")
+                    log.warning(f"Proceeding with original format for layer {layer_index + 1}")
             
-            # Add metadata for proper loading
+            # Step 3: Get the final state dict for saving (same logic as save_quantized)
+            temp_model = temp_model.to(CPU)
+            state_dict = get_state_dict_for_save(temp_model)
+            
+            # Step 4: Process state dict to ensure final inference state
+            processed_state_dict = {}
+            for temp_module_name, module in temp_model.named_modules():
+                if not temp_module_name.startswith("layer_"):
+                    continue
+                    
+                # Extract module name (remove "layer_" prefix)
+                module_name = temp_module_name[6:]  # Remove "layer_" prefix
+                
+                # Get the original state dict for this module
+                module_state_dict = {k: v for k, v in state_dict.items() if k.startswith(temp_module_name + ".")}
+                
+                # Remove the prefix and add proper module structure
+                for k, v in module_state_dict.items():
+                    new_key = f"{module_name}.{k[len(temp_module_name) + 1:]}"
+                    processed_state_dict[new_key] = v
+            
+            # Step 5: Ensure all tensors are contiguous and on CPU (critical for inference)
+            final_state_dict = {}
+            for k, v in processed_state_dict.items():
+                if isinstance(v, torch.Tensor):
+                    final_state_dict[k] = v.clone().contiguous().to(CPU)
+                else:
+                    final_state_dict[k] = v
+            
+            # Step 6: Add proper metadata for loading (same as save_quantized)
             metadata = {
-                "format": "pt",
+                "format": "pt",  # Required by Accelerate
                 "layer_index": layer_index,
                 "layer_modules": ",".join(layer_modules),
                 "quant_method": self.gptq_model.quantize_config.quant_method,
@@ -822,67 +896,39 @@ class ModuleLooper():
                 "total_modules": str(len(layer_modules)),
             }
             
-            # Apply standard weight saving logic (similar to lines 319-437 in writer.py)
-            if combined_state_dict:
-                # Step 1: Ensure all tensors are on CPU
-                cpu_state_dict = {}
-                for k, v in combined_state_dict.items():
-                    if isinstance(v, torch.Tensor):
-                        cpu_state_dict[k] = v.to(CPU)
-                    else:
-                        cpu_state_dict[k] = v
-                
-                # Step 2: Apply get_state_dict_for_save logic to handle tensor aliasing
-                # Since this is a layer, we need to be more careful about shared tensors
-                # Create a temporary model to use get_state_dict_for_save
-                temp_model = torch.nn.Module()
-                for module_name in layer_modules:
-                    # Get the processed module from combined_state_dict keys
-                    module_prefix = f"{module_name}."
-                    module_tensors = {k[len(module_prefix):]: v for k, v in cpu_state_dict.items() if k.startswith(module_prefix)}
-                    
-                    if module_tensors:
-                        # Try to reconstruct the module
-                        try:
-                            # Get the original module structure
-                            original_module = get_module(quantized_layer, module_name)
-                            if original_module is not None:
-                                # Create a new module with the same structure
-                                reconstructed_module = original_module.__class__()
-                                
-                                # Set the tensors
-                                for tensor_name, tensor_value in module_tensors.items():
-                                    setattr(reconstructed_module, tensor_name, tensor_value)
-                                
-                                # Add to temp model with prefixed name
-                                temp_module_name = f"layer_{module_name}"
-                                setattr(temp_model, temp_module_name, reconstructed_module)
-                        except Exception as e:
-                            log.warning(f"Failed to reconstruct module {module_name}: {e}")
-                            # Fall back to direct tensor handling
-                            pass
-                
-                # Step 3: Use get_state_dict_for_save if we have a valid temp model
-                if len(list(temp_model.named_modules())) > 0:
-                    try:
-                        filtered_state_dict = get_state_dict_for_save(temp_model)
-                        log.info(f"Applied get_state_dict_for_save filtering for layer {layer_index + 1}")
-                    except Exception as e:
-                        log.warning(f"get_state_dict_for_save failed for layer {layer_index + 1}: {e}")
-                        filtered_state_dict = cpu_state_dict
-                else:
-                    filtered_state_dict = cpu_state_dict
-                
-                # Step 4: Clone and make tensors contiguous (critical step)
-                final_state_dict = {k: v.clone().contiguous() for k, v in filtered_state_dict.items()}
-                
-                # Step 5: Save using safetensors (metadata already contains "format": "pt")
+            # Add quantization metadata (same as save_quantized)
+            quantizers = [f"gptqmodel:{__version__}"]
+            self.gptq_model.quantize_config.meta_set_versionable(
+                key="quantizer",
+                value=quantizers
+            )
+            metadata.update(self.gptq_model.quantize_config.meta)
+            
+            # Step 7: Save the layer in final inference-ready state
+            if final_state_dict:
                 save_file(final_state_dict, shard_file_path, metadata=metadata)
                 log.info(f"Saved quantized layer {layer_index + 1}/{total_layers} to {shard_filename}")
+                log.info(f"Layer {layer_index + 1} is in final ready-for-inference state")
             else:
                 log.warning(f"No state dict found for layer {layer_index + 1}, skipping save")
             
         except Exception as e:
             log.error(f"Failed to save layer {layer_index}: {e}")
             raise
+
+    def _pack_and_save_quantized_layer(self, layer_index: int, quantized_layer, total_layers: int):
+        """
+        Save quantized layer in sharded format like model-00001-of-00028.safetensors
+        and free RAM immediately after quantization.
+        All weights of a layer are saved into a single file.
+        Modules are properly packed before saving.
+        Format conversion is applied to ensure saved layer files are final.
+        
+        This method combines both packing and saving operations for backward compatibility.
+        """
+        # First pack the layer
+        packed_layer = self._pack_quantized_layer(layer_index, quantized_layer)
+        
+        # Then save the packed layer
+        self._save_quantized_layer(layer_index, packed_layer, total_layers)
 
