@@ -253,20 +253,28 @@ class GPTQProcessor(LoopProcessor):
             torch_sync()
 
         backend = kwargs.pop("backend")
-        model.qlinear_kernel = pack_model(
-            model=model.model,
-            quant_result=self.results(),
-            bits=self.qcfg.bits,
-            group_size=self.qcfg.group_size,
-            backend=backend,
-            desc_act=self.qcfg.desc_act,
-            format=self.qcfg.format,
-            quant_method=self.qcfg.quant_method,
-            lm_head_name=model.lm_head,
-            dynamic=self.qcfg.dynamic,
-            parallel_packing=self.qcfg.parallel_packing,
-            pack_dtype=self.qcfg.pack_dtype,
-        )
+        
+        # Check if memory optimization was used
+        if hasattr(model.model, '_layer_wise_info'):
+            # In memory optimization mode, model reconstruction is handled in save_quantized
+            # We don't need to call pack_model here as the model will be reconstructed during save
+            log.info("Memory optimization mode detected - skipping pack_model in processor finalize")
+        else:
+            # Standard mode - call pack_model normally
+            model.qlinear_kernel = pack_model(
+                model=model.model,
+                quant_result=self.results(),
+                bits=self.qcfg.bits,
+                group_size=self.qcfg.group_size,
+                backend=backend,
+                desc_act=self.qcfg.desc_act,
+                format=self.qcfg.format,
+                quant_method=self.qcfg.quant_method,
+                lm_head_name=model.lm_head,
+                dynamic=self.qcfg.dynamic,
+                parallel_packing=self.qcfg.parallel_packing,
+                pack_dtype=self.qcfg.pack_dtype,
+            )
 
         # set quantized state
         model.quantized = True

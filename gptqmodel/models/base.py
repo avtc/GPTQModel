@@ -1263,6 +1263,7 @@ class BaseGPTQModel(nn.Module):
     def post_quantize(self, module: nn.Module) -> nn.Module:
         return move_to(module, device=CPU)
 
+
     ## overrides nn.module.train()
     # def train(self, mode=True):
     #     old_mode = self.training

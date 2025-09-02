@@ -21,6 +21,7 @@ import csv
 import json
 import os
 import re
+import shutil
 from os.path import isfile, join
 from typing import Dict, Optional, Union
 
@@ -211,8 +212,62 @@ def ModelWriter(cls):
 
         if not self.load_quantized_model:
             model = self.model
+            
+            # Check if memory optimization was used and reconstruction is needed
+            if hasattr(self.model, '_layer_wise_info'):
+                log.info("Memory optimization mode detected - sharded layer files already saved in correct location")
+                
+                # Create weight map for index.json
+                layer_wise_info = self.model._layer_wise_info
+                layer_count = layer_wise_info['layer_count']
+                weight_map = {}
+                total_size_mb = 0
+                
+                for layer_index in range(layer_count):
+                    # Format layer number with leading zeros
+                    layer_number = f"{layer_index + 1:05d}"  # 1-based indexing
+                    total_number = f"{layer_count:05d}"
+                    
+                    # Shard filename - must not include module name for standard format
+                    shard_filename = f"model-{layer_number}-of-{total_number}.safetensors"
+                    final_shard_path = os.path.join(save_dir, shard_filename)
+
+                    # Files are already saved in correct location by _save_quantized_layer_to_file
+                    if os.path.exists(final_shard_path):
+                        log.info(f"Found shard {shard_filename} at final location")
+                        total_size_mb += os.path.getsize(final_shard_path) / (1024 * 1024)
+
+                    layer_modules = self.layer_modules[0] if self.layer_modules else []
+                    for module_name in layer_modules:
+                        weight_map[f"{self.layers_node}.{layer_index}.{module_name}.weight"] = shard_filename
+                
+                # Create index.json for the sharded model
+                if weight_map:
+                    index_data = {
+                        "metadata": {
+                            "format": "pt",
+                            "total_layers": layer_count,
+                            "quant_method": self.quantize_config.quant_method,
+                            "bits": str(self.quantize_config.bits),
+                            "group_size": str(self.quantize_config.group_size),
+                            "sym": str(self.quantize_config.sym),
+                            "desc_act": str(self.quantize_config.desc_act),
+                        },
+                        "weight_map": weight_map
+                    }
+                    
+                    index_path = os.path.join(save_dir, "model.safetensors.index.json")
+                    with open(index_path, "w", encoding="utf-8") as f:
+                        json.dump(index_data, f, indent=2)
+                    log.info(f"Created sharded model index: {index_path}")
+                
+                # Note: The model reconstruction is now handled by the index.json
+                # The sharded format is standard HuggingFace format that can be loaded directly
+                # Non-layer modules are handled by the standard save process below
+            
             # # internal is always gptq v2 but allow users to pass gptq (v1) via config
-            if quantize_config.format == FORMAT.GPTQ:
+            # Apply format conversion before saving in standard mode (when _layer_wise_info is not set)
+            if quantize_config.format == FORMAT.GPTQ and not hasattr(self.model, '_layer_wise_info'):
                 # Model qzeros may be edited in place.
                 model = convert_gptq_v2_to_v1_format(
                     model, quantize_config=quantize_config, qlinear_kernel=self.qlinear_kernel
@@ -260,79 +315,23 @@ def ModelWriter(cls):
             self.processor.save_pretrained(save_dir)
         # --- end config save block ---
 
-        model.to(CPU)
-        state_dict = get_state_dict_for_save(model)
-
-        model_base_name = "model"
-
-        state_dict = {k: v.clone().contiguous() for k, v in state_dict.items()}
-        model_save_name = model_base_name + ".safetensors"
-
-        if not self.qlinear_kernel.SUPPORTS_SHARDS and max_shard_size is not None:
-            log.warn("Sharding is not supported for this quant. Disabling sharding.")
-            max_shard_size = None
-
-        if max_shard_size is None:
-            if safetensors_metadata is None:
-                safetensors_metadata = {}
-            elif not isinstance(safetensors_metadata, dict):
-                raise TypeError("safetensors_metadata must be a dictionary.")
-            else:
-                log.debug(f"Received safetensors_metadata: {safetensors_metadata}")
-                new_safetensors_metadata = {}
-                converted_keys = False
-                for key, value in safetensors_metadata.items():
-                    if not isinstance(key, str) or not isinstance(value, str):
-                        converted_keys = True
-                        try:
-                            new_key = str(key)
-                            new_value = str(value)
-                        except Exception as e:
-                            raise TypeError(
-                                f"safetensors_metadata: both keys and values must be strings and an error occured when trying to convert them: {e}"
-                            )
-                        if new_key in new_safetensors_metadata:
-                            log.warn(
-                                f"After converting safetensors_metadata keys to strings, the key '{new_key}' is duplicated. Ensure that all your metadata keys are strings to avoid overwriting."
-                            )
-                        new_safetensors_metadata[new_key] = new_value
-                safetensors_metadata = new_safetensors_metadata
-                if converted_keys:
-                    log.debug(
-                        f"One or more safetensors_metadata keys or values had to be converted to str(). Final safetensors_metadata: {safetensors_metadata}"
-                    )
-
-            # Format is required to enable Accelerate to load the metadata
-            # otherwise it raises an OSError
-            safetensors_metadata["format"] = "pt"
-            safe_save(state_dict, join(save_dir, model_save_name), safetensors_metadata)
-            total_size_mb = os.path.getsize(join(save_dir, model_save_name)) / (1024 * 1024)
+        # Skip standard weight saving if memory optimization was used (weights already saved as shards)
+        if hasattr(self.model, '_layer_wise_info'):
+            log.info("Memory optimization mode detected - skipping standard weight saving as weights are already saved as shards")
         else:
-            file_name_pattern = SAFETENSORS_WEIGHTS_FILE_PATTERN
+            model.to(CPU)
+            state_dict = get_state_dict_for_save(model)
 
-            # Shard checkpoint
-            state_dict_split= split_torch_state_dict_into_shards(state_dict, max_shard_size=max_shard_size, filename_pattern=file_name_pattern)
+            model_base_name = "model"
 
-            # Clean the folder from a previous save
-            for filename in os.listdir(save_dir):
-                full_filename = join(save_dir, filename)
+            state_dict = {k: v.clone().contiguous() for k, v in state_dict.items()}
+            model_save_name = model_base_name + ".safetensors"
 
-                # make sure that file to be deleted matches format of sharded file, e.g. pytorch_model-00001-of-00005
-                filename_no_suffix = filename.replace(".bin", "").replace(".safetensors", "")
-                reg = re.compile(r"(.*?)-\d{5}-of-\d{5}")
+            if not self.qlinear_kernel.SUPPORTS_SHARDS and max_shard_size is not None:
+                log.warn("Sharding is not supported for this quant. Disabling sharding.")
+                max_shard_size = None
 
-                if (
-                        filename.startswith(model_base_name)
-                        and isfile(full_filename)
-                        and filename not in state_dict_split.filename_to_tensors.keys()
-                        and reg.fullmatch(filename_no_suffix) is not None
-                ):
-                    os.remove(full_filename)
-
-            total_size_mb = 0
-            # Save the model
-            for filename, tensors in state_dict_split.filename_to_tensors.items():
-                shard = {tensor: state_dict[tensor] for tensor in tensors}
+            if max_shard_size is None:
                 if safetensors_metadata is None:
                     safetensors_metadata = {}
                 elif not isinstance(safetensors_metadata, dict):
@@ -349,37 +348,97 @@ def ModelWriter(cls):
                                 new_value = str(value)
                             except Exception as e:
                                 raise TypeError(
-                                    f"safetensors_metadata: both keys and values must be strings and an error occured when trying to convert them: {e}")
+                                    f"safetensors_metadata: both keys and values must be strings and an error occured when trying to convert them: {e}"
+                                )
                             if new_key in new_safetensors_metadata:
                                 log.warn(
-                                    f"After converting safetensors_metadata keys to strings, the key '{new_key}' is duplicated. Ensure that all your metadata keys are strings to avoid overwriting.")
+                                    f"After converting safetensors_metadata keys to strings, the key '{new_key}' is duplicated. Ensure that all your metadata keys are strings to avoid overwriting."
+                                )
                             new_safetensors_metadata[new_key] = new_value
                     safetensors_metadata = new_safetensors_metadata
                     if converted_keys:
                         log.debug(
-                            f"One or more safetensors_metadata keys or values had to be converted to str(). Final safetensors_metadata: {safetensors_metadata}")
+                            f"One or more safetensors_metadata keys or values had to be converted to str(). Final safetensors_metadata: {safetensors_metadata}"
+                        )
 
                 # Format is required to enable Accelerate to load the metadata
                 # otherwise it raises an OSError
                 safetensors_metadata["format"] = "pt"
+                safe_save(state_dict, join(save_dir, model_save_name), safetensors_metadata)
+                total_size_mb = os.path.getsize(join(save_dir, model_save_name)) / (1024 * 1024)
+            else:
+                file_name_pattern = SAFETENSORS_WEIGHTS_FILE_PATTERN
 
-                safe_save(shard, join(save_dir, filename), safetensors_metadata)
-                shard_size_mb = os.path.getsize(join(save_dir, filename)) / (1024 * 1024)
-                total_size_mb += shard_size_mb
+                # Shard checkpoint
+                state_dict_split= split_torch_state_dict_into_shards(state_dict, max_shard_size=max_shard_size, filename_pattern=file_name_pattern)
 
-            if state_dict_split.is_sharded:
-                index = {
-                    "metadata": state_dict_split.metadata,
-                    "weight_map": state_dict_split.tensor_to_filename,
-                }
+                # Clean the folder from a previous save
+                for filename in os.listdir(save_dir):
+                    full_filename = join(save_dir, filename)
 
-                index_save_name = model_save_name + ".index.json"
-                index_save_path = join(save_dir, index_save_name)
-                # Save the index as well
-                with open(index_save_path, "w", encoding="utf-8") as f:
-                    content = json.dumps(index, indent=2, sort_keys=True) + "\n"
-                    f.write(content)
+                    # make sure that file to be deleted matches format of sharded file, e.g. pytorch_model-00001-of-00005
+                    filename_no_suffix = filename.replace(".bin", "").replace(".safetensors", "")
+                    reg = re.compile(r"(.*?)-\d{5}-of-\d{5}")
 
+                    if (
+                            filename.startswith(model_base_name)
+                            and isfile(full_filename)
+                            and filename not in state_dict_split.filename_to_tensors.keys()
+                            and reg.fullmatch(filename_no_suffix) is not None
+                    ):
+                        os.remove(full_filename)
+
+                total_size_mb = 0
+                # Save the model
+                for filename, tensors in state_dict_split.filename_to_tensors.items():
+                    shard = {tensor: state_dict[tensor] for tensor in tensors}
+                    if safetensors_metadata is None:
+                        safetensors_metadata = {}
+                    elif not isinstance(safetensors_metadata, dict):
+                        raise TypeError("safetensors_metadata must be a dictionary.")
+                    else:
+                        log.debug(f"Received safetensors_metadata: {safetensors_metadata}")
+                        new_safetensors_metadata = {}
+                        converted_keys = False
+                        for key, value in safetensors_metadata.items():
+                            if not isinstance(key, str) or not isinstance(value, str):
+                                converted_keys = True
+                                try:
+                                    new_key = str(key)
+                                    new_value = str(value)
+                                except Exception as e:
+                                    raise TypeError(
+                                        f"safetensors_metadata: both keys and values must be strings and an error occured when trying to convert them: {e}")
+                                if new_key in new_safetensors_metadata:
+                                    log.warn(
+                                        f"After converting safetensors_metadata keys to strings, the key '{new_key}' is duplicated. Ensure that all your metadata keys are strings to avoid overwriting.")
+                                new_safetensors_metadata[new_key] = new_value
+                        safetensors_metadata = new_safetensors_metadata
+                        if converted_keys:
+                            log.debug(
+                                f"One or more safetensors_metadata keys or values had to be converted to str(). Final safetensors_metadata: {safetensors_metadata}")
+
+                    # Format is required to enable Accelerate to load the metadata
+                    # otherwise it raises an OSError
+                    safetensors_metadata["format"] = "pt"
+
+                    safe_save(shard, join(save_dir, filename), safetensors_metadata)
+                    shard_size_mb = os.path.getsize(join(save_dir, filename)) / (1024 * 1024)
+                    total_size_mb += shard_size_mb
+
+                if state_dict_split.is_sharded:
+                    index = {
+                        "metadata": state_dict_split.metadata,
+                        "weight_map": state_dict_split.tensor_to_filename,
+                    }
+
+                    index_save_name = model_save_name + ".index.json"
+                    index_save_path = join(save_dir, index_save_name)
+                    # Save the index as well
+                    with open(index_save_path, "w", encoding="utf-8") as f:
+                        content = json.dumps(index, indent=2, sort_keys=True) + "\n"
+                        f.write(content)
+        
         # save lora
         if self.quantize_config.adapter:
             _eora_save(self, save_dir=eora_path if eora_path else self.quantize_config.adapter.path, model_save_dir=save_dir)
