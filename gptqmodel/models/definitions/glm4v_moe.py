@@ -95,16 +95,10 @@ class GLM4VMoEGPTQ(BaseGPTQModel):
     require_load_processor = True
 
     def pre_quantize_generate_hook_start(self):
-        # Move language model components to quantization device
-        self.model.language_model = move_to(self.model.language_model, device=self.quantize_config.device)
-        # Move vision components to quantization device
-        self.model.visual = move_to(self.model.visual, device=self.quantize_config.device)
+        pass
 
     def pre_quantize_generate_hook_end(self):
-        # Move language model components back to CPU
-        self.model.language_model = move_to(self.model.language_model, device=CPU)
-        # Move vision components back to CPU
-        self.model.visual = move_to(self.model.visual, device=CPU)
+        pass
 
     @staticmethod
     def process_vision_info(
@@ -113,13 +107,18 @@ class GLM4VMoEGPTQ(BaseGPTQModel):
         vision_infos = extract_vision_info(conversations)
         # Read images
         image_inputs = []
+        has_vision_content = False
+        
         for vision_info in vision_infos:
             if "image" in vision_info or "image_url" in vision_info:
+                has_vision_content = True
                 image_inputs.append(fetch_image(vision_info))
-            else:
-                raise ValueError("image, image_url should in content.")
-        if len(image_inputs) == 0:
+        
+        # Only raise error if vision content is expected but not found
+        # For text-only quantization, this should be allowed
+        if not has_vision_content:
             image_inputs = None
+        
         return image_inputs
 
     def preprocess_dataset(self, sample: Dict) -> Dict:
@@ -131,11 +130,27 @@ class GLM4VMoEGPTQ(BaseGPTQModel):
     def prepare_dataset(self, calibration_dataset, calibration_dataset_concat_size=None, batch_size: int = 1):
         processor = self.load_processor()
         calib_data = []
+        
         for batch in batched(calibration_dataset, batch_size, process_func=self.preprocess_dataset):
+            # Handle different input formats intelligently
+            if isinstance(batch[0], str):
+                # Convert string list to conversation format
+                batch_conversations = [
+                    [{"role": "user", "content": [{"type": "text", "text": text}]}]
+                    for text in batch
+                ]
+            else:
+                batch_conversations = batch
+            
+            # Apply chat template
             text = processor.apply_chat_template(
-                batch, tokenize=False, add_generation_prompt=True
+                batch_conversations, tokenize=False, add_generation_prompt=True
             )
-            image_inputs = self.process_vision_info(batch)
+            
+            # Process vision info (handles text-only gracefully now)
+            image_inputs = self.process_vision_info(batch_conversations)
+            
+            # Create inputs
             inputs = processor(
                 text=text,
                 images=image_inputs,
@@ -144,5 +159,6 @@ class GLM4VMoEGPTQ(BaseGPTQModel):
                 return_tensors="pt",
             )
             calib_data.append(inputs)
+        
         del processor
         return calib_data
