@@ -583,6 +583,12 @@ class GPTQ:
             if z.device != target_device:
                 z = z.to(target_device)
             
+            # Ensure tensors have at least 2 dimensions for concatenation along dim=1
+            if s.dim() == 1:
+                s = s.unsqueeze(0)  # Add batch dimension
+            if z.dim() == 1:
+                z = z.unsqueeze(0)  # Add batch dimension
+                
             scale_tensors.append(s)
             zero_tensors.append(z)
         
