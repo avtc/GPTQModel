@@ -569,23 +569,20 @@ class GPTQ:
             zero.append(self.quantizer.zero)
 
         # Ensure all tensors are on the same device and have compatible shapes for concatenation
-        target_device = Q.device  # Use the same device as the quantized weights
+        # Use the module's target device (consistent with other operations in the codebase)
+        target_device = self.module.target_device
         
-        # Convert all tensors to the target device and ensure proper shape
+        # Convert all tensors to the target device only if needed
         scale_tensors = []
         zero_tensors = []
         
         for s, z in zip(scale, zero):
-            # Ensure tensors are on the correct device
-            s = s.to(target_device)
-            z = z.to(target_device)
+            # Only move to target device if not already there
+            if s.device != target_device:
+                s = s.to(target_device)
+            if z.device != target_device:
+                z = z.to(target_device)
             
-            # Ensure tensors have at least 2 dimensions for concatenation along dim=1
-            if s.dim() == 1:
-                s = s.unsqueeze(0)  # Add batch dimension
-            if z.dim() == 1:
-                z = z.unsqueeze(0)  # Add batch dimension
-                
             scale_tensors.append(s)
             zero_tensors.append(z)
         
