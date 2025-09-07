@@ -32,7 +32,7 @@ from torch.nn.modules.conv import _ConvNd
 from ..looper.named_module import NamedModule
 from ..quantization import QuantizeConfig
 from ..utils.logger import setup_logger
-from ..utils.torch import DEVICE_0, HAS_CUDA, HAS_XPU, TORCH_GTE_28, device_next, torch_compile, torch_sync
+from ..utils.torch import HAS_CUDA, HAS_XPU, TORCH_GTE_28, device_next, torch_compile, torch_sync
 from .quantizer import HF_OPTIMUM, Quantizer
 
 log = setup_logger()
@@ -556,20 +556,6 @@ class GPTQ:
 
         if isinstance(self.module, transformers.Conv1D):
             Q = Q.t()
-
-        # Ensure Q is on the same device as the original module weight before type conversion
-        if Q.device != DEVICE_0:
-            try:
-                Q = Q.to(device=DEVICE_0)
-            except Exception as e:
-                log.warn(f"Failed to move Q from {Q.device.type}:{Q.device.index} to {DEVICE_0.type}:{DEVICE_0.index}, {e}")
-                # it works on second attempt usually
-                if Q.device != DEVICE_0:
-                    try:
-                        Q = Q.to(device=DEVICE_0)
-                    except Exception as e2:
-                        log.error(f"Failed to move Q from {Q.device.type}:{Q.device.index} to {DEVICE_0.type}:{DEVICE_0.index}, {e2} (second attempt)")
-                        raise
 
         if Q.shape != self.module.weight.shape:
             Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
