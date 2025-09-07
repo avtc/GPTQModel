@@ -38,6 +38,7 @@ from .gemma import GemmaGPTQ
 from .gemma2 import Gemma2GPTQ
 from .gemma3 import Gemma3GPTQ
 from .glm import GLM
+from .glm4v_moe import GLM4VMoEGPTQ
 from .gpt2 import GPT2GPTQ
 from .gpt_bigcode import GPTBigCodeGPTQ
 from .gpt_neo import GPTNeoGPTQ
