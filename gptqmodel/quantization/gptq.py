@@ -568,8 +568,30 @@ class GPTQ:
             scale.append(self.quantizer.scale)
             zero.append(self.quantizer.zero)
 
-        scale = torch.cat(scale, dim=1)
-        zero = torch.cat(zero, dim=1)
+        # Ensure all tensors are on the same device and have compatible shapes for concatenation
+        target_device = Q.device  # Use the same device as the quantized weights
+        
+        # Convert all tensors to the target device and ensure proper shape
+        scale_tensors = []
+        zero_tensors = []
+        
+        for s, z in zip(scale, zero):
+            # Ensure tensors are on the correct device
+            s = s.to(target_device)
+            z = z.to(target_device)
+            
+            # Ensure tensors have at least 2 dimensions for concatenation along dim=1
+            if s.dim() == 1:
+                s = s.unsqueeze(0)  # Add batch dimension
+            if z.dim() == 1:
+                z = z.unsqueeze(0)  # Add batch dimension
+                
+            scale_tensors.append(s)
+            zero_tensors.append(z)
+        
+        # Concatenate tensors along dimension 1
+        scale = torch.cat(scale_tensors, dim=1)
+        zero = torch.cat(zero_tensors, dim=1)
 
         duration = time.time() - start
 
