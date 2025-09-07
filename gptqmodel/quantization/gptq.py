@@ -590,16 +590,43 @@ class GPTQ:
         scale_tensors = []
         zero_tensors = []
         
+        # First, collect all tensors and determine their current devices
+        scale_devices = set()
+        zero_devices = set()
+        
         for s, z in zip(scale, zero):
-            s = s.to(target_device)
-            z = z.to(target_device)
-            
+            scale_devices.add(s.device)
+            zero_devices.add(z.device)
             scale_tensors.append(s)
             zero_tensors.append(z)
         
+        # If there are device mismatches, log a warning and move all tensors to the target device
+        if len(scale_devices) > 1 or len(zero_devices) > 1:
+            log.warn(f"Quantization: Module `{self.name}` -> Device mismatch detected in scale/zero tensors. "
+                    f"Scale devices: {scale_devices}, Zero devices: {zero_devices}. "
+                    f"Moving all tensors to target device: {target_device}")
+            
+            # Move all tensors to the target device
+            for i in range(len(scale_tensors)):
+                scale_tensors[i] = scale_tensors[i].to(target_device)
+                zero_tensors[i] = zero_tensors[i].to(target_device)
+        
         # Concatenate tensors along dimension 1
-        scale = torch.cat(scale_tensors, dim=1)
-        zero = torch.cat(zero_tensors, dim=1)
+        try:
+            scale = torch.cat(scale_tensors, dim=1)
+            zero = torch.cat(zero_tensors, dim=1)
+        except RuntimeError as e:
+            if "same device" in str(e).lower():
+                # If still getting device errors, move all tensors to CPU first then to target device
+                log.warn(f"Quantization: Module `{self.name}` -> Still getting device error, moving through CPU as fallback")
+                scale_tensors_cpu = [s.to('cpu') for s in scale_tensors]
+                zero_tensors_cpu = [z.to('cpu') for z in zero_tensors]
+                scale_tensors = [s.to(target_device) for s in scale_tensors_cpu]
+                zero_tensors = [z.to(target_device) for z in zero_tensors_cpu]
+                scale = torch.cat(scale_tensors, dim=1)
+                zero = torch.cat(zero_tensors, dim=1)
+            else:
+                raise e
 
         duration = time.time() - start
 
