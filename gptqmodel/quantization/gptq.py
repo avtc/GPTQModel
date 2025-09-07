@@ -560,31 +560,13 @@ class GPTQ:
         # Ensure Q is on the same device as the module's weight data before type conversion
         # This is critical when using accelerate with device mapping
         if Q.device != target_device:
-            log.warn(f"Quantization: Module `{self.name}` -> Q device ({Q.device}) != module weight device ({target_device}). Moving Q to module weight device.")
-            try:
-                Q = Q.to(device=target_device)
-            except Exception as e:
-                log.warn(f"Quantization: Module `{self.name}` -> Failed to move Q from {Q.device} to {target_device}, trying through CPU as fallback")
-                Q = Q.to('cpu').to(target_device)
+            Q = Q.to(device=target_device)
         
         # Ensure shape consistency and apply type conversion safely
         if Q.shape != self.module.weight.shape:
-            try:
-                Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
-            except Exception as e:
-                log.warn(f"Quantization: Module `{self.name}` -> Direct reshape/type_as failed: {e}. Using fallback method.")
-                # Fallback: move to CPU, reshape, move back, then convert type
-                Q = Q.to('cpu')
-                Q = Q.reshape(self.module.weight.shape)
-                Q = Q.to(target_device)
-                Q = Q.type_as(self.module.weight.data)
+            Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
         else:
-            try:
-                Q = Q.type_as(self.module.weight.data)
-            except Exception as e:
-                log.warn(f"Quantization: Module `{self.name}` -> Direct type_as failed: {e}. Using fallback method.")
-                # Fallback: move to CPU, convert type, move back
-                Q = Q.to('cpu').type_as(self.module.weight.data).to(target_device)
+            Q = Q.type_as(self.module.weight.data)
 
         # Q = Q.to(device=use_device)
 
@@ -624,31 +606,16 @@ class GPTQ:
                     zero_tensors[i] = zero_tensors[i].to(target_device, non_blocking=False)
         
         # Concatenate tensors along dimension 1
-        try:
-            scale = torch.cat(scale_tensors, dim=1)
-            zero = torch.cat(zero_tensors, dim=1)
-        except RuntimeError as e:
-            if "same device" in str(e).lower():
-                # If still getting device errors, move all tensors to CPU first then to target device
-                log.warn(f"Quantization: Module `{self.name}` -> Still getting device error, moving through CPU as fallback")
-                scale_tensors_cpu = [s.to('cpu', non_blocking=False) for s in scale_tensors]
-                zero_tensors_cpu = [z.to('cpu', non_blocking=False) for z in zero_tensors]
-                scale_tensors = [s.to(target_device, non_blocking=False) for s in scale_tensors_cpu]
-                zero_tensors = [z.to(target_device, non_blocking=False) for z in zero_tensors_cpu]
-                scale = torch.cat(scale_tensors, dim=1)
-                zero = torch.cat(zero_tensors, dim=1)
-            else:
-                raise e
+        scale = torch.cat(scale_tensors, dim=1)
+        zero = torch.cat(zero_tensors, dim=1)
         
         # Ensure final scale and zero tensors are on the same device as module weight device
         # This is crucial for accelerate compatibility
-        if scale.device != target_device:
-            log.warn(f"Quantization: Module `{self.name}` -> Final scale device ({scale.device}) != module weight device ({target_device}). Moving scale.")
-            scale = scale.to(target_device, non_blocking=False)
+        #if scale.device != target_device:
+        #    scale = scale.to(target_device, non_blocking=False)
         
-        if zero.device != target_device:
-            log.warn(f"Quantization: Module `{self.name}` -> Final zero device ({zero.device}) != module weight device ({target_device}). Moving zero.")
-            zero = zero.to(target_device, non_blocking=False)
+        #if zero.device != target_device:
+        #    zero = zero.to(target_device, non_blocking=False)
 
         duration = time.time() - start
 
