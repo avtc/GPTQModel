@@ -555,12 +555,12 @@ class GPTQ:
         if isinstance(self.module, transformers.Conv1D):
             Q = Q.t()
 
-        target_device = self.module.target_device
+        target_device = self.module.weight.data.device
         
-        # Ensure Q is on the same device as the module's target device before type conversion
+        # Ensure Q is on the same device as the module's weight data before type conversion
         # This is critical when using accelerate with device mapping
         if Q.device != target_device:
-            log.warn(f"Quantization: Module `{self.name}` -> Q device ({Q.device}) != module target device ({target_device}). Moving Q to target device.")
+            log.warn(f"Quantization: Module `{self.name}` -> Q device ({Q.device}) != module weight device ({target_device}). Moving Q to module weight device.")
             try:
                 Q = Q.to(device=target_device)
             except Exception as e:
@@ -592,13 +592,13 @@ class GPTQ:
             scale.append(self.quantizer.scale)
             zero.append(self.quantizer.zero)
 
-        # Ensure all tensors are on the same device and consistent with module target device
+        # Ensure all tensors are on the same device and consistent with module weight device
         scale_tensors = []
         zero_tensors = []
         
-        # Use the module's target device as the target device
+        # Use the module's weight device as the target device
         # This ensures consistency with accelerate's device mapping
-        target_device = self.module.target_device
+        target_device = self.module.weight.data.device
         
         # First, collect all tensors and determine their current devices
         scale_devices = set()
@@ -640,14 +640,14 @@ class GPTQ:
             else:
                 raise e
         
-        # Ensure final scale and zero tensors are on the same device as module target device
+        # Ensure final scale and zero tensors are on the same device as module weight device
         # This is crucial for accelerate compatibility
         if scale.device != target_device:
-            log.warn(f"Quantization: Module `{self.name}` -> Final scale device ({scale.device}) != module target device ({target_device}). Moving scale.")
+            log.warn(f"Quantization: Module `{self.name}` -> Final scale device ({scale.device}) != module weight device ({target_device}). Moving scale.")
             scale = scale.to(target_device, non_blocking=False)
         
         if zero.device != target_device:
-            log.warn(f"Quantization: Module `{self.name}` -> Final zero device ({zero.device}) != module target device ({target_device}). Moving zero.")
+            log.warn(f"Quantization: Module `{self.name}` -> Final zero device ({zero.device}) != module weight device ({target_device}). Moving zero.")
             zero = zero.to(target_device, non_blocking=False)
 
         duration = time.time() - start
