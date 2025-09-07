@@ -628,17 +628,14 @@ class GPTQ:
             scale = torch.cat(scale_tensors, dim=1)
             zero = torch.cat(zero_tensors, dim=1)
         except RuntimeError as e:
-            if "same device" in str(e).lower():
-                # If still getting device errors, move all tensors to CPU first then to target device
-                log.warn(f"Quantization: Module `{self.name}` -> Still getting device error, moving through CPU as fallback")
-                scale_tensors_cpu = [s.to('cpu', non_blocking=False) for s in scale_tensors]
-                zero_tensors_cpu = [z.to('cpu', non_blocking=False) for z in zero_tensors]
-                scale_tensors = [s.to(target_device, non_blocking=False) for s in scale_tensors_cpu]
-                zero_tensors = [z.to(target_device, non_blocking=False) for z in zero_tensors_cpu]
-                scale = torch.cat(scale_tensors, dim=1)
-                zero = torch.cat(zero_tensors, dim=1)
-            else:
-                raise e
+            # If still getting device errors, move all tensors to CPU first then to target device
+            log.warn(f"Quantization: Module `{self.name}` -> Still getting device error, moving through CPU as fallback")
+            scale_tensors_cpu = [s.to('cpu', non_blocking=False) for s in scale_tensors]
+            zero_tensors_cpu = [z.to('cpu', non_blocking=False) for z in zero_tensors]
+            scale_tensors = [s.to(target_device, non_blocking=False) for s in scale_tensors_cpu]
+            zero_tensors = [z.to(target_device, non_blocking=False) for z in zero_tensors_cpu]
+            scale = torch.cat(scale_tensors, dim=1)
+            zero = torch.cat(zero_tensors, dim=1)
         
         # Ensure final scale and zero tensors are on the same device as module weight device
         # This is crucial for accelerate compatibility
