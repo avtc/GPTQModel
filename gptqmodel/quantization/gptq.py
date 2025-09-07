@@ -32,7 +32,7 @@ from torch.nn.modules.conv import _ConvNd
 from ..looper.named_module import NamedModule
 from ..quantization import QuantizeConfig
 from ..utils.logger import setup_logger
-from ..utils.torch import HAS_CUDA, HAS_XPU, TORCH_GTE_28, device_next, torch_compile, torch_sync
+from ..utils.torch import DEVICE_0, HAS_CUDA, HAS_XPU, TORCH_GTE_28, device_next, torch_compile, torch_sync
 from .quantizer import HF_OPTIMUM, Quantizer
 
 log = setup_logger()
@@ -557,6 +557,24 @@ class GPTQ:
         if isinstance(self.module, transformers.Conv1D):
             Q = Q.t()
 
+        # ensure on single device
+        Q = Q.to(Q.device)
+        target_device = Q.device
+
+        # # Ensure Q is on the same device as the original module weight before type conversion
+        # if Q.device != target_device:
+        #     try:
+        #         Q = Q.to(device=target_device)
+        #     except Exception as e:
+        #         log.warn(f"Failed to move Q from {Q.device.type}:{Q.device.index} to {target_device.type}:{target_device.index}, {e}")
+        #         # it works on second attempt usually
+        #         if Q.device != target_device:
+        #             try:
+        #                 Q = Q.to(device=target_device)
+        #             except Exception as e2:
+        #                 log.error(f"Failed to move Q from {Q.device.type}:{Q.device.index} to {target_device.type}:{target_device.index}, {e2} (second attempt)")
+        #                 raise
+                    
         if Q.shape != self.module.weight.shape:
             Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
         else:
@@ -569,10 +587,6 @@ class GPTQ:
             zero.append(self.quantizer.zero)
 
         # Ensure all tensors are on the same device and have compatible shapes for concatenation
-        # Use the module's target device (consistent with other operations in the codebase)
-        target_device = Q.device
-        
-        # Convert all tensors to the target device only if needed
         scale_tensors = []
         zero_tensors = []
         
