@@ -145,14 +145,14 @@ class GPTQ:
         self.fwd_counter += 1
 
         if self.fwd_inputs_buffered:
-            # with torch_streamCtx(self.module.target_device_stream):
-            #     self.fwd_inputs_buffered_data.append(inp.to(device=self.module.target_device, non_blocking=True))
-            self.fwd_inputs_buffered_data.append(inp.to(device=self.module.target_device, non_blocking=False))
+            # Use module's actual device instead of target_device when accelerate is used
+            self.fwd_inputs_buffered_data.append(inp.to(device=self.module.weight.data.device, non_blocking=False))
         else:
             self.process_batch(inp)
 
     def process_batch(self, inp: torch.Tensor):
-        inp = inp.to(device=self.module.target_device, dtype=torch.float32)
+        # Use module's actual device instead of target_device when accelerate is used
+        inp = inp.to(device=self.module.weight.data.device, dtype=torch.float32)
 
         # input reshaping
         if isinstance(self.module, (nn.Linear, transformers.Conv1D)):
@@ -297,7 +297,7 @@ class GPTQ:
 
         # process buffered inputs
         if len(self.fwd_inputs_buffered_data) > 0:
-            torch_sync(device=self.module.target_device)
+            torch_sync(device=self.module.weight.data.device)
 
             for inp in self.fwd_inputs_buffered_data:
                 self.process_batch(inp)
@@ -315,14 +315,15 @@ class GPTQ:
 
         if self.module_copy is None:
             # log.info("copy W to cuda_1")
-            W = self._clone_module(device=self.module.target_device)
+            # Use module's actual device instead of target_device when accelerate is used
+            W = self._clone_module(device=self.module.weight.data.device)
         else:
-            W = self.module_copy.to(device=self.module.target_device)
+            W = self.module_copy.to(device=self.module.weight.data.device)
             del self.module_copy
 
         self.quantizer.find_params(W, weight=True)
 
-        H = self.H.to(device=self.module.target_device)
+        H = self.H.to(device=self.module.weight.data.device)
         del self.H
 
         dead = torch.diag(H) == 0
@@ -557,28 +558,43 @@ class GPTQ:
         if isinstance(self.module, transformers.Conv1D):
             Q = Q.t()
 
-        # ensure on single device
+        # ensure on single device and consistent with original module weight
         Q = Q.to(Q.device)
-        target_device = Q.device
-
-        # # Ensure Q is on the same device as the original module weight before type conversion
-        # if Q.device != target_device:
-        #     try:
-        #         Q = Q.to(device=target_device)
-        #     except Exception as e:
-        #         log.warn(f"Failed to move Q from {Q.device.type}:{Q.device.index} to {target_device.type}:{target_device.index}, {e}")
-        #         # it works on second attempt usually
-        #         if Q.device != target_device:
-        #             try:
-        #                 Q = Q.to(device=target_device)
-        #             except Exception as e2:
-        #                 log.error(f"Failed to move Q from {Q.device.type}:{Q.device.index} to {target_device.type}:{target_device.index}, {e2} (second attempt)")
-        #                 raise
-                    
+        
+        # Use the actual device of the module's weight data as the target device
+        # This is critical when using accelerate with device mapping
+        module_weight_device = self.module.weight.data.device
+        target_device = module_weight_device
+        
+        log.debug(f"Quantization: Module `{self.name}` -> Using module weight device: {module_weight_device}")
+        
+        # Ensure Q is on the same device as the original module weight before type conversion
+        if Q.device != module_weight_device:
+            log.warn(f"Quantization: Module `{self.name}` -> Q device ({Q.device}) != module weight device ({module_weight_device}). Moving Q to module weight device.")
+            try:
+                Q = Q.to(device=module_weight_device)
+            except Exception as e:
+                log.warn(f"Quantization: Module `{self.name}` -> Failed to move Q from {Q.device} to {module_weight_device}, trying through CPU as fallback")
+                Q = Q.to('cpu').to(module_weight_device)
+        
+        # Ensure shape consistency and apply type conversion safely
         if Q.shape != self.module.weight.shape:
-            Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
+            try:
+                Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
+            except Exception as e:
+                log.warn(f"Quantization: Module `{self.name}` -> Direct reshape/type_as failed: {e}. Using fallback method.")
+                # Fallback: move to CPU, reshape, move back, then convert type
+                Q = Q.to('cpu')
+                Q = Q.reshape(self.module.weight.shape)
+                Q = Q.to(module_weight_device)
+                Q = Q.type_as(self.module.weight.data)
         else:
-            Q = Q.type_as(self.module.weight.data)
+            try:
+                Q = Q.type_as(self.module.weight.data)
+            except Exception as e:
+                log.warn(f"Quantization: Module `{self.name}` -> Direct type_as failed: {e}. Using fallback method.")
+                # Fallback: move to CPU, convert type, move back
+                Q = Q.to('cpu').type_as(self.module.weight.data).to(module_weight_device)
 
         # Q = Q.to(device=use_device)
 
@@ -586,9 +602,13 @@ class GPTQ:
             scale.append(self.quantizer.scale)
             zero.append(self.quantizer.zero)
 
-        # Ensure all tensors are on the same device
+        # Ensure all tensors are on the same device and consistent with module weight
         scale_tensors = []
         zero_tensors = []
+        
+        # Use the actual device of the module's weight data as the target device
+        # When using accelerate, we need to respect the device hooks
+        target_device = module_weight_device
         
         # First, collect all tensors and determine their current devices
         scale_devices = set()
@@ -606,10 +626,12 @@ class GPTQ:
                     f"Scale devices: {scale_devices}, Zero devices: {zero_devices}. "
                     f"Moving all tensors to target device: {target_device}")
             
-            # Move all tensors to the target device
+            # Move all tensors to the target device using .to() which respects accelerate hooks
             for i in range(len(scale_tensors)):
-                scale_tensors[i] = scale_tensors[i].to(target_device)
-                zero_tensors[i] = zero_tensors[i].to(target_device)
+                if scale_tensors[i].device != target_device:
+                    scale_tensors[i] = scale_tensors[i].to(target_device, non_blocking=False)
+                if zero_tensors[i].device != target_device:
+                    zero_tensors[i] = zero_tensors[i].to(target_device, non_blocking=False)
         
         # Concatenate tensors along dimension 1
         try:
@@ -619,14 +641,24 @@ class GPTQ:
             if "same device" in str(e).lower():
                 # If still getting device errors, move all tensors to CPU first then to target device
                 log.warn(f"Quantization: Module `{self.name}` -> Still getting device error, moving through CPU as fallback")
-                scale_tensors_cpu = [s.to('cpu') for s in scale_tensors]
-                zero_tensors_cpu = [z.to('cpu') for z in zero_tensors]
-                scale_tensors = [s.to(target_device) for s in scale_tensors_cpu]
-                zero_tensors = [z.to(target_device) for z in zero_tensors_cpu]
+                scale_tensors_cpu = [s.to('cpu', non_blocking=False) for s in scale_tensors]
+                zero_tensors_cpu = [z.to('cpu', non_blocking=False) for z in zero_tensors]
+                scale_tensors = [s.to(target_device, non_blocking=False) for s in scale_tensors_cpu]
+                zero_tensors = [z.to(target_device, non_blocking=False) for z in zero_tensors_cpu]
                 scale = torch.cat(scale_tensors, dim=1)
                 zero = torch.cat(zero_tensors, dim=1)
             else:
                 raise e
+        
+        # Ensure final scale and zero tensors are on the same device as module weight
+        # This is crucial for accelerate compatibility
+        if scale.device != module_weight_device:
+            log.warn(f"Quantization: Module `{self.name}` -> Final scale device ({scale.device}) != module weight device ({module_weight_device}). Moving scale.")
+            scale = scale.to(module_weight_device, non_blocking=False)
+        
+        if zero.device != module_weight_device:
+            log.warn(f"Quantization: Module `{self.name}` -> Final zero device ({zero.device}) != module weight device ({module_weight_device}). Moving zero.")
+            zero = zero.to(module_weight_device, non_blocking=False)
 
         duration = time.time() - start
 
