@@ -586,16 +586,13 @@ class GPTQ:
             scale.append(self.quantizer.scale)
             zero.append(self.quantizer.zero)
 
-        # Ensure all tensors are on the same device and have compatible shapes for concatenation
+        # Ensure all tensors are on the same device
         scale_tensors = []
         zero_tensors = []
         
         for s, z in zip(scale, zero):
-            # Only move to target device if not already there
-            if s.device != target_device:
-                s = s.to(target_device)
-            if z.device != target_device:
-                z = z.to(target_device)
+            s = s.to(target_device)
+            z = z.to(target_device)
             
             scale_tensors.append(s)
             zero_tensors.append(z)
