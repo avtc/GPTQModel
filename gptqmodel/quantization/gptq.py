@@ -609,9 +609,9 @@ class GPTQ:
 
             # Ensure shape consistency and apply type conversion safely
             if Q.shape != self.module.weight.shape:
-                Q = Q.reshape(self.module.weight.shape).to(self.module.weight.dtype, device=Q.device)
+                Q = Q.reshape(self.module.weight.shape).to(self.module.weight.dtype)
             else:
-                Q = Q.to(self.module.weight.dtype, device=Q.device)
+                Q = Q.to(self.module.weight.dtype)
 
             if Q.device != self.module.target_device:
                 log.warn(f"Step 10. Q.device:{Q.device}, target_device:{self.module.target_device}")
