@@ -218,13 +218,6 @@ class GPTQProcessor(LoopProcessor):
         #     wq = wq.to(device=DEVICE_0, non_blocking=True) # move to d0 for post quant inference
         if wq.device != module.weight.data.device:
             try:
-                log.info(f'Trying to move wq from {wq.device} to {module.weight.data.device}')
-                #torch.accelerator.wait_for_everyone 
-                #torch.sync(wq.device)
-                #torch.sync(self.module.weight.data.device)
-                #torch.accelerator.synchronize(wq.device)
-                #torch.accelerator.synchronize(module.weight.data.device)
-                #torch_sync()
                 wq = wq.to(device=module.weight.data.device, non_blocking=False)
             except Exception as e:
                 log.warn(f'Failed to move wq from {wq.device} to {module.weight.data.device} retrying with torch_empty_cache, {e}')
@@ -234,15 +227,6 @@ class GPTQProcessor(LoopProcessor):
                 except Exception as e2:
                     log.error(f'Failed to move wq from {wq.device} to {module.weight.data.device}, {e2}')
                     raise
-
-        # TODO: remove after test
-        if module.weight.data.dtype == torch.float16:
-            # diff in float16
-            w_wq_diff = module.weight.data - wq
-        else:
-            # diff in float32
-            w_wq_diff = module.weight.data.to(dtype=torch.float32) - wq.to(dtype=torch.float32)
-        # end TODO
 
         if self.calculate_w_wq_diff:
             # TODO: check if wq must be moved to module.weight.data.device before operation

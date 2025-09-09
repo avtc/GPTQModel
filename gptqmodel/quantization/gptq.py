@@ -361,13 +361,7 @@ class GPTQ:
         Losses = torch.zeros_like(W)
         Q = torch.zeros_like(W)
 
-        if Q.device != self.module.target_device:
-            log.warn(f"Step 1. Q.device:{Q.device}, target_device:{self.module.target_device}")
-
         Hinv, damp = self.hessian_inverse(H)
-
-        if Hinv.device != self.module.target_device:
-            log.warn(f"Step 1. Hinv.device:{Hinv.device}, target_device:{self.module.target_device}")
 
         # Use simplified loop when mock_quantization is active
         if self.qcfg.mock_quantization:
@@ -377,8 +371,6 @@ class GPTQ:
 
                 W1 = W[:, i1:i2]
                 Q1 = torch.zeros_like(W1)
-                if Q1.device != self.module.target_device:
-                    log.warn(f"Step 2. Q1.device:{Q1.device}, target_device:{self.module.target_device}")
 
                 # Handle group quantization parameters efficiently (similar to original)
                 if self.qcfg.group_size != -1:
@@ -392,10 +384,6 @@ class GPTQ:
                                 scale.append(self.quantizer.scale)
                                 zero.append(self.quantizer.zero)
                                 now_idx += 1
-                                if self.quantizer.scale.device != self.module.target_device:
-                                    log.warn(f"Step 3.1. scale.device:{self.quantizer.scale.device}, target_device:{self.module.target_device}")
-                                if self.quantizer.zero.device != self.module.target_device:
-                                    log.warn(f"Step 3.2. zero.device:{self.quantizer.zero.device}, target_device:{self.module.target_device}")
                     else:
                         # Static groups - use pre-computed groups
                         for i in range(count):
@@ -434,17 +422,12 @@ class GPTQ:
                                 maxq_val
                             )
                             Q1 = latest_scale * (quantized - latest_zero)
-
-                        if Q1.device != self.module.target_device:
-                            log.warn(f"Step 4.1. Q1.device:{Q1.device}, target_device:{self.module.target_device}")
                     else:
                         # Fallback to individual quantization if no scale/zero available
                         for i in range(count):
                             w = W1[:, i]
                             q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                             Q1[:, i] = q
-                        if Q1.device != self.module.target_device:
-                            log.warn(f"Step 4.2. Q1.device:{Q1.device}, target_device:{self.module.target_device}")
                 else:
                     # No grouping - vectorized quantization for entire block
                     maxq_val = 2 ** self.qcfg.bits - 1
@@ -470,21 +453,14 @@ class GPTQ:
                                 maxq_val
                             )
                             Q1 = latest_scale * (quantized - latest_zero)
-                        if Q1.device != self.module.target_device:
-                            log.warn(f"Step 4.3. Q1.device:{Q1.device}, target_device:{self.module.target_device}")
                     else:
                         # Fallback to individual quantization
                         for i in range(count):
                             w = W1[:, i]
                             q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                             Q1[:, i] = q
-                        if Q1.device != self.module.target_device:
-                            log.warn(f"Step 4.4. Q1.device:{Q1.device}, target_device:{self.module.target_device}")
 
                 Q[:, i1:i2] = Q1
-
-                if Q.device != self.module.target_device:
-                    log.warn(f"Step 5. Q.device:{Q.device}, target_device:{self.module.target_device}")
         else:
             # Original heavy loop for normal quantization
             for i1 in range(0, self.columns, blocksize):
@@ -564,8 +540,6 @@ class GPTQ:
         if self.qcfg.desc_act:
             Q = Q[:, invperm]
             g_idx = g_idx[invperm]
-            if Q.device != self.module.target_device:
-                log.warn(f"Step 6. Q.device:{Q.device}, target_device:{self.module.target_device}")
 
         if hasattr(self.qcfg, "hyb_act") and self.qcfg.hyb_act and not self.qcfg.desc_act:
             from .gar import invert_perm
@@ -577,73 +551,24 @@ class GPTQ:
             scale = temp_scale
             temp_zero = [zero[i] for i in inv_global_perm_list]
             zero = temp_zero
-            if Q.device != self.module.target_device:
-                log.warn(f"Step 7. Q.device:{Q.device}, target_device:{self.module.target_device}")
 
         if isinstance(self.module, transformers.Conv1D):
             Q = Q.t()
-            if Q.device != self.module.target_device:
-                log.warn(f"Step 8. Q.device:{Q.device}, target_device:{self.module.target_device}")
 
-        # if self.qcfg.mock_quantization:
-        #     # Ensure Q is on the same device as the module's weight data before type conversion
-        #     target_device = self.module.weight.data.device
-        #     if Q.device != target_device:
-        #         try:
-        #             Q = Q.to(device=target_device)
-        #         except Exception as e:
-        #             # try again
-        #             target_device = self.module.weight.data.device
-        #             if Q.device != target_device:
-        #                 Q = Q.to(device=target_device)
-        
-        # First, collect all tensors and determine their current devices
-        scale_devices = []
-        zero_devices = []
-        scale_devices_set = set()
-        zero_devices_set = set()
+        # Ensure shape consistency and apply type conversion safely
+        if Q.shape != self.module.weight.shape:
+            Q = Q.reshape(self.module.weight.shape).to(self.module.weight.dtype)
+        else:
+            Q = Q.to(self.module.weight.dtype)
 
-        try:
-            if Q.device != self.module.target_device:
-                log.warn(f"Step 9. Q.device:{Q.device}, target_device:{self.module.target_device}")
+        # Q = Q.to(device=use_device)
 
-            # Ensure shape consistency and apply type conversion safely
-            if Q.shape != self.module.weight.shape:
-                Q = Q.reshape(self.module.weight.shape).to(self.module.weight.dtype)
-            else:
-                Q = Q.to(self.module.weight.dtype)
+        if scale == []:
+            scale.append(self.quantizer.scale)
+            zero.append(self.quantizer.zero)
 
-            if Q.device != self.module.target_device:
-                log.warn(f"Step 10. Q.device:{Q.device}, target_device:{self.module.target_device}")
-
-            # Q = Q.to(device=use_device)
-
-            if scale == []:
-                scale.append(self.quantizer.scale)
-                zero.append(self.quantizer.zero)
-
-            for s, z in zip(scale, zero):
-                scale_devices.append(s.device)
-                zero_devices.append(z.device)
-                scale_devices_set.add(s.device)
-                zero_devices_set.add(z.device)
-                if s.device != self.module.target_device:
-                    log.warn(f"Step 11.1. s.device:{s.device}, target_device:{self.module.target_device}")
-                if z.device != self.module.target_device:
-                    log.warn(f"Step 11.2. z.device:{z.device}, target_device:{self.module.target_device}")
-
-            scale = torch.cat(scale, dim=1)
-            zero = torch.cat(zero, dim=1)
-        except Exception as e:
-            
-            # If there are device mismatches, log a warning and move all tensors to the target device
-            if len(scale_devices_set) > 1 or len(zero_devices_set) > 1:
-                log.error(f"Quantization: Module `{self.name}` -> Device mismatch detected in scale/zero tensors. "
-                    f"Scale devices set: {scale_devices_set}, Zero devices set: {zero_devices_set}. "
-                    f"Scale devices: {scale_devices}, Zero devices: {zero_devices}. ")
-
-            log.error(f"Error {e}. Module `{self.name}`. H.device={H.device}, W.device={W.device}, Q.device={Q.device}, target={self.module.target_device}")
-            raise
+        scale = torch.cat(scale, dim=1)
+        zero = torch.cat(zero, dim=1)
 
         duration = time.time() - start
 
