@@ -228,7 +228,9 @@ class GPTQProcessor(LoopProcessor):
         #     torch_empty_cache()
         # with torch_streamCtx(DEVICE_0_STREAM):
         #     wq = wq.to(device=DEVICE_0, non_blocking=True) # move to d0 for post quant inference
-        wq = wq.to(device=DEVICE_0, non_blocking=False)
+        
+        # torch.AcceleratorError: CUDA error: invalid argument
+        #wq = wq.to(device=DEVICE_0, non_blocking=False)
 
         # logger.info(f"Quantizing module END: {name}, {gptq[name].shape()}")
 
