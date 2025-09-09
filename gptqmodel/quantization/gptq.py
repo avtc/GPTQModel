@@ -361,7 +361,13 @@ class GPTQ:
         Losses = torch.zeros_like(W)
         Q = torch.zeros_like(W)
 
+        if Q.device != self.module.target_device:
+            log.warn(f"Step 1. Q.device:{Q.device}, target_device:{self.module.target_device}")
+
         Hinv, damp = self.hessian_inverse(H)
+
+        if Hinv.device != self.module.target_device:
+            log.info(f"Step 1. Hinv.device:{Hinv.device}, target_device:{self.module.target_device}")
 
         # Use simplified loop when mock_quantization is active
         if self.qcfg.mock_quantization:
@@ -371,6 +377,8 @@ class GPTQ:
 
                 W1 = W[:, i1:i2]
                 Q1 = torch.zeros_like(W1)
+                if Q1.device != self.module.target_device:
+                    log.warn(f"Step 2. Q1.device:{Q1.device}, target_device:{self.module.target_device}")
 
                 # Handle group quantization parameters efficiently (similar to original)
                 if self.qcfg.group_size != -1:
@@ -384,6 +392,10 @@ class GPTQ:
                                 scale.append(self.quantizer.scale)
                                 zero.append(self.quantizer.zero)
                                 now_idx += 1
+                                if self.quantizer.scale.device != self.module.target_device:
+                                    log.warn(f"Step 3. scale.device:{self.quantizer.scale.device}, target_device:{self.module.target_device}")
+                                if self.quantizer.zero.device != self.module.target_device:
+                                    log.warn(f"Step 3. zero.device:{self.quantizer.zero.device}, target_device:{self.module.target_device}")
                     else:
                         # Static groups - use pre-computed groups
                         for i in range(count):
@@ -422,6 +434,9 @@ class GPTQ:
                                 maxq_val
                             )
                             Q1 = latest_scale * (quantized - latest_zero)
+
+                        if Q1.device != self.module.target_device:
+                            log.warn(f"Step 4. Q1.device:{Q1.device}, target_device:{self.module.target_device}")
                     else:
                         # Fallback to individual quantization if no scale/zero available
                         for i in range(count):
@@ -461,6 +476,9 @@ class GPTQ:
                             Q1[:, i] = q
 
                 Q[:, i1:i2] = Q1
+
+                if Q.device != self.module.target_device:
+                    log.warn(f"Step 5. Q.device:{Q.device}, target_device:{self.module.target_device}")
         else:
             # Original heavy loop for normal quantization
             for i1 in range(0, self.columns, blocksize):
@@ -509,8 +527,8 @@ class GPTQ:
                     Losses[:, i1:i2] = Losses1 / 2
                     W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
 
-        # TODO: sometimes Q placed not on a target_device, investigate
-        torch_sync(device=self.module.target_device)
+        # TODO: why is there a torch_sync here? There are no streaming ops here?
+        # torch_sync(device=self.module.target_device)
 
         if Hinv is not None:
             del Hinv
@@ -540,6 +558,8 @@ class GPTQ:
         if self.qcfg.desc_act:
             Q = Q[:, invperm]
             g_idx = g_idx[invperm]
+            if Q.device != self.module.target_device:
+                log.warn(f"Step 6. Q.device:{Q.device}, target_device:{self.module.target_device}")
 
         if hasattr(self.qcfg, "hyb_act") and self.qcfg.hyb_act and not self.qcfg.desc_act:
             from .gar import invert_perm
@@ -551,9 +571,13 @@ class GPTQ:
             scale = temp_scale
             temp_zero = [zero[i] for i in inv_global_perm_list]
             zero = temp_zero
+            if Q.device != self.module.target_device:
+                log.warn(f"Step 7. Q.device:{Q.device}, target_device:{self.module.target_device}")
 
         if isinstance(self.module, transformers.Conv1D):
             Q = Q.t()
+            if Q.device != self.module.target_device:
+                log.warn(f"Step 8. Q.device:{Q.device}, target_device:{self.module.target_device}")
 
         # if self.qcfg.mock_quantization:
         #     # Ensure Q is on the same device as the module's weight data before type conversion
