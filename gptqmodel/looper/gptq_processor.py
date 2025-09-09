@@ -216,17 +216,17 @@ class GPTQProcessor(LoopProcessor):
         #     torch_empty_cache()
         # with torch_streamCtx(DEVICE_0_STREAM):
         #     wq = wq.to(device=DEVICE_0, non_blocking=True) # move to d0 for post quant inference
-        if wq.device != self.module.weight.data.device:
+        if wq.device != module.weight.data.device:
             try:
-                log.info(f'Trying to move wq from {wq.device} to {self.module.weight.data.device}')
+                log.info(f'Trying to move wq from {wq.device} to {module.weight.data.device}')
                 #torch.accelerator.wait_for_everyone 
                 #torch.sync(wq.device)
                 #torch.sync(self.module.weight.data.device)
                 torch.accelerator.synchronize(device=wq.device)
-                torch.accelerator.synchronize(device=self.module.weight.data.device)
-                wq = wq.to(device=self.module.weight.data.device, non_blocking=False)
+                torch.accelerator.synchronize(device=module.weight.data.device)
+                wq = wq.to(device=module.weight.data.device, non_blocking=False)
             except:
-                log.error(f'Failed to move wq from {wq.device} to {self.module.weight.data.device}')
+                log.error(f'Failed to move wq from {wq.device} to {module.weight.data.device}')
                 raise
 
         # TODO: remove after test
