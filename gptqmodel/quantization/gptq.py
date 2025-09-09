@@ -589,8 +589,8 @@ class GPTQ:
             scale_devices_set = set()
             zero_devices_set = set()
             for s, z in zip(scale, zero):
-                scale_devices.add(s.device)
-                zero_devices.add(z.device)
+                scale_devices.append(s.device)
+                zero_devices.append(z.device)
                 scale_devices_set.add(s.device)
                 zero_devices_set.add(z.device)
             
