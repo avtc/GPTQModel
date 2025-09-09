@@ -222,8 +222,8 @@ class GPTQProcessor(LoopProcessor):
                 #torch.accelerator.wait_for_everyone 
                 #torch.sync(wq.device)
                 #torch.sync(self.module.weight.data.device)
-                torch.accelerator.synchronize(device=wq.device)
-                torch.accelerator.synchronize(device=module.weight.data.device)
+                torch.accelerator.synchronize(wq.device)
+                torch.accelerator.synchronize(module.weight.data.device)
                 wq = wq.to(device=module.weight.data.device, non_blocking=False)
             except:
                 log.error(f'Failed to move wq from {wq.device} to {module.weight.data.device}')
