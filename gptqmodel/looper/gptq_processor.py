@@ -207,7 +207,17 @@ class GPTQProcessor(LoopProcessor):
         # Log the new row
         self.log_new_row(stat)
 
+        # TODO: remove after test
+        if module.weight.data.dtype == torch.float16:
+            # diff in float16
+            w_wq_diff = module.weight.data - wq
+        else:
+            # diff in float32
+            w_wq_diff = module.weight.data.to(dtype=torch.float32) - wq.to(dtype=torch.float32)
+        # end TODO
+
         if self.calculate_w_wq_diff:
+            # TODO: check if wq must be moved to module.weight.data.device before operation
             if module.weight.data.dtype == torch.float16:
                 # diff in float16
                 w_wq_diff = module.weight.data - wq
@@ -228,9 +238,7 @@ class GPTQProcessor(LoopProcessor):
         #     torch_empty_cache()
         # with torch_streamCtx(DEVICE_0_STREAM):
         #     wq = wq.to(device=DEVICE_0, non_blocking=True) # move to d0 for post quant inference
-        
-        # torch.AcceleratorError: CUDA error: invalid argument
-        #wq = wq.to(device=DEVICE_0, non_blocking=False)
+        wq = wq.to(device=module.weight.data.device, non_blocking=False)
 
         # logger.info(f"Quantizing module END: {name}, {gptq[name].shape()}")
 
