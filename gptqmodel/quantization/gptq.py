@@ -367,7 +367,7 @@ class GPTQ:
         Hinv, damp = self.hessian_inverse(H)
 
         if Hinv.device != self.module.target_device:
-            log.info(f"Step 1. Hinv.device:{Hinv.device}, target_device:{self.module.target_device}")
+            log.warn(f"Step 1. Hinv.device:{Hinv.device}, target_device:{self.module.target_device}")
 
         # Use simplified loop when mock_quantization is active
         if self.qcfg.mock_quantization:
@@ -393,9 +393,9 @@ class GPTQ:
                                 zero.append(self.quantizer.zero)
                                 now_idx += 1
                                 if self.quantizer.scale.device != self.module.target_device:
-                                    log.warn(f"Step 3. scale.device:{self.quantizer.scale.device}, target_device:{self.module.target_device}")
+                                    log.warn(f"Step 3.1. scale.device:{self.quantizer.scale.device}, target_device:{self.module.target_device}")
                                 if self.quantizer.zero.device != self.module.target_device:
-                                    log.warn(f"Step 3. zero.device:{self.quantizer.zero.device}, target_device:{self.module.target_device}")
+                                    log.warn(f"Step 3.2. zero.device:{self.quantizer.zero.device}, target_device:{self.module.target_device}")
                     else:
                         # Static groups - use pre-computed groups
                         for i in range(count):
@@ -436,13 +436,15 @@ class GPTQ:
                             Q1 = latest_scale * (quantized - latest_zero)
 
                         if Q1.device != self.module.target_device:
-                            log.warn(f"Step 4. Q1.device:{Q1.device}, target_device:{self.module.target_device}")
+                            log.warn(f"Step 4.1. Q1.device:{Q1.device}, target_device:{self.module.target_device}")
                     else:
                         # Fallback to individual quantization if no scale/zero available
                         for i in range(count):
                             w = W1[:, i]
                             q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                             Q1[:, i] = q
+                        if Q1.device != self.module.target_device:
+                            log.warn(f"Step 4.2. Q1.device:{Q1.device}, target_device:{self.module.target_device}")
                 else:
                     # No grouping - vectorized quantization for entire block
                     maxq_val = 2 ** self.qcfg.bits - 1
@@ -468,12 +470,16 @@ class GPTQ:
                                 maxq_val
                             )
                             Q1 = latest_scale * (quantized - latest_zero)
+                        if Q1.device != self.module.target_device:
+                            log.warn(f"Step 4.3. Q1.device:{Q1.device}, target_device:{self.module.target_device}")
                     else:
                         # Fallback to individual quantization
                         for i in range(count):
                             w = W1[:, i]
                             q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                             Q1[:, i] = q
+                        if Q1.device != self.module.target_device:
+                            log.warn(f"Step 4.4. Q1.device:{Q1.device}, target_device:{self.module.target_device}")
 
                 Q[:, i1:i2] = Q1
 
@@ -591,12 +597,24 @@ class GPTQ:
         #             if Q.device != target_device:
         #                 Q = Q.to(device=target_device)
         
+        # First, collect all tensors and determine their current devices
+        scale_devices = []
+        zero_devices = []
+        scale_devices_set = set()
+        zero_devices_set = set()
+
         try:
+            if Q.device != self.module.target_device:
+                log.warn(f"Step 9. Q.device:{Q.device}, target_device:{self.module.target_device}")
+
             # Ensure shape consistency and apply type conversion safely
             if Q.shape != self.module.weight.shape:
                 Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
             else:
                 Q = Q.type_as(self.module.weight.data)
+
+            if Q.device != self.module.target_device:
+                log.warn(f"Step 10. Q.device:{Q.device}, target_device:{self.module.target_device}")
 
             # Q = Q.to(device=use_device)
 
@@ -604,19 +622,19 @@ class GPTQ:
                 scale.append(self.quantizer.scale)
                 zero.append(self.quantizer.zero)
 
-            scale = torch.cat(scale, dim=1)
-            zero = torch.cat(zero, dim=1)
-        except Exception as e:
-            # First, collect all tensors and determine their current devices
-            scale_devices = []
-            zero_devices = []
-            scale_devices_set = set()
-            zero_devices_set = set()
             for s, z in zip(scale, zero):
                 scale_devices.append(s.device)
                 zero_devices.append(z.device)
                 scale_devices_set.add(s.device)
                 zero_devices_set.add(z.device)
+                if s.device != self.module.target_device:
+                    log.warn(f"Step 11.1. s.device:{s.device}, target_device:{self.module.target_device}")
+                if z.device != self.module.target_device:
+                    log.warn(f"Step 11.2. z.device:{z.device}, target_device:{self.module.target_device}")
+
+            scale = torch.cat(scale, dim=1)
+            zero = torch.cat(zero, dim=1)
+        except Exception as e:
             
             # If there are device mismatches, log a warning and move all tensors to the target device
             if len(scale_devices_set) > 1 or len(zero_devices_set) > 1:
