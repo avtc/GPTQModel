@@ -555,95 +555,53 @@ class GPTQ:
         if isinstance(self.module, transformers.Conv1D):
             Q = Q.t()
 
-        target_device = self.module.weight.data.device
+        # if self.qcfg.mock_quantization:
+        #     # Ensure Q is on the same device as the module's weight data before type conversion
+        #     target_device = self.module.weight.data.device
+        #     if Q.device != target_device:
+        #         try:
+        #             Q = Q.to(device=target_device)
+        #         except Exception as e:
+        #             # try again
+        #             target_device = self.module.weight.data.device
+        #             if Q.device != target_device:
+        #                 Q = Q.to(device=target_device)
         
-        # Ensure Q is on the same device as the module's weight data before type conversion
-        # This is critical when using accelerate with device mapping
-        if Q.device != target_device:
-            log.warn(f"Quantization: Module `{self.name}` -> Q device ({Q.device}) != module weight device ({target_device}). Moving Q to module weight device.")
-            try:
-                Q = Q.to(device=target_device)
-            except Exception as e:
-                log.warn(f"Quantization: Module `{self.name}` -> Failed to move Q from {Q.device} to {target_device}, trying through CPU as fallback")
-                Q = Q.to('cpu').to(target_device)
-        
-        # Ensure shape consistency and apply type conversion safely
-        if Q.shape != self.module.weight.shape:
-            try:
-                Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
-            except Exception as e:
-                log.warn(f"Quantization: Module `{self.name}` -> Direct reshape/type_as failed: {e}. Using fallback method.")
-                # Fallback: move to CPU, reshape, move back, then convert type
-                Q = Q.to('cpu')
-                Q = Q.reshape(self.module.weight.shape)
-                Q = Q.to(target_device)
-                Q = Q.type_as(self.module.weight.data)
-        else:
-            try:
-                Q = Q.type_as(self.module.weight.data)
-            except Exception as e:
-                log.warn(f"Quantization: Module `{self.name}` -> Direct type_as failed: {e}. Using fallback method.")
-                # Fallback: move to CPU, convert type, move back
-                Q = Q.to('cpu').type_as(self.module.weight.data).to(target_device)
-
-        # Q = Q.to(device=use_device)
-
-        if scale == []:
-            scale.append(self.quantizer.scale)
-            zero.append(self.quantizer.zero)
-
-        # Ensure all tensors are on the same device and consistent with module weight device
-        scale_tensors = []
-        zero_tensors = []
-        
-        # Use the module's weight device as the target device
-        # This ensures consistency with accelerate's device mapping
-        target_device = self.module.weight.data.device
-        
-        # First, collect all tensors and determine their current devices
-        scale_devices = set()
-        zero_devices = set()
-        
-        for s, z in zip(scale, zero):
-            scale_devices.add(s.device)
-            zero_devices.add(z.device)
-            scale_tensors.append(s)
-            zero_tensors.append(z)
-        
-        # If there are device mismatches, log a warning and move all tensors to the target device
-        if len(scale_devices) > 1 or len(zero_devices) > 1:
-            log.warn(f"Quantization: Module `{self.name}` -> Device mismatch detected in scale/zero tensors. "
-                    f"Scale devices: {scale_devices}, Zero devices: {zero_devices}. "
-                    f"Moving all tensors to target device: {target_device}")
-            
-            # Move all tensors to the target device using .to() which respects accelerate hooks
-            for i in range(len(scale_tensors)):
-                if scale_tensors[i].device != target_device:
-                    scale_tensors[i] = scale_tensors[i].to(target_device, non_blocking=False)
-                if zero_tensors[i].device != target_device:
-                    zero_tensors[i] = zero_tensors[i].to(target_device, non_blocking=False)
-        
-        # Concatenate tensors along dimension 1
         try:
-            scale = torch.cat(scale_tensors, dim=1)
-            zero = torch.cat(zero_tensors, dim=1)
-        except RuntimeError as e:
-            # If still getting device errors, move all tensors to CPU first then to target device
-            log.warn(f"Quantization: Module `{self.name}` -> Still getting device error, moving through CPU as fallback")
-            scale_tensors_cpu = [s.to('cpu', non_blocking=False) for s in scale_tensors]
-            zero_tensors_cpu = [z.to('cpu', non_blocking=False) for z in zero_tensors]
-            scale_tensors = [s.to(target_device, non_blocking=False) for s in scale_tensors_cpu]
-            zero_tensors = [z.to(target_device, non_blocking=False) for z in zero_tensors_cpu]
-            scale = torch.cat(scale_tensors, dim=1)
-            zero = torch.cat(zero_tensors, dim=1)
-        
-        # Ensure final scale and zero tensors are on the same device as module weight device
-        # This is crucial for accelerate compatibility
-        #if scale.device != target_device:
-        #    scale = scale.to(target_device, non_blocking=False)
-        
-        #if zero.device != target_device:
-        #    zero = zero.to(target_device, non_blocking=False)
+            # Ensure shape consistency and apply type conversion safely
+            if Q.shape != self.module.weight.shape:
+                Q = Q.reshape(self.module.weight.shape).type_as(self.module.weight.data)
+            else:
+                Q = Q.type_as(self.module.weight.data)
+
+            # Q = Q.to(device=use_device)
+
+            if scale == []:
+                scale.append(self.quantizer.scale)
+                zero.append(self.quantizer.zero)
+
+            scale = torch.cat(scale, dim=1)
+            zero = torch.cat(zero, dim=1)
+        except Exception as e:
+            # First, collect all tensors and determine their current devices
+            scale_devices = []
+            zero_devices = []
+            scale_devices_set = set()
+            zero_devices_set = set()
+            for s, z in zip(scale, zero):
+                scale_devices.add(s.device)
+                zero_devices.add(z.device)
+                scale_devices_set.add(s.device)
+                zero_devices_set.add(z.device)
+            
+            # If there are device mismatches, log a warning and move all tensors to the target device
+            if len(scale_devices) > 1 or len(zero_devices) > 1:
+                log.error(f"Quantization: Module `{self.name}` -> Device mismatch detected in scale/zero tensors. "
+                    f"Scale devices set: {scale_devices_set}, Zero devices set: {zero_devices_set}. "
+                    f"Scale devices: {scale_devices}, Zero devices: {zero_devices}. ")
+
+            log.error(f"Error {e}. Module `{self.name}`. H.device={H.device}, W.device={W.device}, Q.device={Q.device}, target={self.module.target_device}")
+            raise
 
         duration = time.time() - start
 
