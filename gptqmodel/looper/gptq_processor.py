@@ -30,7 +30,7 @@ from ..quantization import GPTQ, GPTQv2
 from ..quantization.config import QUANT_METHOD, QuantizeConfig
 from ..utils.logger import setup_logger
 from ..utils.model import move_to, pack_model
-from ..utils.torch import CPU, DEVICE_0, DEVICE_0_STREAM, DEVICE_1, torch_streamCtx, torch_sync
+from ..utils.torch import CPU, DEVICE_0, DEVICE_0_STREAM, DEVICE_1, torch_empty_cache, torch_streamCtx, torch_sync
 
 log = setup_logger()
 lock = threading.Lock()
@@ -222,12 +222,18 @@ class GPTQProcessor(LoopProcessor):
                 #torch.accelerator.wait_for_everyone 
                 #torch.sync(wq.device)
                 #torch.sync(self.module.weight.data.device)
-                torch.accelerator.synchronize(wq.device)
-                torch.accelerator.synchronize(module.weight.data.device)
+                #torch.accelerator.synchronize(wq.device)
+                #torch.accelerator.synchronize(module.weight.data.device)
+                #torch_sync()
                 wq = wq.to(device=module.weight.data.device, non_blocking=False)
-            except:
-                log.error(f'Failed to move wq from {wq.device} to {module.weight.data.device}')
-                raise
+            except Exception as e:
+                log.warn(f'Failed to move wq from {wq.device} to {module.weight.data.device} retrying with torch_empty_cache, {e}')
+                try:
+                    torch_empty_cache()
+                    wq = wq.to(device=module.weight.data.device, non_blocking=False)
+                except Exception as e2:
+                    log.error(f'Failed to move wq from {wq.device} to {module.weight.data.device}, {e2}')
+                    raise
 
         # TODO: remove after test
         if module.weight.data.dtype == torch.float16:
