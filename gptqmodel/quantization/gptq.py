@@ -509,8 +509,8 @@ class GPTQ:
                     Losses[:, i1:i2] = Losses1 / 2
                     W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
 
-        # TODO: why is there a torch_sync here? There are no streaming ops here?
-        # torch_sync(device=self.module.target_device)
+        # TODO: sometimes Q placed not on a target_device, investigate
+        torch_sync(device=self.module.target_device)
 
         if Hinv is not None:
             del Hinv
@@ -595,7 +595,7 @@ class GPTQ:
                 zero_devices_set.add(z.device)
             
             # If there are device mismatches, log a warning and move all tensors to the target device
-            if len(scale_devices) > 1 or len(zero_devices) > 1:
+            if len(scale_devices_set) > 1 or len(zero_devices_set) > 1:
                 log.error(f"Quantization: Module `{self.name}` -> Device mismatch detected in scale/zero tensors. "
                     f"Scale devices set: {scale_devices_set}, Zero devices set: {zero_devices_set}. "
                     f"Scale devices: {scale_devices}, Zero devices: {zero_devices}. ")
