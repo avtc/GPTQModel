@@ -576,8 +576,12 @@ class ModuleLooper():
                 if auto_gc:
                     torch_empty_cache()
 
+            # layer finished
+            ASYNC_WORKER.join()
+            if auto_gc:
+                torch_empty_cache()
+
         # LifeCycle: All sub-modules have finalized meaning quantization work is complete
-        ASYNC_WORKER.join()
 
         # paranoid safety check
         torch_sync()
