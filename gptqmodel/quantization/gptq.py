@@ -562,7 +562,17 @@ class GPTQ:
         scale = torch.cat(scale, dim=1)
         zero = torch.cat(zero, dim=1)
 
-        Q = Q.to(device=self.module.weight.data.device, non_blocking=False)
+        # prepare for module.forward post generate, move to weight device with retry
+        if Q.device != self.module.weight.data.device:
+            try:
+                Q = Q.to(device=self.module.weight.data.device, non_blocking=False)
+            except Exception as e:
+                #log.warn(f'Failed to move Q from {Q.device} to {self.module.weight.data.device} retrying with torch_empty_cache, {e}')
+                try:
+                    Q = Q.to(device=self.module.weight.data.device, non_blocking=False)
+                except Exception as e2:
+                    log.error(f'Failed to move Q from {Q.device} to {self.module.weight.data.device}, {e2}')
+                    raise
 
         duration = time.time() - start
 
