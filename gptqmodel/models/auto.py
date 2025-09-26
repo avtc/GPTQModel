@@ -612,6 +612,8 @@ class GPTQModel:
             batch_size: Optional[int] = 1,
             tokenizer: Optional[PreTrainedTokenizerBase] = None,
             logger_board: Optional[str] = None,
+            # torch/cuda GC is auto enabled to reduce vram usage: disable to for small models or you know there is no possibility of oom due to vram to accelerate quantization
+            auto_gc: bool = True,
             # pass-through vars for load()
             trust_remote_code: bool = False,
             dtype: Optional[Union[str, torch.dtype]] = None,
@@ -658,5 +660,5 @@ class GPTQModel:
                     batch_size=batch_size,
                     tokenizer=tokenizer,
                     logger_board=logger_board,
-                )
+                    auto_gc=auto_gc)
             return

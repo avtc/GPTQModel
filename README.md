@@ -324,7 +324,7 @@ GPTQModel.adapter.generate(
   quantized_model_id_or_path=quant_path,
   calibration_dataset=calibration_dataset,
   calibration_dataset_concat_size=0,
-)
+  auto_gc=False)
 
 # post-eora inference
 model = GPTQModel.load(
@@ -424,6 +424,7 @@ quant_config = QuantizeConfig(bits=4, group_size=128, act_group_aware=True)
 ### Experimental Features
 
 * GPTQ v2: set `v2=True` in quantization config.
+* Pass `auto_gc = False` to `quantize()` api to speed up quantization if gpu has plenty of vram and does not need to call slow gc.
 
 
 ### Attribution of Quantization Methods:

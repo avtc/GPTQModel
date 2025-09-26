@@ -115,7 +115,7 @@ class GPTQProcessor(LoopProcessor):
                 g.H = g.H.to(device=module.target_device, non_blocking=True)
             g.module.weight.data = g.module.weight.data.to(device=module.target_device, non_blocking=True)
 
-    def process(self, module: NamedModule):
+    def process(self, module: NamedModule, auto_gc: bool = True):
         # Reset peak memory stats
         #torch.cuda.reset_peak_memory_stats()
         self.pb.title(f"Quantizing {module.name} in layer ").draw()
@@ -197,6 +197,9 @@ class GPTQProcessor(LoopProcessor):
             })
 
         module.weight.data = wq
+
+        # if auto_gc:
+        #     torch_empty_cache()
 
     # submodule_finalized is called in reverse after all next sequential processes are called
     def submodule_finalize(self, module: NamedModule, model: BaseQModel, **kwargs):

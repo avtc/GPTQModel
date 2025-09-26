@@ -80,7 +80,7 @@ class NativeProcessor(LoopProcessor):
 
         return tmp
 
-    def process(self, module: NamedModule):
+    def process(self, module: NamedModule, auto_gc: bool = True):
         module.state[NATIVE_INPUTS_STATE_KEY] = self.native_inp_caches.pop(module.name)
 
     def submodule_finalize(self, module: NamedModule):

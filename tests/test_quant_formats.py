@@ -82,6 +82,7 @@ class TestQuantization(ModelTest):
         model.quantize(
             calibration=self.calibration_dataset,
             calibration_concat_size=0,
+            auto_gc=False,
         )
 
         with tempfile.TemporaryDirectory() as tmpdirname:

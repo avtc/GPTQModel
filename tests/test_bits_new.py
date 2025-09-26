@@ -97,6 +97,7 @@ class Test(ModelTest):
         batch_size = 1
         calibration_dataset_rows = 512
         calibration_dataset_concat_size = 0 # disable
+        auto_gc = False
         adapter_file_name = "eora.safetensors"
         dataset_id = "allenai/c4"
         dataset_files = "en/c4-train.00001-of-01024.json.gz"
@@ -112,6 +113,7 @@ class Test(ModelTest):
             "batch_size": batch_size,
             "calibration_dataset_rows": calibration_dataset_rows,
             "calibration_dataset_concat_size": calibration_dataset_concat_size,
+            "auto_gc": auto_gc,
             "adapter_file_name": adapter_file_name,
         }
 
@@ -149,6 +151,7 @@ class Test(ModelTest):
                 model.quantize(
                     calibration=calibration_dataset,
                     batch_size=batch_size,
+                    auto_gc=auto_gc,
                     calibration_concat_size=calibration_dataset_concat_size,
                     backend=BACKEND.TORCH,
                 ) #

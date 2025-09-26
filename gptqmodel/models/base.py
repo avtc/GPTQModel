@@ -491,6 +491,8 @@ class BaseQModel(nn.Module):
         tokenizer: Optional[PreTrainedTokenizerBase] = None,
         logger_board: Optional[str] = None,
         backend: Optional[BACKEND] = BACKEND.AUTO,
+        # torch/cuda GC is auto enabled to reduce vram usage: disable to for small models or you know there is no possibility of oom due to vram to accelerate quantization
+        auto_gc: bool = False,
         # eora adapter generation needs config Lora(rank=1, path='lora.safetensors')
         adapter: Adapter = None,
         adapter_calibration_dataset: Union[List[Dict[str, Union[List[int], torch.LongTensor]]], List[str], List[int]] = None,
@@ -621,6 +623,8 @@ class BaseQModel(nn.Module):
             rotation_device = self.quantize_config.device if self.quantize_config.device != DEVICE.MPS else DEVICE.CPU
             self.model, _ = rotate_model(model=self.model, rotate_mode=self.quantize_config.rotation,
                                             device=rotation_device, **module_name_args)
+            if auto_gc:
+                torch_empty_cache()
 
         # init processor with default GPTQ processor
         if self.quantize_config.quant_method == METHOD.QQQ:
@@ -669,6 +673,7 @@ class BaseQModel(nn.Module):
         module_looper = ModuleLooper(self, processors=processors)
 
         return module_looper.loop(
+            auto_gc=auto_gc,
             backend=backend,
             fail_safe=self.quantize_config.fail_safe,
         )
@@ -684,6 +689,8 @@ class BaseQModel(nn.Module):
         batch_size: int = 1,
         tokenizer: Optional[PreTrainedTokenizerBase] = None,
         logger_board: Optional[str] = None,
+        # torch/cuda GC is auto enabled to reduce vram usage: disable to for small models or you know there is no possibility of oom due to vram to accelerate quantization
+        auto_gc: bool = True,
     ):
         if self.quantized:
             raise EnvironmentError("eora_generate() is called a model that is already quantized")
@@ -727,6 +734,7 @@ class BaseQModel(nn.Module):
         module_looper = ModuleLooper(model=self, processors=processors)
 
         module_looper.loop()
+            auto_gc=auto_gc,
 
         self.eora_save(save_dir=adapter.path, model_save_dir=self.model_local_path)
         return

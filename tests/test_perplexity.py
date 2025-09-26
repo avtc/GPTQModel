@@ -156,6 +156,7 @@ class TestPerplexity(unittest.TestCase):
         model.quantize(
             dataset,
             batch_size=128 if IS_ROCM else 256,
+            auto_gc=False, # speed up quant
         )
         quant_time = time.time() - start
 
