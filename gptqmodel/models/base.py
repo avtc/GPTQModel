@@ -733,8 +733,7 @@ class BaseQModel(nn.Module):
         # prepare processor worker (looper)
         module_looper = ModuleLooper(model=self, processors=processors)
 
-        module_looper.loop()
-            auto_gc=auto_gc,
+        module_looper.loop(auto_gc=auto_gc)
 
         self.eora_save(save_dir=adapter.path, model_save_dir=self.model_local_path)
         return
