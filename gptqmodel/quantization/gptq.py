@@ -564,7 +564,18 @@ class GPTQ:
         scale = torch.cat(scale, dim=1)
         zero = torch.cat(zero, dim=1)
 
-        Q = Q.to(device=self.module.weight.data.device, non_blocking=False)
+        # prepare for module.forward post generate, move to weight device
+        if Q.device != self.module.weight.data.device:
+            try:
+                Q = Q.to(device=self.module.weight.data.device, non_blocking=False)
+            except Exception:
+                # retry is a workaround for: torch.AcceleratorError: CUDA error: invalid argument
+                # for the case when there are > 4 GPUs
+                try:
+                    Q = Q.to(device=self.module.weight.data.device, non_blocking=False)
+                except Exception as e:
+                    log.error(f'Failed to move Q from {Q.device} to {self.module.weight.data.device}, {e}')
+                    raise
 
         duration = time.time() - start
 

@@ -571,9 +571,11 @@ class ModuleLooper():
                                 ))
                             else:
                                 reverse_p.submodule_finalize(module, self.gptq_model)
+            
+            # Wait pending offload operations after layer done to release VRAM, before starting new layer
+            SERIAL_BG_QUEUE.join()
 
         # LifeCycle: All sub-modules have finalized meaning quantization work is complete
-        SERIAL_BG_QUEUE.join()
 
         # paranoid safety check
         torch_sync()
