@@ -655,6 +655,15 @@ class ModuleLooper():
                     if len(v.shape) == 1:
                         v = v.unsqueeze(0)
                     example[k] = move_to(v, device=data_device)
+            # Double-check: ensure no meta tensors remain
+            for k, v in example.items():
+                if torch.is_tensor(v) and v.is_meta:
+                    example[k] = v.to(device=self.gptq_model.quantize_config.device)
+                elif isinstance(v, list):
+                    for i, item in enumerate(v):
+                        if torch.is_tensor(item) and item.is_meta:
+                            v[i] = item.to(device=self.gptq_model.quantize_config.device)
+
             try:
                 if self.gptq_model.ATTENTION_MASKS_DTYPE is torch.long:
                     example["attention_mask"] = example["attention_mask"].long()
