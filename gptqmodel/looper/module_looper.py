@@ -591,7 +591,11 @@ class ModuleLooper():
 
             # Keyword arguments.
             if kwargs.get("attention_mask") is not None and self.gptq_model.ATTENTION_MASKS_REQUIRED_FOR_INPUT:
-                attention_masks.append(kwargs["attention_mask"].to(device=data_device))
+                # Ensure attention mask is on a concrete device (not meta) to avoid .item() errors in transformers
+                attention_mask = kwargs["attention_mask"]
+                if get_device(attention_mask) == META:
+                    attention_mask = attention_mask.to(self.gptq_model.quantize_config.device)
+                attention_masks.append(attention_mask.to(device=data_device))
             else:
                 attention_masks.append(None)
 
@@ -655,6 +659,13 @@ class ModuleLooper():
                     if len(v.shape) == 1:
                         v = v.unsqueeze(0)
                     example[k] = move_to(v, device=data_device)
+            
+            # Ensure attention mask is on a concrete device (not meta) to avoid .item() errors in transformers
+            if "attention_mask" in example and example["attention_mask"] is not None:
+                attention_mask_device = self.gptq_model.quantize_config.device
+                if get_device(example["attention_mask"]) == META:
+                    example["attention_mask"] = example["attention_mask"].to(attention_mask_device)
+                
             try:
                 if self.gptq_model.ATTENTION_MASKS_DTYPE is torch.long:
                     example["attention_mask"] = example["attention_mask"].long()
