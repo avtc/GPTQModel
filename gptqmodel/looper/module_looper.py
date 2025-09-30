@@ -671,6 +671,18 @@ class ModuleLooper():
             for k, v in example.items():
                 if isinstance(v, torch.Tensor) and get_device(v) == META:
                     example[k] = v.to(concrete_device)
+                # Also handle nested structures that might contain meta tensors
+                elif isinstance(v, (list, tuple)):
+                    new_v = []
+                    for item in v:
+                        if isinstance(item, torch.Tensor) and get_device(item) == META:
+                            new_v.append(item.to(concrete_device))
+                        else:
+                            new_v.append(item)
+                    if isinstance(v, tuple):
+                        example[k] = tuple(new_v)
+                    else:
+                        example[k] = new_v
                 
             try:
                 if self.gptq_model.ATTENTION_MASKS_DTYPE is torch.long:
