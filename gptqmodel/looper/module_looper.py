@@ -598,6 +598,12 @@ class ModuleLooper():
                 attention_masks.append(attention_mask.to(device=data_device))
             else:
                 attention_masks.append(None)
+            
+            # Ensure all captured kwargs tensors are on concrete devices
+            for k, v in kwargs.items():
+                if isinstance(v, torch.Tensor) and get_device(v) == META:
+                    # Update the kwargs in-place to use concrete tensor
+                    kwargs[k] = v.to(self.gptq_model.quantize_config.device)
 
             pos_ids = kwargs.get("position_ids", None)
             if pos_ids is not None:
@@ -660,11 +666,11 @@ class ModuleLooper():
                         v = v.unsqueeze(0)
                     example[k] = move_to(v, device=data_device)
             
-            # Ensure attention mask is on a concrete device (not meta) to avoid .item() errors in transformers
-            if "attention_mask" in example and example["attention_mask"] is not None:
-                attention_mask_device = self.gptq_model.quantize_config.device
-                if get_device(example["attention_mask"]) == META:
-                    example["attention_mask"] = example["attention_mask"].to(attention_mask_device)
+            # Ensure all tensors are on concrete devices (not meta) to avoid .item() errors in transformers
+            concrete_device = self.gptq_model.quantize_config.device
+            for k, v in example.items():
+                if isinstance(v, torch.Tensor) and get_device(v) == META:
+                    example[k] = v.to(concrete_device)
                 
             try:
                 if self.gptq_model.ATTENTION_MASKS_DTYPE is torch.long:
