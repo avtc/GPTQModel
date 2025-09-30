@@ -682,10 +682,12 @@ class ModuleLooper():
                 # Ensure initial caches (like RoPE) are created on the quant device
                 with self.pool.read_lock(self.gptq_model.quantize_config.device):
                     with _device_ctx(self.gptq_model.quantize_config.device):
-                        if self.gptq_model.INPUT_EMBEDDING_EXTRA_ARGS:
-                            self.gptq_model.model.generate(**example, **self.gptq_model.INPUT_EMBEDDING_EXTRA_ARGS)
-                        else:
-                            self.gptq_model.model(**example, use_cache=use_cache)
+                        # Create a context to catch meta tensor operations
+                        with torch.device(self.gptq_model.quantize_config.device):
+                            if self.gptq_model.INPUT_EMBEDDING_EXTRA_ARGS:
+                                self.gptq_model.model.generate(**example, **self.gptq_model.INPUT_EMBEDDING_EXTRA_ARGS)
+                            else:
+                                self.gptq_model.model(**example, use_cache=use_cache)
             except StopForward:
                 pass
 
