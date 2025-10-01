@@ -502,14 +502,16 @@ def convert_gptq_v1_to_v2_format_module(module: BaseQuantLinear, bits: int, pack
     # overflow ~<=13% based on testing
     if bits == 2:
         if pack_dtype == torch.int64:
-            module.qzeros.data += 0b0101010101010101010101010101010101010101010101010101010101010101
+            module.qzeros.data = module.qzeros.data.clone() + 0b0101010101010101010101010101010101010101010101010101010101010101
         elif pack_dtype == torch.int32:
-            module.qzeros.data += 0b01010101010101010101010101010101
+            module.qzeros.data = module.qzeros.data.clone() + 0b01010101010101010101010101010101
         elif pack_dtype == torch.int16:
-            module.qzeros.data += 0b0101010101010101
+            module.qzeros.data = module.qzeros.data.clone() + 0b0101010101010101
         elif pack_dtype == torch.int8:
-            module.qzeros.data += 0b01010101
+            module.qzeros.data = module.qzeros.data.clone() + 0b01010101
     elif bits == 3:
+        qzeros_data = module.qzeros.data.clone()
+        
         # range 0 offset
         if pack_dtype == torch.int64:
             offset = 0b0010010010010010010010010010010000100100100100100100100100100100
@@ -520,9 +522,7 @@ def convert_gptq_v1_to_v2_format_module(module: BaseQuantLinear, bits: int, pack
         elif pack_dtype == torch.int8:
             offset = 0b00100100
 
-        module.qzeros.data[:, range(0, module.qzeros.data.shape[1], 3)] += (
-            offset
-        )
+        qzeros_data[:, range(0, qzeros_data.shape[1], 3)] += offset
 
         # range 1 offset
         if pack_dtype == torch.int64:
@@ -534,9 +534,7 @@ def convert_gptq_v1_to_v2_format_module(module: BaseQuantLinear, bits: int, pack
         elif pack_dtype == torch.int8:
             offset = 0b10010010
 
-        module.qzeros.data[:, range(1, module.qzeros.data.shape[1], 3)] += (
-            offset
-        )
+        qzeros_data[:, range(1, qzeros_data.shape[1], 3)] += offset
 
         # range 2 offset
         if pack_dtype == torch.int64:
@@ -548,27 +546,26 @@ def convert_gptq_v1_to_v2_format_module(module: BaseQuantLinear, bits: int, pack
         elif pack_dtype == torch.int8:
             offset = 0b01001001
 
-        module.qzeros.data[:, range(2, module.qzeros.data.shape[1], 3)] += (
-            offset
-        )
+        qzeros_data[:, range(2, qzeros_data.shape[1], 3)] += offset
+        module.qzeros.data = qzeros_data
     elif bits == 4:
         if pack_dtype == torch.int64:
-            module.qzeros.data += 0b0001000100010001000100010001000100010001000100010001000100010001
+            module.qzeros.data = module.qzeros.data.clone() + 0b0001000100010001000100010001000100010001000100010001000100010001
         elif pack_dtype == torch.int32:
-            module.qzeros.data += 0b00010001000100010001000100010001
+            module.qzeros.data = module.qzeros.data.clone() + 0b00010001000100010001000100010001
         elif pack_dtype == torch.int16:
-            module.qzeros.data += 0b0001000100010001
+            module.qzeros.data = module.qzeros.data.clone() + 0b0001000100010001
         elif pack_dtype == torch.int8:
-            module.qzeros.data += 0b00010001
+            module.qzeros.data = module.qzeros.data.clone() + 0b00010001
     elif bits == 8:
         if pack_dtype == torch.int64:
-            module.qzeros.data += 0b0000000100000001000000010000000100000001000000010000000100000001
+            module.qzeros.data = module.qzeros.data.clone() + 0b0000000100000001000000010000000100000001000000010000000100000001
         elif pack_dtype == torch.int32:
-            module.qzeros.data += 0b00000001000000010000000100000001
+            module.qzeros.data = module.qzeros.data.clone() + 0b00000001000000010000000100000001
         elif pack_dtype == torch.int16:
-            module.qzeros.data += 0b0000000100000001
+            module.qzeros.data = module.qzeros.data.clone() + 0b0000000100000001
         elif pack_dtype == torch.int8:
-            module.qzeros.data += 0b00000001
+            module.qzeros.data = module.qzeros.data.clone() + 0b00000001
     else:
         raise NotImplementedError("Only 2,3,4,8 bits are supported.")
 
@@ -630,21 +627,17 @@ def convert_gptq_v2_to_v1_format_module(
     log.info.once("Format: Converting GPTQ v2 to v1")
 
     if quantize_config.bits == 2:
-        module.qzeros.data -= 0b01010101010101010101010101010101
+        module.qzeros.data = module.qzeros.data.clone() - 0b01010101010101010101010101010101
     elif quantize_config.bits == 3:
-        module.qzeros.data[:, range(0, module.qzeros.data.shape[1], 3)] -= (
-            0b00100100100100100100100100100100
-        )
-        module.qzeros.data[:, range(1, module.qzeros.data.shape[1], 3)] -= (
-            0b10010010010010010010010010010010
-        )
-        module.qzeros.data[:, range(2, module.qzeros.data.shape[1], 3)] -= (
-            0b01001001001001001001001001001001
-        )
+        qzeros_data = module.qzeros.data.clone()
+        qzeros_data[:, range(0, qzeros_data.shape[1], 3)] -= 0b00100100100100100100100100100100
+        qzeros_data[:, range(1, qzeros_data.shape[1], 3)] -= 0b10010010010010010010010010010010
+        qzeros_data[:, range(2, qzeros_data.shape[1], 3)] -= 0b01001001001001001001001001001001
+        module.qzeros.data = qzeros_data
     elif quantize_config.bits == 4:
-        module.qzeros.data -= 0b00010001000100010001000100010001
+        module.qzeros.data = module.qzeros.data.clone() - 0b00010001000100010001000100010001
     elif quantize_config.bits == 8:
-        module.qzeros.data -= 0b00000001000000010000000100000001
+        module.qzeros.data = module.qzeros.data.clone() - 0b00000001000000010000000100000001
     else:
         raise NotImplementedError("Only 2,3,4,8 bits are supported.")
 
