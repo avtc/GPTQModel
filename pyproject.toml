@@ -1,11 +1,12 @@
 [build-system]
 requires = [
     "setuptools >= 64",
+    "wheel",
 ]
-build-backend = "setuptools.build_meta:__legacy__"
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "GPT-QModel"
+name = "gptqmodel"
 dynamic = ["version"]
 description = "Production ready LLM model compression/quantization toolkit with hw accelerated inference support for both cpu/gpu via HF, vLLM, and SGLang."
 readme = "README.md"
@@ -52,6 +53,9 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/ModelCloud/GPTQModel"
+
+[tool.setuptools.dynamic]
+version = {attr = "gptqmodel.version.__version__"}
 
 [project.optional-dependencies]
 test = [
