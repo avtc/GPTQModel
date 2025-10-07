@@ -1216,10 +1216,11 @@ class ModuleLooper():
                             finalize_pb.close()
                         if finalize_count:
                             pb.subtitle("").draw()
-
-        # LifeCycle: All sub-modules have finalized meaning quantization work is complete
-        # Ensure ANY remaining tasks the looper submitted have drained
-        DEVICE_THREAD_POOL.wait()  # same as wait('all')
+            
+            # LifeCycle: All sub-modules have finalized meaning quantization work is complete
+            # Ensure ANY remaining tasks the looper submitted have drained
+            # After each layer
+            DEVICE_THREAD_POOL.wait()  # same as wait('all')
 
         # paranoid safety check
         # torch_sync()
