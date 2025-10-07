@@ -956,7 +956,7 @@ class ModuleLooper():
                         f"Forward rows 0/{forward_total_rows}"
                     ).draw()
                     # Drain any background work so the forward spike does not race pooled tasks.
-                    # DEVICE_THREAD_POOL.wait()
+                    DEVICE_THREAD_POOL.wait()
                     # try to cleanup recent objects before forward
                     timed_gc_collect(2)
 
@@ -1082,7 +1082,7 @@ class ModuleLooper():
                         f"Forward replay rows 0/{replay_total_rows}"
                     ).draw()
                     # Forward replay shares the same VRAM spike; block until the pool drains first.
-                    # DEVICE_THREAD_POOL.wait()
+                    DEVICE_THREAD_POOL.wait()
                     # try to cleanup recent objects before forward
                     timed_gc_collect(2)
 
