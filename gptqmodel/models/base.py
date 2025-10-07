@@ -1323,7 +1323,12 @@ class BaseQModel(nn.Module):
             model_local_path = self.model_local_path
             loader = self.loader
 
-            assert turtle_model is not None and  model_local_path is not None
+            # If turtle_model is None (when offload_to_disk=False), we can't reload it
+            # This is normal behavior when not using disk offloading
+            if turtle_model is None:
+                return
+
+            assert model_local_path is not None
 
             reload_kwargs = self._clone_model_init_kwargs(turtle_model)
             config = turtle_model.config
