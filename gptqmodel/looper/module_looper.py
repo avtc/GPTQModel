@@ -1403,7 +1403,7 @@ class ModuleLooper():
                             setattr(named_module, "moe_enabled", False)
 
                     handle = []
-                    subset_total = len(modules)
+                    subset_total = len(modules) if modules is not None else 0
                     batch_count = self._resolve_batch_total(
                         getattr(processor, "num_batches", None),
                         layer_inputs,
@@ -1442,13 +1442,13 @@ class ModuleLooper():
 
                     # ---- Start Pre-Quantized Forward ----
                     fwd_start = time.perf_counter()
-                    forward_source = f"{layer_descriptor}:subset{index + 1}/{subset_total}"
+                    forward_source = f"{layer_descriptor}:subset{index + 1}/{subset_total}" if subset_total is not None else f"{layer_descriptor}:subset{index + 1}/?"
 
                     need_outputs = not processor.fwd_after_process
                     reuse_kv = bool(getattr(module, "reuse_kv", False))
                     forward_msg = (
                         "Forward: "
-                        f"Layer=`{layer_descriptor}`, subset={index + 1}/{subset_total}, "
+                        f"Layer=`{layer_descriptor}`, subset={index + 1}/{subset_total if subset_total is not None else '?'}, "
                         f"batches={batch_count}"
                     )
                     forward_pb = (
@@ -1662,7 +1662,7 @@ class ModuleLooper():
                     #timed_gc_collect(1)
 
                     replay_start = time.perf_counter()
-                    replay_source = f"{layer_descriptor}:subset{index + 1}/{subset_total}"
+                    replay_source = f"{layer_descriptor}:subset{index + 1}/{subset_total}" if subset_total is not None else f"{layer_descriptor}:subset{index + 1}/?"
 
                     replay_prev_devices: Dict[str, torch.device] = {}
                     if forward_device_map:
