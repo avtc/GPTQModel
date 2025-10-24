@@ -802,7 +802,10 @@ class ModuleLooper():
             )
         finally:
             if replica_pb is not None:
-                replica_pb.close()
+                try:
+                    replica_pb.close()
+                except Exception as e:
+                    log.debug(f"Failed to close replica progress bar: {e}")
             if progress_pb is not None:
                 progress_pb.title(effective_title).subtitle(
                     f"{stage_label} rows 0/{total_rows}"
@@ -1129,7 +1132,10 @@ class ModuleLooper():
                         cache_forward_pb.subtitle(subtitle).draw()
         finally:
             if cache_forward_pb is not None:
-                cache_forward_pb.close()
+                try:
+                    cache_forward_pb.close()
+                except Exception as e:
+                    log.debug(f"Failed to close cache forward progress bar: {e}")
 
         # LifeCycle: pre-first layer embedding hook
         self.gptq_model.pre_quantize_generate_hook_end()
@@ -1523,7 +1529,10 @@ class ModuleLooper():
                                 fallback_modules=full,
                             )
                         if forward_pb is not None:
-                            forward_pb.close()
+                            try:
+                                forward_pb.close()
+                            except Exception as e:
+                                log.debug(f"Failed to close forward progress bar: {e}")
                     if need_outputs:
                         processor.receive_layer_inputs(forward_outputs)
                         layer_inputs = processor.inputs_cache.layer_inputs
@@ -1722,7 +1731,10 @@ class ModuleLooper():
                                 fallback_modules=full,
                             )
                         if replay_pb is not None:
-                            replay_pb.close()
+                            try:
+                                replay_pb.close()
+                            except Exception as e:
+                                log.debug(f"Failed to close replay progress bar: {e}")
                     if region_timer is not None:
                         region_timer.record(
                             "post_quant_forward",
@@ -1935,7 +1947,10 @@ class ModuleLooper():
                                     f"{layer_label} Finalize {completed_local}/{finalize_count_local}"
                                 ).subtitle(subtitle).draw()
                         finally:
-                            finalize_pb_local.close()
+                            try:
+                                finalize_pb_local.close()
+                            except Exception as e:
+                                log.debug(f"Failed to close finalize progress bar: {e}")
                             self._emit_layer_complete(
                                 layer_idx=layer_idx_for_callback,
                                 submodule_finalized=True,
@@ -2022,7 +2037,10 @@ class ModuleLooper():
                     f"Processor finalization {index}/{process_finalize_total}"
                 ).subtitle(reverse_p.name()).next().draw()
         finally:
-            process_finalize_pb.close()
+            try:
+                process_finalize_pb.close()
+            except Exception as e:
+                log.debug(f"Failed to close process finalize progress bar: {e}")
 
         if region_timer is not None:
             region_timer.flush()
