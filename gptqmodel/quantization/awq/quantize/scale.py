@@ -25,7 +25,7 @@ allowed_act_fns = [
     nn.GELU,
     BloomGelu,
     NewGELUActivation,
-    PytorchGELUTanh,
+    GELUTanh,
     GELUActivation,
 ]
 
