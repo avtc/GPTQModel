@@ -33,7 +33,7 @@ class BalanceStrategy(str, Enum):
     MEMORY = "memory", # make vram more spread out
     GPU = "gpu" # vram is less balanced (gpu0) but gpu0 is also used for quantization
 
-DEFAULT_BALANCE_STRATEGY = BalanceStrategy.GPU
+DEFAULT_BALANCE_STRATEGY = BalanceStrategy.MEMORY
 
 # TODO FIX ME...this should be removed
 STREAM = None # cache
@@ -213,7 +213,15 @@ NEXT_DEVICE_INDEX = 0
 
 def device_next_reset():
     global NEXT_DEVICE_INDEX
-    NEXT_DEVICE_INDEX = 0
+    if len(ALL_DEVICES) <= 1:
+        NEXT_DEVICE_INDEX = 0
+    else:    
+        if DEFAULT_BALANCE_STRATEGY == BalanceStrategy.MEMORY:
+            NEXT_DEVICE_INDEX = 1
+        else:
+            NEXT_DEVICE_INDEX = 0
+
+device_next_reset()
 
 def device_next(balance_strategy: BalanceStrategy = DEFAULT_BALANCE_STRATEGY) -> (torch.device, Union[torch.cuda.Stream, torch.xpu.Stream]):
     global NEXT_DEVICE_INDEX
@@ -235,3 +243,4 @@ def device_next(balance_strategy: BalanceStrategy = DEFAULT_BALANCE_STRATEGY) ->
 
 def torch_streamCtx(stream: Union[torch.cuda.Stream, torch.xpu.Stream]) -> StreamContext:
     return torch.cuda.stream(stream) if HAS_CUDA else torch.xpu.stream(stream)
+
