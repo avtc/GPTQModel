@@ -31,8 +31,8 @@ from ..quantization.config import (FORMAT, META_FIELD_ACT_GROUP_AWARE, META_FIEL
 from ..utils.backend import BACKEND
 from ..utils.logger import setup_logger
 from ..utils.model import (convert_gptq_v2_to_v1_format, copy_py_files, find_modules, get_model_files_size,
-                           get_state_dict_for_save, load_checkpoint_in_model_then_tie_weights, make_quant)
-    streaming_state_dict_to_shards,
+                           get_state_dict_for_save, load_checkpoint_in_model_then_tie_weights, make_quant,
+                           streaming_state_dict_to_shards)
 from ..utils.structure import alias_all_from_turtle_if_meta
 from ..utils.torch import torch_empty_cache
 from ..version import __version__
