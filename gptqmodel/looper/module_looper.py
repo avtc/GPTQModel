@@ -1375,7 +1375,7 @@ class ModuleLooper():
                         if self._vram_strategy == VRAMStrategy.BALANCED:
                             devices = [
                                 dev for dev in self._quant_devices
-                                if dev is not None and getattr(dev, "type", None) != "cpu"
+                                if dev is not None and getattr(dev, "type", None) != "cpu" and self._quant_devices.index(dev) != 0
                             ]
                             if len(devices) > 1 and expert_groups:
                                 assignable_group_keys: List[str] = []
