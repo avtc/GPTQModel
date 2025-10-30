@@ -5,6 +5,8 @@
 
 from model_test import ModelTest
 
+from gptqmodel.utils.backend import BACKEND
+from gptqmodel.utils.eval import EVAL
 
 class TestLongLlama(ModelTest):
     NATIVE_MODEL_ID = "/monster/data/model/long_llama_3b_instruct" # "syzymon/long_llama_3b_instruct"
