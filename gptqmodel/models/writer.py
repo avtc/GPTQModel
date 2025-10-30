@@ -9,13 +9,15 @@ import copy
 import csv
 import json
 import os
-import re
+import shutil
 from os.path import isfile, join
 from typing import Any, Dict, Optional, Union
 
+import pcre as re
 import torch
 import transformers
 from safetensors.torch import save_file
+from safetensors import safe_open
 from transformers import AutoConfig, PreTrainedTokenizerFast, ProcessorMixin
 from transformers.modeling_utils import no_init_weights
 from transformers.models.auto.tokenization_auto import get_tokenizer_config
@@ -23,20 +25,39 @@ from transformers.utils.generic import ContextManagers
 
 from ..adapter.adapter import HF_ADAPTER_FILE_NAME, HF_ADAPTER_WEIGHT_KEY_PREFIX, Lora
 from ..adapter.peft import LoraConfig
-from ..quantization.config import (FORMAT, META_FIELD_ACT_GROUP_AWARE, META_FIELD_DAMP_AUTO_INCREMENT,
-                                   META_FIELD_DAMP_PERCENT, META_FIELD_MSE, META_FIELD_QUANTIZER,
-                                   META_FIELD_STATIC_GROUPS, META_FIELD_TRUE_SEQUENTIAL, META_FIELD_URI,
-                                   META_FIELD_V2_ALPHA, META_FIELD_V2_ENABLED, META_QUANTIZER_GPTQMODEL,
-                                   META_VALUE_URI, MIN_VERSION_WITH_V2)
+from ..quantization.config import (
+    FORMAT,
+    META_FIELD_ACT_GROUP_AWARE,
+    META_FIELD_DAMP_AUTO_INCREMENT,
+    META_FIELD_DAMP_PERCENT,
+    META_FIELD_MSE,
+    META_FIELD_QUANTIZER,
+    META_FIELD_STATIC_GROUPS,
+    META_FIELD_TRUE_SEQUENTIAL,
+    META_FIELD_URI,
+    META_FIELD_V2_ALPHA,
+    META_FIELD_V2_ENABLED,
+    META_QUANTIZER_GPTQMODEL,
+    META_VALUE_URI,
+    MIN_VERSION_WITH_V2,
+)
 from ..utils.backend import BACKEND
+from ..utils.hf import sanitize_generation_config_file
 from ..utils.logger import setup_logger
-from ..utils.model import (convert_gptq_v2_to_v1_format, copy_py_files, find_modules, get_model_files_size,
-                           get_state_dict_for_save, load_checkpoint_in_model_then_tie_weights, make_quant,
-                           streaming_state_dict_to_shards)
+from ..utils.model import (
+    copy_py_files,
+    find_modules,
+    get_model_files_size,
+    get_state_dict_for_save,
+    load_checkpoint_in_model_then_tie_weights,
+    make_quant,
+    streaming_state_dict_to_shards,
+)
 from ..utils.structure import alias_all_from_turtle_if_meta
 from ..utils.torch import torch_empty_cache
 from ..version import __version__
 from ._const import DEFAULT_MAX_SHARD_SIZE
+
 
 log = setup_logger()
 
@@ -48,7 +69,7 @@ QUANT_LOG_NSAMPLES = "samples"
 QUANT_LOG_DAMP = "damp"
 PROCESS_LOG_TIME = "time"
 PROCESS_LOG_FWD_TIME = "fwd_time"
-PROCESS_MAX_MEMORY = "max_vram"
+PROCESS_USED_MEMORY = "(v)ram"
 
 EORA_DEFAULT_FILE = "eora.safetensors"
 
@@ -73,7 +94,8 @@ def ModelWriter(cls):
             weights = {}
             target_modules = set()
             # convert the dict into safetensors compatible dict
-            for key, d in self.lora_results.items():
+            for key, adapter in self.lora_results.items():
+                assert isinstance(adapter, Lora)
                 key = key.lower()
                 simple_module_name = key.split(".")[-1] # mlp.gate_proj => gate_proj
                 target_modules.add(simple_module_name)
@@ -82,12 +104,11 @@ def ModelWriter(cls):
                 #     key = key.removeprefix('model.') # some HF models use model. or model.model.
 
                 # must normalize key since HF can load weights as `model.` or not based on what AutoModel is used
-                key = f"{HF_ADAPTER_WEIGHT_KEY_PREFIX}{key}"
-                lora_rank = d.pop("rank")
-                for lora_key, lora_weight in d.items():
-                    assert isinstance(lora_weight, torch.Tensor)
-                    weights[f"{key}.{lora_key}"] = lora_weight
-                    log.info(f"Adapter: EoRA weights found -> `{key}.{lora_key}`, rank = `{lora_rank}`")
+                weight_key = f"{HF_ADAPTER_WEIGHT_KEY_PREFIX}{key}"
+
+                weights[f"{weight_key}.lora_A.weight"] = adapter.lora_A
+                weights[f"{weight_key}.lora_B.weight"] = adapter.lora_B
+                log.info(f"Adapter: EoRA weights found -> `{weight_key}.lora_A/Lora_B.weight`, rank = `{adapter.rank}`")
 
             weight_file_path = f"{save_dir.removesuffix('/')}/{HF_ADAPTER_FILE_NAME}"
 
@@ -204,16 +225,8 @@ def ModelWriter(cls):
                 f"Using 'format = {FORMAT.GPTQ_V2}': the serialized model is only supported by GPTQModel version >= {MIN_VERSION_WITH_V2}."
             )
 
-        if not self.load_quantized_model:
-            model = self.model
-            # # internal is always gptq v2 but allow users to pass gptq (v1) via config
-            if quantize_config.format == FORMAT.GPTQ or quantize_config.format == FORMAT.GEMM:
-                # Model qzeros may be edited in place.
-                model = convert_gptq_v2_to_v1_format(
-                    model, quantize_config=quantize_config, qlinear_kernel=self.qlinear_kernel
-                )
-        else:
-            model = self.get_model_with_quantize(
+        if self.load_quantized_model:
+            self.model = self.get_model_with_quantize(
                 qcfg=quantize_config,
                 model_id_or_path=self.model_local_path,
             )
@@ -226,6 +239,10 @@ def ModelWriter(cls):
         # Save model config, including generation_config
         # Use empty state_dict hack to bypass saving weights
         self.model.save_pretrained(save_dir, state_dict={}, is_main_process=True)
+
+        gen_config_path = os.path.join(save_dir, "generation_config.json")
+        if sanitize_generation_config_file(gen_config_path):
+            log.info("Model: Sanitized `generation_config.json` before packaging.")
 
         # Save `quantize_config.json`
         quantize_config.save_pretrained(save_dir)
@@ -256,10 +273,11 @@ def ModelWriter(cls):
         # --- end config save block ---
 
         # Due to shell/turtle state, we need to sync the modules from turtle to shell
-        alias_all_from_turtle_if_meta(shell_model=model, turtle_model=self.turtle_model)
+        if not self.load_quantized_model:
+            alias_all_from_turtle_if_meta(shell_model=self.model, turtle_model=self.turtle_model)
 
         offload_root = self.quantize_config.offload_to_disk_path if getattr(self.quantize_config, "offload_to_disk", False) else None
-        state_dict = get_state_dict_for_save(model, offload_root=offload_root)
+        state_dict = get_state_dict_for_save(self.model, offload_root=offload_root)
 
         model_base_name = "model"
         model_save_name = model_base_name + ".safetensors"
@@ -359,6 +377,83 @@ def ModelWriter(cls):
         if self.quantize_config.adapter:
             _eora_save(self, save_dir=eora_path if eora_path else self.quantize_config.adapter.path, model_save_dir=save_dir)
 
+        # Handle `dangling` tensor files that HF doesn't support (optional) but very useful
+        extra_tensor_files = getattr(self, "out_of_model_tensor_files", None)
+        if extra_tensor_files:
+            if isinstance(extra_tensor_files, str):
+                extra_tensor_files = [extra_tensor_files]
+            else:
+                extra_tensor_files = list(extra_tensor_files)
+
+            index_save_name = model_save_name + ".index.json"
+            index_save_path = join(save_dir, index_save_name)
+
+            if os.path.exists(index_save_path):
+                with open(index_save_path, "r", encoding="utf-8") as f:
+                    index_data = json.load(f)
+            else:
+                index_data = {
+                    "metadata": {"total_size": total_size_bytes},
+                    "weight_map": dict(tensor_to_filename),
+                }
+
+            if "metadata" not in index_data:
+                index_data["metadata"] = {}
+            if "weight_map" not in index_data:
+                index_data["weight_map"] = {}
+
+            total_size_value = index_data["metadata"].get("total_size", total_size_bytes)
+            index_updated = False
+
+            for tensor_file_name in extra_tensor_files:
+                original_tensor_path = os.path.join(self.model_local_path, tensor_file_name)
+                if not os.path.exists(original_tensor_path):
+                    log.warn(
+                        f"Model: out_of_model_tensor_files configured with '{tensor_file_name}', "
+                        f"but the file was not found at '{original_tensor_path}'"
+                    )
+                    continue
+
+                target_tensor_path = os.path.join(save_dir, tensor_file_name)
+                shutil.copy2(original_tensor_path, target_tensor_path)
+                log.info(
+                    f"Model: Copied {tensor_file_name} from original model directory to quantized model directory"
+                )
+
+                tensor_names = []
+                try:
+                    with safe_open(original_tensor_path, framework="pt", device="cpu") as f:
+                        tensor_names = list(f.keys())
+                except Exception as exc:
+                    log.warn(
+                        f"Model: Failed to read tensor names from {tensor_file_name}: {exc}"
+                    )
+
+                for tensor_name in tensor_names:
+                    index_data["weight_map"][tensor_name] = tensor_file_name
+
+                if tensor_names:
+                    log.info(
+                        f"Model: Added {len(tensor_names)} tensors from {tensor_file_name} to weight_map"
+                    )
+
+                try:
+                    tensor_file_size = os.path.getsize(target_tensor_path)
+                except OSError:
+                    tensor_file_size = 0
+
+                total_size_value += tensor_file_size
+                index_updated = True
+
+            if index_updated:
+                index_data["metadata"]["total_size"] = total_size_value
+                with open(index_save_path, "w", encoding="utf-8") as f:
+                    content = json.dumps(index_data, indent=2, sort_keys=True) + "\n"
+                    f.write(content)
+                log.info(
+                    f"Model: Updated {index_save_name} to include `out_of_model_tensor_files`"
+                )
+
         # If the saved model is a loaded quantized model, do not calculate the size diff.
         if not self.load_quantized_model:
             total_size_gb = total_size_mb / 1024
@@ -419,7 +514,7 @@ def ModelWriter(cls):
                     continue
 
                 if any(name.startswith(ignore_module) for ignore_module in ignore_modules) or all(
-                        not name.endswith(ignore_module) for sublist in self.simple_layer_modules(config) for ignore_module in sublist
+                        not name.endswith(ignore_module) for sublist in self.simple_layer_modules(config, qcfg) for ignore_module in sublist
                 ):
                     # log non-lm-head quantizerd modules only
                     if name is not self.lm_head:

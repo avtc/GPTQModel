@@ -22,13 +22,15 @@ class GLM4MoEGPTQ(BaseQModel):
     # Set to False since GLM-4.5-Air may have dynamic module structures
     layer_modules_strict = False
 
+    out_of_model_tensor_files = ["mtp.safetensors"]
+
     module_tree = [
         "model",
         "layers",
         "#",
         {
             "input_layernorm": ("input_layernorm:!",),
-            "self_attn": ("q_proj:0", "k_proj:0", "v_proj:0", "o_proj:1"),
+            "self_attn": ("q_proj:0", "q_norm:0:!","k_proj:0", "k_norm:0:!", "v_proj:0", "o_proj:1"),
             "post_attention_layernorm": ("post_attention_layernorm:!",),
             "mlp": {
                 "shared_experts": {
@@ -36,7 +38,7 @@ class GLM4MoEGPTQ(BaseQModel):
                     "up_proj": ("up_proj:0",),
                     "down_proj": ("down_proj:1",),
                 },
-                "gate": ("gate:!",),
+                "gate": ("gate:!",), # Glm4MoeTopKRouter, ~1.6MB float32 per layer.  We really do not quant to quantize this.
                 "experts": {
                     "#": ("gate_proj:0", "up_proj:0", "down_proj:1"),
                 },
