@@ -7,7 +7,7 @@ import contextlib
 import copy
 import threading
 import time
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import torch
 from torch.nn import Module
@@ -31,15 +31,31 @@ log = setup_logger()
 lock = threading.Lock()
 
 class GPTQProcessor(LoopProcessor):
-    def __init__(self, tokenizer, qcfg: QuantizeConfig, calibration, prepare_dataset_func,
-                 calibration_concat_size: Optional[int], calibration_sort: Optional[str], batch_size: int,
-                 require_fwd: bool = True, calculate_w_wq_diff: bool = False):
+    def __init__(
+        self,
+        tokenizer,
+        qcfg: QuantizeConfig,
+        calibration,
+        prepare_dataset_func,
+        calibration_concat_size: Optional[int],
+        calibration_sort: Optional[str],
+        batch_size: int,
+        require_fwd: bool = True,
+        calculate_w_wq_diff: bool = False,
+        calibration_concat_separator: Optional[str] = None,
+    ):
 
-        super().__init__(tokenizer=tokenizer, qcfg=qcfg, calibration=calibration,
-                         calibration_concat_size=calibration_concat_size,
-                         calibration_sort=calibration_sort,
-                         prepare_dataset_func=prepare_dataset_func, batch_size=batch_size,
-                         require_fwd=require_fwd)
+        super().__init__(
+            tokenizer=tokenizer,
+            qcfg=qcfg,
+            calibration=calibration,
+            calibration_concat_size=calibration_concat_size,
+            calibration_sort=calibration_sort,
+            calibration_concat_separator=calibration_concat_separator,
+            prepare_dataset_func=prepare_dataset_func,
+            batch_size=batch_size,
+            require_fwd=require_fwd,
+        )
 
         self.calculate_w_wq_diff = calculate_w_wq_diff
         self.avg_losses = []
@@ -104,7 +120,15 @@ class GPTQProcessor(LoopProcessor):
             del inp, out
         return tmp
 
-    def process(self, module: NamedModule):
+    def process(
+        self,
+        module: NamedModule,
+        device: torch.device = None,
+        subset: Optional[Dict[str, NamedModule]] = None,
+        previous_subset: Optional[Dict[str, NamedModule]] = None,
+        subset_index: Optional[int] = None,
+        subset_total: Optional[int] = None,
+    ):
         # Reset peak memory stats
         #torch.cuda.reset_peak_memory_stats()
         self.pb.title(f"Quantizing {module.name} in layer ").draw()

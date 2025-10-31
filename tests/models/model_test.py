@@ -81,7 +81,6 @@ class ModelTest(unittest.TestCase):
 
     VRAM_STRATEGY = VRAMStrategy.EXCLUSIVE
     TRUST_REMOTE_CODE = False
-    APPLY_CHAT_TEMPLATE = False
     TORCH_DTYPE = "auto"
     EVAL_BATCH_SIZE = "auto"
     QUANT_BATCH_SIZE = 1
@@ -91,6 +90,8 @@ class ModelTest(unittest.TestCase):
     INPUTS_MAX_LENGTH = 2048
     MODEL_MAX_LEN = 4096
     DATASET_SIZE = 512
+    DATASET_CONCAT_SIZE = None
+    DATASET_CONCAT_SEPARATOR = None
     DATASET_SORT = "desc"
     DELETE_QUANTIZED_MODEL = True
     EVAL_TASKS = None
@@ -110,6 +111,8 @@ class ModelTest(unittest.TestCase):
     FAIL_SAFE = True
     EORA = None
     DAMP_PERCENT = 0.05
+    MSE = 0.0
+    DYNAMIC = None
 
     SAVE_PATH = None  # default is temp folder
 
@@ -191,6 +194,9 @@ class ModelTest(unittest.TestCase):
             lookup = getattr(self, "_resolved_task_lookup", None)
             if isinstance(lookup, dict):
                 lookup[normalized] = EVAL.LM_EVAL.ARC_CHALLENGE
+            chat_lookup = getattr(self, "_task_chat_template", None)
+            if isinstance(chat_lookup, dict):
+                chat_lookup[normalized] = False
         return baselines
 
     def _normalize_metric_spec(self, spec):
@@ -226,18 +232,30 @@ class ModelTest(unittest.TestCase):
 
     def get_eval_tasks(self):
         self._resolved_task_lookup = {}
+        self._task_chat_template = {}
         if self.EVAL_TASKS:
             baselines = {}
             for task, metrics in self.EVAL_TASKS.items():
                 resolved_task = self._resolve_task_enum(task)
                 normalized_task = self._normalize_task_identifier(resolved_task)
                 self._resolved_task_lookup[normalized_task] = resolved_task
+
+                metrics_dict = dict(metrics or {})
+                chat_template = bool(metrics_dict.pop("chat_template", False))
+                self._task_chat_template[normalized_task] = chat_template
+
                 baselines[normalized_task] = {
                     metric_name: self._normalize_metric_spec(spec)
-                    for metric_name, spec in metrics.items()
+                    for metric_name, spec in metrics_dict.items()
                 }
             return baselines
-        return self._legacy_arc_tasks()
+
+        baselines = self._legacy_arc_tasks()
+        if isinstance(baselines, dict):
+            for task_name in baselines.keys():
+                if task_name not in self._task_chat_template:
+                    self._task_chat_template[task_name] = False
+        return baselines
 
     @staticmethod
     def _flatten_task_metrics(task_results):
@@ -349,7 +367,6 @@ class ModelTest(unittest.TestCase):
         try:
             task_results = self.lm_eval(
                 model=model,
-                apply_chat_template=self.APPLY_CHAT_TEMPLATE,
                 trust_remote_code=self.TRUST_REMOTE_CODE,
                 delete_quantized_model=False,
             )
@@ -369,7 +386,13 @@ class ModelTest(unittest.TestCase):
         eval_records = {}
         reuse_candidates = {}
 
-        compare_backends = (BACKEND.MARLIN,) if self.FORMAT is FORMAT.GPTQ else (BACKEND.MARLIN, BACKEND.GEMM)
+        if self.FORMAT is FORMAT.GPTQ:
+            if self.LOAD_BACKEND == BACKEND.MARLIN:
+                compare_backends = (BACKEND.MARLIN,)
+            else:
+                compare_backends = (self.LOAD_BACKEND,)
+        else:
+            compare_backends = (BACKEND.MARLIN, BACKEND.GEMM)
         fallback_backend = None
         if BACKEND.MARLIN in compare_backends:
             try:
@@ -518,6 +541,49 @@ class ModelTest(unittest.TestCase):
             rel_name = idx_file.relative_to(path)
             print(f"\n{colorize(f'Index file: {rel_name}', 0, False)}")
             print(json.dumps(content, indent=2, sort_keys=True))
+
+    def _prepare_quant_save_destination(self, need_eval):
+        if self.SAVE_PATH:
+            return contextlib.nullcontext(self.SAVE_PATH), self.SAVE_PATH, None
+
+        if need_eval:
+            tmp_dir = tempfile.mkdtemp()
+            return contextlib.nullcontext(tmp_dir), tmp_dir, lambda: shutil.rmtree(tmp_dir, ignore_errors=True)
+
+        tmp_context = tempfile.TemporaryDirectory()
+        return tmp_context, tmp_context.name, tmp_context.cleanup
+
+    def _resolve_quantized_model_path(self, model_candidate):
+        if model_candidate is None:
+            return None
+        if isinstance(model_candidate, (list, tuple)):
+            model_candidate = model_candidate[0]
+        if isinstance(model_candidate, str):
+            return model_candidate
+        return getattr(model_candidate, "model_local_path", None)
+
+    def _cleanup_quantized_model(self, model_candidate, enabled=True):
+        if not enabled:
+            return False
+        target_path = self._resolve_quantized_model_path(model_candidate)
+        if not target_path or not isinstance(target_path, str):
+            return False
+
+        temp_root = os.path.realpath(tempfile.gettempdir())
+        candidate_path = os.path.realpath(target_path)
+        if not candidate_path.startswith(temp_root):
+            return False
+        if not os.path.exists(candidate_path):
+            return False
+
+        try:
+            shutil.rmtree(candidate_path)
+        except OSError as exc:
+            log.warn(f"Failed to delete temp model `{candidate_path}`: {exc}")
+            return False
+
+        log.info(f"Deleting temp model: {candidate_path}")
+        return True
 
     @staticmethod
     def _colorize(text, matched):
@@ -721,6 +787,8 @@ class ModelTest(unittest.TestCase):
             pack_impl="cpu",
             vram_strategy=self.VRAM_STRATEGY,
             damp_percent=self.DAMP_PERCENT,
+            mse=self.MSE,
+            dynamic=self.DYNAMIC,
         )
 
         log.info(f"Quant config: {quantize_config}")
@@ -764,43 +832,63 @@ class ModelTest(unittest.TestCase):
         is_ovis_model = model.__class__.__name__ == "OvisGPTQ"
         need_create_processor = is_image_to_text_model and not is_ovis_model
         if not is_quantized:
-            model.quantize(calibration_dataset, calibration_sort=self.DATASET_SORT, backend=self.QUANT_BACKEND, batch_size=batch_size)
+            save_context = None
+            planned_save_path = None
+            cleanup_callback = None
+            try:
+                save_context, planned_save_path, cleanup_callback = self._prepare_quant_save_destination(need_eval)
+                log.info(f"Quantized model artifacts will be saved to: {planned_save_path}")
+                model.quantize(
+                    calibration_dataset,
+                    calibration_concat_size=self.DATASET_CONCAT_SIZE,
+                    calibration_concat_separator=self.DATASET_CONCAT_SEPARATOR,
+                    calibration_sort=self.DATASET_SORT,
+                    backend=self.QUANT_BACKEND,
+                    batch_size=batch_size,
+                )
 
-            self.check_kernel(model, self.KERNEL_QUANT)
+                self.check_kernel(model, self.KERNEL_QUANT)
 
-            # TODO: make into shared method
-            with (contextlib.nullcontext(self.SAVE_PATH) if self.SAVE_PATH else contextlib.nullcontext(tempfile.mkdtemp()) if need_eval else tempfile.TemporaryDirectory()) as path:
-                os.makedirs(path, exist_ok=True)
-                self.clear_directory(path)
+                # TODO: make into shared method
+                with save_context as path:
+                    cleanup_callback = None
+                    os.makedirs(path, exist_ok=True)
+                    self.clear_directory(path)
 
-                model.save(path)
-                tokenizer.save_pretrained(path)
-                self._print_post_quant_artifacts(path)
-                log.info(f"Quantized Model saved to tmp dir: {path}")
+                    model.save(path)
+                    tokenizer.save_pretrained(path)
+                    self._print_post_quant_artifacts(path)
 
-                reuse_candidates, eval_records = self.perform_post_quant_validation(path, trust_remote_code=trust_remote_code)
-                self._post_quant_eval_records = eval_records
-                target_backend = self._current_load_backend()
+                    reuse_candidates, eval_records = self.perform_post_quant_validation(path, trust_remote_code=trust_remote_code)
+                    self._post_quant_eval_records = eval_records
+                    target_backend = self._current_load_backend()
 
-                q_model = reuse_candidates.pop(target_backend, None)
-                if q_model is None:
-                    # Ensure the post-quant reload stays on a single CUDA device when available.
-                    use_cuda_map = torch.cuda.is_available() and target_backend != BACKEND.TORCH_FUSED
-                    if use_cuda_map:
-                        q_model = self.loadQuantModel(
-                            path,
-                            trust_remote_code=trust_remote_code,
-                            backend=target_backend,
-                            device_map={"": "cuda:0"},
-                        )
+                    q_model = reuse_candidates.pop(target_backend, None)
+                    if q_model is None:
+                        # Ensure the post-quant reload stays on a single CUDA device when available.
+                        use_cuda_map = torch.cuda.is_available() and target_backend != BACKEND.TORCH_FUSED
+                        if use_cuda_map:
+                            q_model = self.loadQuantModel(
+                                path,
+                                trust_remote_code=trust_remote_code,
+                                backend=target_backend,
+                                device_map={"": "cuda:0"},
+                            )
+                        else:
+                            q_model = self.loadQuantModel(path, trust_remote_code=trust_remote_code, backend=target_backend)
                     else:
-                        q_model = self.loadQuantModel(path, trust_remote_code=trust_remote_code, backend=target_backend)
-                else:
-                    log.info(f"Reusing post-quant validation model for backend `{target_backend.name}`")
+                        log.info(f"Reusing post-quant validation model for backend `{target_backend.name}`")
 
-                q_tokenizer = q_model.tokenizer or self.load_tokenizer(path, trust_remote_code=trust_remote_code)
-                if need_create_processor:
-                    processor = AutoProcessor.from_pretrained(path)
+                    q_tokenizer = q_model.tokenizer or self.load_tokenizer(path, trust_remote_code=trust_remote_code)
+                    if need_create_processor:
+                        processor = AutoProcessor.from_pretrained(path)
+            except Exception:
+                if cleanup_callback is not None:
+                    try:
+                        cleanup_callback()
+                    except Exception:
+                        pass
+                raise
 
         else:
             if need_create_processor:
@@ -864,7 +952,7 @@ class ModelTest(unittest.TestCase):
 
         return model
 
-    def lm_eval(self, model, apply_chat_template=False, trust_remote_code=False, delete_quantized_model=False, extra_args:dict=None):
+    def lm_eval(self, model, trust_remote_code=False, delete_quantized_model=False, extra_args:dict=None):
         try:
             task_names = self._normalize_task_list()
             aggregated_results = {}
@@ -892,6 +980,8 @@ class ModelTest(unittest.TestCase):
 
                 task_groups = EVAL.get_task_groups_from_tasks(task_names)
 
+                chat_template_lookup = getattr(self, "_task_chat_template", {}) or {}
+
                 for framework, tasks in task_groups.items():
                     active_backend = self._current_load_backend()
                     log.info(f"TEST: EVAL starting: backend = {active_backend.name}")
@@ -917,48 +1007,47 @@ class ModelTest(unittest.TestCase):
                                 resolved_lookup[normalized_task] = original_task
                         eval_tasks.append(original_task)
 
-                    results = GPTQModel.eval(
-                        model_or_id_or_path=eval_target,
-                        llm_backend="vllm" if self.USE_VLLM else "gptqmodel",
-                        model_args=model_args,
-                        output_path=tmp_dir,
-                        backend=active_backend,
-                        framework=framework,
-                        tasks=eval_tasks,
-                        apply_chat_template=apply_chat_template,
-                        trust_remote_code=trust_remote_code,
-                        batch_size=self.EVAL_BATCH_SIZE,
-                        gen_kwargs="temperature=0.0,top_k=50",
-                        random_seed=RAND_SEED,
-                        task_manager=TaskManager(include_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "../tasks"), include_defaults=False)
-                    )
+                    grouped_tasks: Dict[bool, List] = {}
+                    for task in eval_tasks:
+                        normalized_name = self._normalize_task_identifier(task)
+                        apply_chat = bool(chat_template_lookup.get(normalized_name, False))
+                        grouped_tasks.setdefault(apply_chat, []).append(task)
 
-                    print('--------Eval Result---------')
-                    print(make_table(results))
-                    if "groups" in results:
-                        print(make_table(results, "groups"))
-                    print('--------Eval Result End---------')
-                    for task_name in eval_tasks:
-                        normalized_task_name = self._normalize_task_identifier(task_name)
-                        metrics = results["results"].get(normalized_task_name, {})
-                        filtered_metrics = {
-                            metric: value
-                            for metric, value in metrics.items()
-                            if metric != "alias" and "stderr" not in metric
-                        }
-                        aggregated_results[normalized_task_name] = filtered_metrics
-                        print({normalized_task_name: filtered_metrics})
+                    for apply_chat_template, grouped in grouped_tasks.items():
+                        results = GPTQModel.eval(
+                            model_or_id_or_path=eval_target,
+                            llm_backend="vllm" if self.USE_VLLM else "gptqmodel",
+                            model_args=model_args,
+                            output_path=tmp_dir,
+                            backend=active_backend,
+                            framework=framework,
+                            tasks=grouped,
+                            apply_chat_template=apply_chat_template,
+                            trust_remote_code=trust_remote_code,
+                            batch_size=self.EVAL_BATCH_SIZE,
+                            gen_kwargs="temperature=0.0,top_k=50",
+                            random_seed=RAND_SEED,
+                            task_manager=TaskManager(include_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "../tasks"), include_defaults=False)
+                        )
 
-                # only delete tmp folders
-                model_local_path = getattr(model, "model_local_path", "")
-                if (
-                    delete_quantized_model
-                    and isinstance(model_local_path, str)
-                    and model_local_path.startswith("/tmp")
-                    and os.path.exists(model_local_path)
-                ):
-                    log.info(f"Deleting temp model: {model_local_path}")
-                    shutil.rmtree(model_local_path)
+                        print('--------Eval Result---------')
+                        print(make_table(results))
+                        if "groups" in results:
+                            print(make_table(results, "groups"))
+                        print('--------Eval Result End---------')
+
+                        for task_name in grouped:
+                            normalized_task_name = self._normalize_task_identifier(task_name)
+                            metrics = results["results"].get(normalized_task_name, {})
+                            filtered_metrics = {
+                                metric: value
+                                for metric, value in metrics.items()
+                                if metric != "alias" and "stderr" not in metric
+                            }
+                            aggregated_results[normalized_task_name] = filtered_metrics
+                            print({normalized_task_name: filtered_metrics})
+
+                self._cleanup_quantized_model(model, enabled=delete_quantized_model)
                 return aggregated_results
         except BaseException as e:
             if isinstance(e, torch.OutOfMemoryError):
@@ -973,9 +1062,9 @@ class ModelTest(unittest.TestCase):
 
                 if int(self.EVAL_BATCH_SIZE) > 0:
                     self.lm_eval(model=model,
-                                 apply_chat_template=apply_chat_template,
                                  trust_remote_code=trust_remote_code,
-                                 delete_quantized_model=delete_quantized_model)
+                                 delete_quantized_model=delete_quantized_model,
+                                 extra_args=extra_args)
                     print(f"set batch size to {self.EVAL_BATCH_SIZE}, passed")
                 else:
                     print(f"set batch size to {self.EVAL_BATCH_SIZE}, failed")
@@ -1007,11 +1096,11 @@ class ModelTest(unittest.TestCase):
         else:
             task_results = self.lm_eval(
                 model=self.SAVE_PATH if self.SAVE_PATH else self.model,
-                apply_chat_template=self.APPLY_CHAT_TEMPLATE,
                 trust_remote_code=self.TRUST_REMOTE_CODE,
                 delete_quantized_model=self.DELETE_QUANTIZED_MODEL,
             )
         self.check_results(task_results)
+        self._cleanup_quantized_model(self.model, enabled=self.DELETE_QUANTIZED_MODEL)
 
     def check_results(self, task_results):
         baselines = self.get_eval_tasks()

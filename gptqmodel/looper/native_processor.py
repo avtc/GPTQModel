@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Contact: qubitium@modelcloud.ai, x.com/qubitium
 
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import torch
 from torch.nn import Module
@@ -21,16 +21,32 @@ NATIVE_INPUTS_STATE_KEY = "native_inp"
 
 # v2 requires that we also need to capture/store non-quantized inputs
 class NativeProcessor(LoopProcessor):
-    def __init__(self, tokenizer, qcfg: QuantizeConfig, calibration, prepare_dataset_func,
-                 calibration_concat_size: Optional[int], calibration_sort: Optional[str], batch_size: int,
-                 require_fwd: bool = True):
+    def __init__(
+        self,
+        tokenizer,
+        qcfg: QuantizeConfig,
+        calibration,
+        prepare_dataset_func,
+        calibration_concat_size: Optional[int],
+        calibration_sort: Optional[str],
+        batch_size: int,
+        require_fwd: bool = True,
+        calibration_concat_separator: Optional[str] = None,
+    ):
 
-        super().__init__(tokenizer=tokenizer, qcfg=qcfg, calibration=calibration,
-                         calibration_concat_size=calibration_concat_size,
-                         calibration_sort=calibration_sort,
-                         prepare_dataset_func=prepare_dataset_func, batch_size=batch_size,
-                         require_fwd=require_fwd, fwd_after_process=False,
-                         fwd_all_modules_in_single_pass=True)
+        super().__init__(
+            tokenizer=tokenizer,
+            qcfg=qcfg,
+            calibration=calibration,
+            calibration_concat_size=calibration_concat_size,
+            calibration_sort=calibration_sort,
+            calibration_concat_separator=calibration_concat_separator,
+            prepare_dataset_func=prepare_dataset_func,
+            batch_size=batch_size,
+            require_fwd=require_fwd,
+            fwd_after_process=False,
+            fwd_all_modules_in_single_pass=True,
+        )
 
         self.native_inp_caches = {}
 
@@ -66,7 +82,15 @@ class NativeProcessor(LoopProcessor):
 
         return tmp
 
-    def process(self, module: NamedModule):
+    def process(
+        self,
+        module: NamedModule,
+        device: torch.device = None,
+        subset: Optional[Dict[str, NamedModule]] = None,
+        previous_subset: Optional[Dict[str, NamedModule]] = None,
+        subset_index: Optional[int] = None,
+        subset_total: Optional[int] = None,
+    ):
         module.state[NATIVE_INPUTS_STATE_KEY] = self.native_inp_caches.pop(module.name)
 
     def submodule_finalize(self, module: NamedModule, model: BaseQModel, **kwargs):

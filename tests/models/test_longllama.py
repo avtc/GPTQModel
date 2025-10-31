@@ -5,6 +5,7 @@
 
 from model_test import ModelTest
 
+from gptqmodel.utils.backend import BACKEND
 from gptqmodel.utils.eval import EVAL
 
 
@@ -19,6 +20,7 @@ class TestLongLlama(ModelTest):
     }
     USE_VLLM = False
     USE_FLASH_ATTN = False
+    LOAD_BACKEND = BACKEND.TORCH
 
     def test_longllama(self):
         self.quant_lm_eval()

@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import time
 from importlib.metadata import PackageNotFoundError, version
+from itertools import chain
 from typing import Dict, List, Optional, Union
 
 import torch
@@ -204,6 +205,12 @@ def ModelLoader(cls):
         # XIELUActivation will use some weights when activation init, so can't use init_empty_weights
         if hasattr(config, "hidden_act") and config.hidden_act == "xielu":
             quantize_config.offload_to_disk = False
+
+        # some models need convert moe-experts after model loaded, like GPTOSS and Llama4
+        # so offload_to_disk is not supported for them.
+        if not cls.support_offload_to_disk:
+            quantize_config.offload_to_disk = False
+            log.warn(f"{cls} doesn't support offload_to_disk, set quantize_config.offload_to_disk to False.")
 
         if quantize_config.offload_to_disk:
             model = build_shell_model(cls.loader, config=config, **model_init_kwargs)
@@ -555,9 +562,6 @@ def ModelLoader(cls):
                 )
 
 
-
-        import torch
-
         def build_layerwise_device_map(
                 model,
                 device,
@@ -586,7 +590,7 @@ def ModelLoader(cls):
             device_ids = list(range(num_gpus))
             device_map: Dict[str, str] = {}
             mod2name = {m: n for n, m in model.named_modules()}
-            
+
             if device == DEVICE.CUDA:
                 if torch.cuda.is_available():
                     device_strs = [f"cuda:{i}" for i in range(num_gpus)]
@@ -599,7 +603,7 @@ def ModelLoader(cls):
                     raise RuntimeError("XPU is not available")
             else:
                 device_strs = ["cpu"] * num_gpus
-            
+
             def assign(mod, device_id):
                 if mod is None:
                     return
@@ -611,20 +615,48 @@ def ModelLoader(cls):
             # 1–3. Assign input embeddings, layers, and ignored modules
             # -------------------------------------------------------------
             # Input embeddings → GPU 0
-            in_emb = model.get_input_embeddings() if hasattr(model, "get_input_embeddings") else None
+            try:
+                in_emb = model.get_input_embeddings()
+            except NotImplementedError:
+                log.warning("Model does not implement get_input_embeddings. Skipping input embeddings assignment.")
+                in_emb = None
             assign(in_emb, device_ids[0])
 
             # Alternating layers
+            layer_name2devid: Dict[str, int] = {}
+
             for i, layer in enumerate(layers):
                 gpu = device_ids[i % num_gpus]
                 assign(layer, gpu)
+                lname = mod2name.get(layer)
+                if lname is not None:
+                    layer_name2devid[lname] = gpu
 
             # Ignored modules - skip input embeddings to avoid overriding GPU 0 assignment
+            # Iterate over modules that should be ignored during default layer-wise mapping
             for mod in ignore_modules:
+                # Preserve GPU-0 placement for the input embedding module if it exists
                 if in_emb is not None and mod is in_emb:
                     continue  # Skip input embedding to preserve GPU 0 assignment
-                assign(mod, device_ids[-1])
-
+                # Retrieve the module’s fully-qualified name
+                name = mod2name.get(mod)
+                if name is None:
+                    continue
+                # Walk up the module hierarchy to find the closest ancestor that already has a device assignment
+                owner = name
+                dev_id = None
+                while owner:
+                    if owner in layer_name2devid:
+                        dev_id = layer_name2devid[owner]
+                        break
+                    if "." not in owner:
+                        break
+                    owner = owner.rsplit(".", 1)[0]
+                # If no ancestor is found, fall back to the last GPU
+                if dev_id is None:
+                    dev_id = device_ids[-1]
+                # Assign the current module to the determined device
+                assign(mod, dev_id)
             # -------------------------------------------------------------
             # 4. Handle lm_head / output projection explicitly
             # -------------------------------------------------------------
@@ -650,7 +682,7 @@ def ModelLoader(cls):
             # 5. Safety check: ensure all params are covered
             # -------------------------------------------------------------
             missing = [
-                n for n, _ in model.named_parameters()
+                n for n, _ in chain(model.named_parameters(), model.named_buffers())
                 if not any(n == k or n.startswith(k + ".") for k in device_map)
             ]
             module_names = set(mod2name.values())
@@ -684,6 +716,27 @@ def ModelLoader(cls):
                     log.info(f"Loader: dropping parent '{name}' from device_map to preserve child placements.")
                     device_map.pop(name, None)
 
+            # Collect parameters/buffers that were not assigned to any device in the current device_map
+            missing_after_prune = [
+                n for n, _ in chain(model.named_parameters(), model.named_buffers())
+                if not any(n == k or n.startswith(k + ".") for k in device_map)
+            ]
+            # If any tensors remain unmapped, assign them to the last GPU as a fallback
+            if missing_after_prune:
+                fallback_device = device_ids[-1]
+                for param_name in missing_after_prune:
+                    # Walk up the module tree until we find a module name that exists in module_names
+                    owner = param_name
+                    while owner and owner not in module_names:
+                        if "." not in owner:
+                            owner = ""
+                        else:
+                            owner = owner.rsplit(".", 1)[0]
+                    # Map the closest owning module to the fallback device
+                    if owner:
+                        device_map.setdefault(owner, device_strs[fallback_device])
+                    else:
+                        log.info(f"Loader: unable to map param '{param_name}' to a module; skipping fallback assignment.")
             # optional logging for debug
             log.info(f"Loader: Built map across {num_gpus} GPU(s), "
                   f"{len(device_map)} entries. First 8: {list(device_map.items())[:8]}")

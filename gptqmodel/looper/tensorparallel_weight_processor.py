@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import math
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 
@@ -38,8 +38,14 @@ class TensorParallelWeightProcessor(LoopProcessor):
         kwargs.setdefault("require_fwd", False)
         kwargs.setdefault("fwd_after_process", False)
         super().__init__(*args, **kwargs)
+        qcfg_from_kwargs = kwargs.pop("qcfg", None)
+        if qcfg_from_kwargs is not None:
+            self.qcfg = qcfg_from_kwargs
 
         self._target_multiple = math.lcm(*self._TP_TARGETS)
+
+        if self.qcfg and hasattr(self.qcfg, 'group_size') and self.qcfg.group_size > 0:
+            self._target_multiple = math.lcm(self._target_multiple, self.qcfg.group_size)
 
     def preprocess(self, module: NamedModule):  # pragma: no cover - simple hook
         # The processor operates on every eligible module; no setup required.
@@ -54,7 +60,15 @@ class TensorParallelWeightProcessor(LoopProcessor):
 
         return _noop
 
-    def process(self, module: NamedModule):
+    def process(
+        self,
+        module: NamedModule,
+        device: torch.device = None,
+        subset: Optional[Dict[str, NamedModule]] = None,
+        previous_subset: Optional[Dict[str, NamedModule]] = None,
+        subset_index: Optional[int] = None,
+        subset_total: Optional[int] = None,
+    ):
         target = module.module if isinstance(module, NamedModule) else module
         weight = getattr(target, "weight", None)
         if weight is None:

@@ -37,6 +37,7 @@ from .internlm2 import InternLM2QModel
 from .llama4 import Llama4QModel
 from .mimo import MimoQModel
 from .minicpm3 import MiniCpm3QModel
+from .minimax_m2 import MiniMaxM2GPTQ
 from .mixtral import MixtralQModel
 from .mllama import MLlamaQModel
 from .mobilellm import MobileLLMQModel
@@ -53,6 +54,7 @@ from .qwen2_moe import Qwen2MoeQModel
 from .qwen2_vl import Qwen2VLQModel
 from .qwen3 import Qwen3QModel
 from .qwen3_moe import Qwen3MoeQModel
+from .qwen3_vl import Qwen3_VLQModel
 from .rw import RwgQModel
 from .starcoder2 import Starcoder2QModel
 from .telechat2 import TeleChat2QModel

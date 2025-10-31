@@ -12,6 +12,18 @@ from ..utils.logger import setup_logger
 
 log = setup_logger()
 
+ASCII_LOGO = r"""
+_____/\\\\\\\\\\\\__/\\\\\\\\\\\\\____/\\\\\\\\\\\\\\\______________________/\\\________/\\\\____________/\\\\_______________________/\\\__________________/\\\\\\____
+ ___/\\\//////////__\/\\\/////////\\\_\///////\\\/////____________________/\\\\/\\\\____\/\\\\\\________/\\\\\\______________________\/\\\_________________\////\\\____
+  __/\\\_____________\/\\\_______\/\\\_______\/\\\_______________________/\\\//\////\\\__\/\\\//\\\____/\\\//\\\______________________\/\\\____________________\/\\\____
+   _\/\\\____/\\\\\\\_\/\\\\\\\\\\\\\/________\/\\\________/\\\\\\\\\\\__/\\\______\//\\\_\/\\\\///\\\/\\\/_\/\\\_____/\\\\\___________\/\\\______/\\\\\\\\_____\/\\\____
+    _\/\\\___\/////\\\_\/\\\/////////__________\/\\\_______\///////////__\//\\\______/\\\__\/\\\__\///\\\/___\/\\\___/\\\///\\\____/\\\\\\\\\____/\\\/////\\\____\/\\\____
+     _\/\\\_______\/\\\_\/\\\___________________\/\\\______________________\///\\\\/\\\\/___\/\\\____\///_____\/\\\__/\\\__\//\\\__/\\\////\\\___/\\\\\\\\\\\_____\/\\\____
+      _\/\\\_______\/\\\_\/\\\___________________\/\\\________________________\////\\\//_____\/\\\_____________\/\\\_\//\\\__/\\\__\/\\\__\/\\\__\//\\///////______\/\\\____
+       _\//\\\\\\\\\\\\/__\/\\\___________________\/\\\___________________________\///\\\\\\__\/\\\_____________\/\\\__\///\\\\\/___\//\\\\\\\/\\__\//\\\\\\\\\\__/\\\\\\\\\_
+        __\////////////____\///____________________\///______________________________\//////___\///______________\///_____\/////______\///////\//____\//////////__\/////////__
+"""
+
 # if not os.environ.get("PYTHON_GIL", None):
 #     os.environ["PYTHON_GIL"] = '0'
 #     log.info("ENV: Auto disable GIL and use free-threading mode when applicable: Python 3.13t+. You must install the -t edition of Python.")
@@ -84,6 +96,7 @@ from .definitions.gpt_neo import GptNeoQModel  # noqa: E402
 from .definitions.gpt_neox import GPTNeoXQModel  # noqa: E402
 from .definitions.gpt_oss import GPTOSSGPTQ  # noqa: E402
 from .definitions.gptj import GptJQModel  # noqa: E402
+from .definitions.granitemoehybrid import GraniteMoeHybridQModel
 from .definitions.grinmoe import GrinMoeQModel  # noqa: E402
 from .definitions.hymba import HymbaQModel  # noqa: E402
 from .definitions.instella import InstellaQModel  # noqa: E402
@@ -98,6 +111,7 @@ from .definitions.longcat_flash import LongCatFlashQModel  # noqa: E402
 from .definitions.mimo import MimoQModel  # noqa: E402
 from .definitions.minicpm import MiniCPMGPTQ  # noqa: E402
 from .definitions.minicpm3 import MiniCpm3QModel  # noqa: E402
+from .definitions.minimax_m2 import MiniMaxM2GPTQ  # noqa: E402
 from .definitions.mixtral import MixtralQModel  # noqa: E402
 from .definitions.mllama import MLlamaQModel  # noqa: E402
 from .definitions.mobilellm import MobileLLMQModel  # noqa: E402
@@ -106,6 +120,7 @@ from .definitions.mpt import MptQModel  # noqa: E402
 from .definitions.nemotron_h import NemotronHQModel  # noqa: E402
 from .definitions.opt import OptQModel  # noqa: E402
 from .definitions.ovis import OvisQModel  # noqa: E402
+from .definitions.ovis2 import Ovis2QModel  # noqa: E402
 from .definitions.pangu_alpha import PanguAlphaQModel  # noqa: E402
 from .definitions.phi import PhiQModel  # noqa: E402
 from .definitions.phi3 import Phi3QModel, PhiMoEGPTQForCausalLM  # noqa: E402
@@ -120,6 +135,7 @@ from .definitions.qwen3 import Qwen3QModel  # noqa: E402
 from .definitions.qwen3_moe import Qwen3MoeQModel  # noqa: E402
 from .definitions.qwen3_next import Qwen3NextGPTQ  # noqa: E402
 from .definitions.qwen3_omni_moe import Qwen3OmniMoeGPTQ
+from .definitions.qwen3_vl import Qwen3_VLQModel
 from .definitions.rw import RwgQModel  # noqa: E402
 from .definitions.starcoder2 import Starcoder2QModel  # noqa: E402
 from .definitions.telechat2 import TeleChat2QModel
@@ -183,6 +199,8 @@ MODEL_MAP = {
     "mpt": MptQModel,
     "minicpm": MiniCPMGPTQ,
     "minicpm3": MiniCpm3QModel,
+    "minimax": MiniMaxM2GPTQ,
+    "minimax_m2": MiniMaxM2GPTQ,
     "qwen2_moe": Qwen2MoeQModel,
     "qwen3_moe": Qwen3MoeQModel,
     "qwen3_next": Qwen3NextGPTQ,
@@ -192,6 +210,7 @@ MODEL_MAP = {
     "qwen2_5_vl_text": Qwen2_5_VLQModel,
     "qwen2_5_omni": Qwen2_5_OmniGPTQ,
     "qwen3_omni_moe": Qwen3OmniMoeGPTQ,
+    "qwen3_vl": Qwen3_VLQModel,
     "dbrx": DbrxQModel,
     "dbrx_converted": DbrxConvertedQModel,
     "deepseek_v2": DeepSeekV2QModel,
@@ -199,11 +218,14 @@ MODEL_MAP = {
     "exaone": ExaOneQModel,
     "grinmoe": GrinMoeQModel,
     "mllama": MLlamaQModel,
+    "marin": Qwen3QModel,
     "granite": LlamaQModel, # 100% llama clone
+    "granitemoehybrid": GraniteMoeHybridQModel,
     "mobilellm": MobileLLMQModel,
     "hymba": HymbaQModel,
     "olmo2": LlamaQModel, # 100% llama clone
     "ovis": OvisQModel,
+    "ovis2": Ovis2QModel,
     "telechat": TeleChat2QModel,
     "instella": InstellaQModel,
     "mimo": MimoQModel,
@@ -221,6 +243,30 @@ MODEL_MAP = {
 }
 
 SUPPORTED_MODELS = list(MODEL_MAP.keys())
+
+
+def _is_supported_quantization_config(config: AutoConfig) -> bool:
+    quantization_config = getattr(config, "quantization_config", None)
+    if not isinstance(quantization_config, dict):
+        return False
+
+    quant_format = quantization_config.get("quant_format")
+    if isinstance(quant_format, str) and quant_format.lower() in (
+        METHOD.GPTQ,
+        METHOD.AWQ,
+        METHOD.QQQ,
+    ):
+        return True
+
+    quant_method = quantization_config.get("quant_method")
+    if isinstance(quant_method, str) and quant_method.lower() in (
+        METHOD.GPTQ,
+        METHOD.AWQ,
+        METHOD.QQQ,
+    ):
+        return True
+
+    return False
 
 
 def check_and_get_model_type(model_dir, trust_remote_code=False):
@@ -261,10 +307,9 @@ class GPTQModel:
 
         is_gptqmodel_quantized = False
         model_cfg = AutoConfig.from_pretrained(model_id_or_path, trust_remote_code=trust_remote_code)
-        if hasattr(model_cfg, "quantization_config") and "quant_format" in model_cfg.quantization_config:
+        if _is_supported_quantization_config(model_cfg):
             # only if the model is quantized or compatible with gptqmodel should we set is_quantized to true
-            if model_cfg.quantization_config["quant_format"].lower() in (METHOD.GPTQ, METHOD.AWQ, METHOD.QQQ):
-                is_gptqmodel_quantized = True
+            is_gptqmodel_quantized = True
         else:
             # TODO FIX ME...not decoded to check if quant method is compatible or quantized by gptqmodel
             for name in [QUANT_CONFIG_FILENAME, "quant_config.json"]:
@@ -314,8 +359,8 @@ class GPTQModel:
             trust_remote_code: bool = False,
             **model_init_kwargs,
     ) -> BaseQModel:
-        if hasattr(AutoConfig.from_pretrained(model_id_or_path, trust_remote_code=trust_remote_code),
-                   "quantization_config"):
+        config = AutoConfig.from_pretrained(model_id_or_path, trust_remote_code=trust_remote_code)
+        if _is_supported_quantization_config(config):
             log.warn("Model is already quantized, will use `from_quantized` to load quantized model.\n"
                            "If you want to quantize the model, please pass un_quantized model path or id, and use "
                            "`from_pretrained` with `quantize_config`.")
@@ -647,6 +692,7 @@ class GPTQModel:
             calibration_dataset_sort: Optional[str] = None,
             batch_size: Optional[int] = 1,
             tokenizer: Optional[PreTrainedTokenizerBase] = None,
+            calibration_concat_separator: Optional[str] = None,
             # pass-through vars for load()
             trust_remote_code: bool = False,
             dtype: Optional[Union[str, torch.dtype]] = None,
@@ -691,5 +737,6 @@ class GPTQModel:
                 calibration_dataset_sort=calibration_dataset_sort,
                 batch_size=batch_size,
                 tokenizer=tokenizer,
+                calibration_concat_separator=calibration_concat_separator,
             )
             return
