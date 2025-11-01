@@ -1458,6 +1458,8 @@ class DeviceThreadPool:
         Call an empty_cache-like callable, preferring a `device` argument when
         supported and falling back to positional or zero-arg variants.
         """
+        # testing without _invoke_empty_cache
+        return
         supports_kw, supports_pos = _analyze_empty_cache_callable(fn)
         if supports_kw:
             try:
@@ -1489,7 +1491,6 @@ class DeviceThreadPool:
                 return None
             target = dev if dev.index is not None else "cuda"
             with torch.cuda.device(target):
-                torch.cuda.synchronize()
                 self._invoke_empty_cache(use_fn, dev)
             return time.time() - start
 
@@ -1502,8 +1503,6 @@ class DeviceThreadPool:
                 return None
             target = dev if dev.index is not None else "xpu"
             with torch.xpu.device(target):
-                if hasattr(torch.xpu, "synchronize"):
-                    torch.xpu.synchronize()
                 self._invoke_empty_cache(use_fn, dev)
             return time.time() - start
 
@@ -1514,8 +1513,6 @@ class DeviceThreadPool:
                 if DEBUG_ON:
                     log.debug("DP-Janitor: no empty_cache callable available for %s", key)
                 return None
-            if hasattr(torch.mps, "synchronize"):
-                torch.mps.synchronize()
             self._invoke_empty_cache(use_fn, dev)
             return time.time() - start
 
