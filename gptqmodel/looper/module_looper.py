@@ -527,7 +527,7 @@ class ModuleLooper():
         single threaded path. The helper returns the ordered outputs that feed
         the next processor stage when ``need_outputs`` is set.
         """
-        if force_serial:
+        if force_serial or self.gptq_model.quantize_config.force_single_device_forward:
             return self._run_forward_batches_single(
                 module=module,
                 processor=processor,
