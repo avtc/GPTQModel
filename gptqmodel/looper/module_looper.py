@@ -550,6 +550,8 @@ class ModuleLooper():
             )
 
         devices = select_forward_devices(cur_layer_device)
+        if (self.gptq_model.quantize_config.low_vram and len(devices) > 1):
+            devices = devices[1:] # remove cuda:0 from list as it has memory pressure from other activities
 
         if len(devices) <= 1:
             return self._run_forward_batches_single(
