@@ -285,6 +285,7 @@ def clone_module_for_devices(
         rehome_module_to_device(module, target_device, move_parameters=True, move_buffers=True)
         clear_state_fn(module)
         setattr(module, "_gptqmodule_device_hint", target_device)
+        torch_sync(target_device)
         _record(step_name, start_ts)
 
     use_replicate = (
@@ -336,6 +337,7 @@ def clone_module_for_devices(
     for idx, dev in enumerate(devices, start=1):
         start_ts = time.perf_counter()
         with _DEEPCOPY_LOCK:
+            torch_sync(stage_device)
             replica = copy.deepcopy(module)
         replica.eval()
         rehome_module_to_device(replica, dev, move_parameters=True, move_buffers=True)
