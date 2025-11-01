@@ -109,6 +109,9 @@ class ModuleLooper():
         quant_devices = select_forward_devices(normalized_quant_device) if normalized_quant_device else [CPU]
         if not quant_devices:
             quant_devices = [CPU]
+        self._quant_devices_original_len = len(quant_devices)
+        if (self.gptq_model.quantize_config.low_vram and len(quant_devices) > 1):
+            quant_devices = quant_devices[1:] # remove cuda:0 from list as it has memory pressure from other activities
 
         self._quant_devices = quant_devices
         self._quant_device_rr = 0

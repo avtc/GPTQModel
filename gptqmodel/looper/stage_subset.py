@@ -163,7 +163,7 @@ def run_subset_stage(
                 dev for dev in looper._quant_devices
                 if dev is not None and getattr(dev, "type", None) != "cpu"
             ]
-            if len(devices) > 1 and expert_groups:
+            if looper._quant_devices_original_len > 1 and expert_groups:
                 assignable_group_keys: List[str] = []
                 for group_key, module_names in expert_groups.items():
                     suffixes = {name.rsplit(".", 1)[-1] for name in module_names}

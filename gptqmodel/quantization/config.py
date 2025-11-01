@@ -233,6 +233,9 @@ class QuantizeConfig():
     # gptq only:
     # skip all heavy computations for testing model loading
     mock_quantization: bool = field(default=False, metadata={"help": "Skip heavy computations for fast model loading validation"})
+    low_vram: bool = field(default=False, metadata={"help": ("Optimize VRAM usage: " 
+                                                    "wait for ongoing VRAM tasks to complete before proceeding to next ones, "
+                                                    "exclude cuda:0 from modules distribution for multi-GPU setups")})
 
     # Hessian accumulation controls (GPTQ only)
     hessian_chunk_size: Optional[int] = field(default=None, metadata={"help": "Maximum rows per Hessian chunk"})

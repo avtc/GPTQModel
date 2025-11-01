@@ -65,6 +65,9 @@ def run_layer_stage(
             # TODO FIXME: currently we not support quantizing cross attention layer (pixel_values)
             continue
 
+        if looper.gptq_model.quantize_config.low_vram:
+            DEVICE_THREAD_POOL.wait()
+
         module = looper.gptq_model.pre_quantize(module)
 
         if is_lm_head_module:
@@ -151,6 +154,9 @@ def run_layer_stage(
                 previous_subset_processed = subset_result.processed_subset
                 if subset_result.forward_context is not None:
                     last_subset_context = subset_result.forward_context
+
+                if looper.gptq_model.quantize_config.low_vram:
+                    DEVICE_THREAD_POOL.wait()
 
             is_last_module = layer_index == len(pb) - 1
             layer_outputs: List[List[torch.Tensor]] = []
