@@ -254,11 +254,13 @@ class GPTQProcessor(LoopProcessor):
                     "w_wq_diff": w_wq_diff,
                 })
 
-        with self.lock:
-            self.tasks[module.name].free()
+        # The GPTQ object's free() method will be called once per subset by GPTQProcessor.free(subset)
+        # after all modules in the subset have been processed.
+        # This prevents premature deletion of attributes.
 
-            # logger.info(f"Quantizing module END: {name}, {gptq[name].shape()}")
-            if self.calculate_w_wq_diff:
+        # logger.info(f"Quantizing module END: {name}, {gptq[name].shape()}")
+        if self.calculate_w_wq_diff:
+            with self.lock:
                 module.state.update({
                     "wq": wq,  # fp16, quantized weight but not int4 (packed qweight)
                 })

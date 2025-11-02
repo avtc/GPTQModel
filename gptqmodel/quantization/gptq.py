@@ -960,18 +960,26 @@ class GPTQ:
         return Q, scale, zero, g_idx, duration, avg_loss, damp, self.nsamples
 
     def free(self):
-        if hasattr(self, "H"):
+        # self.H and self.quantizer are typically deleted by self.quantize()
+        # This method ensures they are truly gone, along with other temporary attributes.
+        if hasattr(self, "H") and self.H is not None:
             del self.H
-        del self.quantizer
-        if hasattr(self, "module_copy"):
+            self.H = None
+        if hasattr(self, "quantizer") and self.quantizer is not None:
+            del self.quantizer
+            self.quantizer = None
+        if hasattr(self, "module_copy") and self.module_copy is not None:
             del self.module_copy
+            self.module_copy = None
 
         if self._named_module is not None:
             self._named_module.state.pop("tp_pad_info", None)
 
-        target = getattr(self, "module", None)
-        if target is not None:
+        # The 'module' attribute itself might be a reference to the original model's submodule.
+        # Deleting it here is meant to clear the *reference* within the GPTQ object.
+        if hasattr(self, "module") and self.module is not None:
             del self.module
+            self.module = None
 
         # torch_empty_cache(self.device)
 
