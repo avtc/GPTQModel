@@ -620,6 +620,10 @@ class ModuleLooper():
     ) -> List[List[torch.Tensor]]:
         """Sequential fallback when only one forward device is in use."""
         outputs: List[List[torch.Tensor]] = []
+
+        if not preserve_module_devices:
+            module.to(cur_layer_device)
+
         prev_kv = shared_kv_cache_dict.get(layer_index - 1) if reuse_kv else None
         total_batches = self._resolve_batch_total(processor.num_batches, layer_inputs)
         batch_row_counts = progress_rows_per_batch or self._collect_row_counts(layer_inputs)
@@ -669,9 +673,6 @@ class ModuleLooper():
 
                 if reuse_kv and prev_kv is not None:
                     additional_inputs["kv_last_layer"] = nested_move_to(prev_kv, device=exec_device)
-
-                if not preserve_module_devices:
-                    rehome_module_to_device(module, cur_layer_device, move_parameters=True, move_buffers=True)
 
                 module_output = None
                 try:
