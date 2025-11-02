@@ -701,6 +701,10 @@ class ModuleLooper():
                     primary = move_to(primary, device=cur_layer_device)
                     outputs.append([primary])
 
+                    # Explicitly delete tensors to free VRAM
+                    del primary
+                    del module_output
+
                 rows_for_batch = batch_row_counts[batch_idx] if batch_idx < len(batch_row_counts) else 0
                 if rows_for_batch <= 0:
                     rows_for_batch = self._batch_row_count(layer_inputs[batch_idx]) if layer_inputs and batch_idx < len(layer_inputs) else 1
