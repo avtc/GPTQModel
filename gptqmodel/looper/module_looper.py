@@ -621,8 +621,8 @@ class ModuleLooper():
         """Sequential fallback when only one forward device is in use."""
         outputs: List[List[torch.Tensor]] = []
 
-        if not preserve_module_devices and get_device(module) != cur_layer_device:
-            module.to(cur_layer_device)
+        if not preserve_module_devices:
+            move_to(module, cur_layer_device)
 
         prev_kv = shared_kv_cache_dict.get(layer_index - 1) if reuse_kv else None
         total_batches = self._resolve_batch_total(processor.num_batches, layer_inputs)
@@ -648,10 +648,10 @@ class ModuleLooper():
                     if module_target is not None:
                         exec_device = module_target
 
-                layer_input = [move_to(inp, device=exec_device, stream=False) for inp in layer_inputs[batch_idx]]
+                layer_input = [move_to(inp, device=exec_device) for inp in layer_inputs[batch_idx]]
 
                 raw_mask = attention_masks[batch_idx]
-                attn_tensor = raw_mask if raw_mask is None else move_to(raw_mask, device=exec_device, stream=False)
+                attn_tensor = raw_mask if raw_mask is None else move_to(raw_mask, device=exec_device)
 
                 keep_mask = None
                 if attn_tensor is not None:
@@ -666,7 +666,7 @@ class ModuleLooper():
                 if position_ids:
                     pos = position_ids[batch_idx]
                     if pos is not None:
-                        additional_inputs["position_ids"] = move_to(pos, device=exec_device, stream=False)
+                        additional_inputs["position_ids"] = move_to(pos, device=exec_device)
 
                 for key, value in layer_input_kwargs[batch_idx].items():
                     additional_inputs[key] = nested_move_to(value, device=exec_device, stream=False)
