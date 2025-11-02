@@ -433,9 +433,6 @@ def run_subset_stage(
         processed_subset[name] = named_module
     torch_sync()
 
-    if isinstance(processor, GPTQProcessor):
-        processor.free(subset)
-
     context = SubsetForwardContext(
         subset=subset,
         forward_device_map=forward_device_map,

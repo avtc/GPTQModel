@@ -254,25 +254,17 @@ class GPTQProcessor(LoopProcessor):
                     "w_wq_diff": w_wq_diff,
                 })
 
-        # The GPTQ object's free() method will be called once per subset by GPTQProcessor.free(subset)
-        # after all modules in the subset have been processed.
-        # This prevents premature deletion of attributes.
+        with self.lock:
+            self.tasks[module.name].free()
 
-        # logger.info(f"Quantizing module END: {name}, {gptq[name].shape()}")
-        if self.calculate_w_wq_diff:
-            with self.lock:
+            # logger.info(f"Quantizing module END: {name}, {gptq[name].shape()}")
+            if self.calculate_w_wq_diff:
                 module.state.update({
                     "wq": wq,  # fp16, quantized weight but not int4 (packed qweight)
                 })
 
         # single largest deallocation of vram happens here
         module.weight.data = wq
-
-    def free(self, subset: Dict[str, NamedModule]):
-        """Free the Hessian and other temporary variables from the quantizer."""
-        for name in subset:
-            if name in self.tasks:
-                self.tasks[name].free()
 
     # submodule_finalized is called in reverse after all next sequential processes are called
     def submodule_finalize(self, module: NamedModule, model: BaseQModel, **kwargs):
