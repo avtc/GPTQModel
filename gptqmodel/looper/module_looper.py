@@ -684,7 +684,12 @@ class ModuleLooper():
                     module_output = None
                 finally:
                     self._set_processor_mask(processor, None)
+                    if layer_input:
+                        layer_input.clear()
                     del layer_input
+
+                    if additional_inputs:
+                        additional_inputs.clear()
                     del additional_inputs
 
                 if (
