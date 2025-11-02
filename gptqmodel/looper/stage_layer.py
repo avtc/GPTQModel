@@ -281,20 +281,6 @@ def run_layer_stage(
                    if replay_pb is not None:
                        replay_pb.close()
                 
-                # Critical VRAM cleanup after forward replay - tensors can accumulate heavily here
-                if looper.gptq_model.quantize_config.low_vram:
-                    DEVICE_THREAD_POOL.wait()
-                    torch_sync()
-                   
-                    # Additional cleanup of forward outputs to free VRAM
-                    for output_list in layer_outputs:
-                        if output_list:
-                            for output_tensor in output_list:
-                                if hasattr(output_tensor, 'storage'):
-                                    del output_tensor
-                    del layer_outputs
-                    torch_sync()
-               
                 # Log VRAM usage after forward replay
                 if looper.gptq_model.quantize_config.log_vram:
                     try:
