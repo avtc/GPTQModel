@@ -266,6 +266,12 @@ class GPTQProcessor(LoopProcessor):
         # single largest deallocation of vram happens here
         module.weight.data = wq
 
+    def free(self, subset: Dict[str, NamedModule]):
+        """Free the Hessian and other temporary variables from the quantizer."""
+        for name in subset:
+            if name in self.tasks:
+                self.tasks[name].free()
+
     # submodule_finalized is called in reverse after all next sequential processes are called
     def submodule_finalize(self, module: NamedModule, model: BaseQModel, **kwargs):
         # generate complete, safe to move to cpu
