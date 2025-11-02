@@ -294,7 +294,8 @@ def run_subset_stage(
     if need_outputs:
         processor.receive_layer_inputs(forward_outputs)
         layer_inputs = processor.inputs_cache.layer_inputs
-        del forward_outputs
+    
+    del forward_outputs
 
     fwd_time = time.perf_counter() - fwd_start
     processor.set_fwd_time(fwd_time)

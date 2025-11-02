@@ -704,6 +704,8 @@ class ModuleLooper():
                     # Explicitly delete tensors to free VRAM
                     del primary
                     del module_output
+                elif module_output is not None:
+                    del module_output
 
                 rows_for_batch = batch_row_counts[batch_idx] if batch_idx < len(batch_row_counts) else 0
                 if rows_for_batch <= 0:
