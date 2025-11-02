@@ -50,6 +50,12 @@ def run_layer_stage(
     for layer_index in pb:
         if looper._check_loop_stop():
             break
+
+        # Clean up KV cache from layers older than the previous one
+        kv_keys_to_delete = [key for key in shared_kv_cache_dict if key < layer_index - 1]
+        for key in kv_keys_to_delete:
+            del shared_kv_cache_dict[key]
+
         is_lm_head_module = layer_index >= layer_count
 
         if is_lm_head_module:
@@ -67,6 +73,7 @@ def run_layer_stage(
 
         if looper.gptq_model.quantize_config.low_vram:
             DEVICE_THREAD_POOL.wait()
+            torch_sync()
 
         module = looper.gptq_model.pre_quantize(module)
 
@@ -157,6 +164,7 @@ def run_layer_stage(
 
                 if looper.gptq_model.quantize_config.low_vram:
                     DEVICE_THREAD_POOL.wait()
+                    torch_sync()
 
             is_last_module = layer_index == len(pb) - 1
             layer_outputs: List[List[torch.Tensor]] = []
@@ -295,6 +303,7 @@ def run_layer_stage(
                 processor.clear_cache_data()
                 processor.receive_layer_inputs(layer_outputs)
                 layer_inputs = processor.inputs_cache.layer_inputs
+                del layer_outputs
 
                 pb.title(layer_title).subtitle("").draw()
 
