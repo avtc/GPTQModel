@@ -270,6 +270,15 @@ def run_layer_stage(
                         )
                     if replay_pb is not None:
                         replay_pb.close()
+                
+                # Log VRAM usage after forward replay
+                if looper.gptq_model.quantize_config.log_vram:
+                    try:
+                        vram_summary = DEVICE_THREAD_POOL._format_vram_summary(DEVICE_THREAD_POOL._ordered_keys)
+                        log.info(f"VRAM after forward replay (layer={layer_index}, subset={subset_reference_index + 1}/{subset_reference_total}): {vram_summary}")
+                    except Exception as e:
+                        log.warning(f"Failed to log VRAM after forward replay (layer={layer_index}, subset={subset_reference_index + 1}/{subset_reference_total}): {e}")
+                
                 if region_timer is not None:
                     region_timer.record(
                         "post_quant_forward",

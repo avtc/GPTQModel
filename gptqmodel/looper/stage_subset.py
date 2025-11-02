@@ -300,6 +300,14 @@ def run_subset_stage(
     # Force VRAM cleanup after forward pass, especially important for MoE subsets
     torch_sync()
     
+    # Log VRAM usage after forward pass
+    if looper.gptq_model.quantize_config.log_vram:
+        try:
+            vram_summary = DEVICE_THREAD_POOL._format_vram_summary(DEVICE_THREAD_POOL._ordered_keys)
+            logger.info(f"VRAM after forward pass (layer={layer_index}, subset={subset_index + 1}/{subset_total}): {vram_summary}")
+        except Exception as e:
+            logger.warning(f"Failed to log VRAM after forward pass (layer={layer_index}, subset={subset_index + 1}/{subset_total}): {e}")
+    
     fwd_time = time.perf_counter() - fwd_start
     processor.set_fwd_time(fwd_time)
     if region_timer is not None:
@@ -435,6 +443,14 @@ def run_subset_stage(
         name, named_module = fut.result()
         processed_subset[name] = named_module
     torch_sync()
+    
+    # Log VRAM usage after quantization
+    if looper.gptq_model.quantize_config.log_vram:
+        try:
+            vram_summary = DEVICE_THREAD_POOL._format_vram_summary(DEVICE_THREAD_POOL._ordered_keys)
+            logger.info(f"VRAM after quantization (layer={layer_index}, subset={subset_index + 1}/{subset_total}): {vram_summary}")
+        except Exception as e:
+            logger.warning(f"Failed to log VRAM after quantization (layer={layer_index}, subset={subset_index + 1}/{subset_total}): {e}")
     
     # Additional VRAM cleanup after processing, crucial for MoE subsets
     if is_moe_subset:
