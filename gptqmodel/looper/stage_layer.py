@@ -162,6 +162,16 @@ def run_layer_stage(
                 if subset_result.forward_context is not None:
                     last_subset_context = subset_result.forward_context
 
+                # Critical VRAM cleanup between subsets - especially important for MoE
+                # This ensures tensors from previous subset are cleaned up before next subset processing
+                if looper.gptq_model.quantize_config.low_vram:
+                    DEVICE_THREAD_POOL.wait()
+                    torch_sync()
+                
+                # Additional cleanup for all configurations, not just low_vram
+                # Clear any lingering references from subset processing
+                del subset_result
+                
                 if looper.gptq_model.quantize_config.low_vram:
                     DEVICE_THREAD_POOL.wait()
                     torch_sync()
@@ -262,15 +272,29 @@ def run_layer_stage(
                         preserve_module_devices=preserve_devices,
                     )
                 finally:
-                    if forward_device_map:
-                        looper._restore_forward_device_overrides(
-                            subset_for_overrides,
-                            replay_prev_devices,
-                            fallback_modules=full,
-                        )
-                    if replay_pb is not None:
-                        replay_pb.close()
+                   if forward_device_map:
+                       looper._restore_forward_device_overrides(
+                           subset_for_overrides,
+                           replay_prev_devices,
+                           fallback_modules=full,
+                       )
+                   if replay_pb is not None:
+                       replay_pb.close()
                 
+                # Critical VRAM cleanup after forward replay - tensors can accumulate heavily here
+                if looper.gptq_model.quantize_config.low_vram:
+                    DEVICE_THREAD_POOL.wait()
+                    torch_sync()
+                   
+                    # Additional cleanup of forward outputs to free VRAM
+                    for output_list in layer_outputs:
+                        if output_list:
+                            for output_tensor in output_list:
+                                if hasattr(output_tensor, 'storage'):
+                                    del output_tensor
+                    del layer_outputs
+                    torch_sync()
+               
                 # Log VRAM usage after forward replay
                 if looper.gptq_model.quantize_config.log_vram:
                     try:
@@ -314,6 +338,20 @@ def run_layer_stage(
                 layer_inputs = processor.inputs_cache.layer_inputs
                 del layer_outputs
 
+                # Critical VRAM cleanup after processor completion
+                # This is where quantization tensors and intermediate results accumulate
+                if looper.gptq_model.quantize_config.low_vram:
+                    DEVICE_THREAD_POOL.wait()
+                    torch_sync()
+                    
+                    # Force cleanup of processor caches that might hold large tensors
+                    if hasattr(processor, 'tasks'):
+                        for task_name, task in list(processor.tasks.items()):
+                            if hasattr(task, 'H') and task.H is not None:
+                                task.H = None
+                            if hasattr(task, 'module_copy') and task.module_copy is not None:
+                                task.module_copy = None
+                
                 pb.title(layer_title).subtitle("").draw()
 
             if p_index == len(looper.processors) - 1:
