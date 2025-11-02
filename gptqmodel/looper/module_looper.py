@@ -669,10 +669,10 @@ class ModuleLooper():
                         additional_inputs["position_ids"] = move_to(pos, device=exec_device)
 
                 for key, value in layer_input_kwargs[batch_idx].items():
-                    additional_inputs[key] = nested_move_to(value, device=exec_device, stream=False)
+                    additional_inputs[key] = nested_move_to(value, device=exec_device)
 
                 if reuse_kv and prev_kv is not None:
-                    additional_inputs["kv_last_layer"] = nested_move_to(prev_kv, device=exec_device, stream=False)
+                    additional_inputs["kv_last_layer"] = nested_move_to(prev_kv, device=exec_device)
 
                 module_output = None
                 try:
