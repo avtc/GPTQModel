@@ -184,6 +184,7 @@ def stream_tensor_dict_to_cpu(
     store_callback: Callable[[Dict[str, torch.Tensor]], None],
     state: Dict[str, Any],
     state_lock: threading.RLock,
+    sync_immediately: bool = False,
 ) -> Dict[str, torch.Tensor]:
     filtered = {name: tensor for name, tensor in tensors.items() if isinstance(tensor, torch.Tensor)}
     if not filtered:
@@ -244,7 +245,15 @@ def stream_tensor_dict_to_cpu(
         events = state.setdefault("streaming_events", [])
         events.append(ticket)
 
-    _schedule_ticket(ticket, state, state_lock)
+    if sync_immediately:
+        # Wait immediately for the transfer to complete
+        done_event.synchronize()
+        _drop_sources(ticket)
+        ticket.background_done = True
+        _finalize_ticket_locked(ticket, state)
+    else:
+        _schedule_ticket(ticket, state, state_lock)
+    
     return host_map
 
 

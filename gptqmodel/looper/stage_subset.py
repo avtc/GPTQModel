@@ -297,6 +297,9 @@ def run_subset_stage(
     
     del forward_outputs
 
+    # Force VRAM cleanup after forward pass, especially important for MoE subsets
+    torch_sync()
+    
     fwd_time = time.perf_counter() - fwd_start
     processor.set_fwd_time(fwd_time)
     if region_timer is not None:
@@ -432,6 +435,13 @@ def run_subset_stage(
         name, named_module = fut.result()
         processed_subset[name] = named_module
     torch_sync()
+    
+    # Additional VRAM cleanup after processing, crucial for MoE subsets
+    if is_moe_subset:
+        # Force synchronization of any pending streams
+        for named_module in subset.values():
+            if hasattr(named_module, 'stream_sync'):
+                named_module.stream_sync()
 
     context = SubsetForwardContext(
         subset=subset,

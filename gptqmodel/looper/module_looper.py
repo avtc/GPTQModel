@@ -709,8 +709,13 @@ class ModuleLooper():
                     # Explicitly delete tensors to free VRAM
                     del primary
                     del module_output
+                    
                 elif module_output is not None:
                     del module_output
+                    
+                # Force sync periodically to free VRAM
+                if batch_idx % 10 == 0 and self.gptq_model.quantize_config.low_vram:
+                    torch_sync(device=exec_device)
 
                 rows_for_batch = batch_row_counts[batch_idx] if batch_idx < len(batch_row_counts) else 0
                 if rows_for_batch <= 0:

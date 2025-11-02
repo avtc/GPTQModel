@@ -185,12 +185,14 @@ class GPTQProcessor(LoopProcessor):
 
         wq, q_scales, q_zeros, q_g_idx, duration, avg_loss, damp_percent, nsamples = g.quantize()
 
+        # Use immediate streaming for better VRAM management
         module.stream_state_payload_to_cpu(
             {
                 "q_scales": q_scales,
                 "q_zeros": q_zeros,
                 "q_g_idx": q_g_idx,
             },
+            sync_immediately=True,
         )
         del q_scales, q_zeros, q_g_idx
 

@@ -151,6 +151,7 @@ class NamedModule(torch.nn.Module):
     def stream_state_payload_to_cpu(
         self,
         tensors: Dict[str, torch.Tensor],
+        sync_immediately: bool = False,
     ) -> Dict[str, torch.Tensor]:
         state_lock = self._parent_lock
         return stream_tensor_dict_to_cpu(
@@ -158,6 +159,7 @@ class NamedModule(torch.nn.Module):
             store_callback=lambda host_map: self.state.update(host_map),
             state=self.state,
             state_lock=state_lock,
+            sync_immediately=sync_immediately,
         )
 
     def stream_parameters_to_cpu(self) -> Dict[str, torch.Tensor]:
