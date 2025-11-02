@@ -500,7 +500,6 @@ class GPTQ:
 
             for partial_device, partial in self._device_hessian_partials.items():
                 if partial.device != result_accum.device or partial.dtype != torch.float32:
-                    torch.cuda.synchronize(result_accum.device)
                     tmp = partial.to(device=result_accum.device, dtype=torch.float32)
                     result_accum.add_(tmp)
                     del tmp
