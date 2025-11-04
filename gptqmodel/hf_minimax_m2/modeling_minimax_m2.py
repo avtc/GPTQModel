@@ -357,52 +357,60 @@ class MiniMaxM2Attention(nn.Module):
         query_dtype = query_states.dtype
         key_states_shape_2 = key_states.shape[-2]
 
-        attn_weights = torch.empty(
-            (bsz, self.num_heads, q_len, key_states_shape_2), device=device, dtype=query_dtype
-        )
-        for i in range(self.num_heads):
-            attn_weights[:, i, :, :] = torch.matmul(
-                query_states[:, i, :, :], key_states[:, i, :, :].transpose(-2, -1)
-            )
+        # VRAM optimization: process heads sequentially to avoid allocating large attention tensor.
+        attn_output_parts = []
+        attn_weights_parts = [] if output_attentions else None
 
-        attn_weights *= self.scaling
-        del query_states, key_states
-
-        if attention_mask is not None:
-            attn_weights.add_(attention_mask)
-
+        # Common sliding window mask if needed
+        sliding_window_mask = None
         if self.sliding_window is not None and past_key_values is None:
-            query_positions = torch.arange(q_len, device=device).view(1, 1, q_len, 1)
-            key_positions = torch.arange(key_states_shape_2, device=device).view(1, 1, 1, -1)
-            window_mask = key_positions < (query_positions - self.sliding_window)
-            if window_mask.any():
-                attn_weights.masked_fill_(window_mask, float("-inf"))
-            del query_positions, key_positions, window_mask
+            query_positions = torch.arange(q_len, device=device).view(1, q_len, 1)
+            key_positions = torch.arange(key_states_shape_2, device=device).view(1, 1, -1)
+            sliding_window_mask = key_positions < (query_positions - self.sliding_window)
+            del query_positions, key_positions
 
         for i in range(self.num_heads):
-            attn_weights[:, i, :, :] = torch.softmax(
-                attn_weights[:, i, :, :], dim=-1, dtype=torch.float32
-            ).to(query_dtype)
+            query_head = query_states[:, i, :, :]
+            key_head = key_states[:, i, :, :]
+            
+            # QK matmul
+            attn_weights_head = torch.matmul(query_head, key_head.transpose(-2, -1))
+            attn_weights_head *= self.scaling
 
-        if self.training and self.attention_dropout > 0:
-            attn_weights = F.dropout(attn_weights, p=self.attention_dropout)
+            # Apply masks
+            if attention_mask is not None:
+                attn_weights_head = attn_weights_head + attention_mask
 
-        attn_output = torch.empty(
-            (bsz, self.num_heads, q_len, self.head_dim), device=attn_weights.device, dtype=attn_weights.dtype
-        )
-        for i in range(self.num_heads):
-            attn_output[:, i, :, :] = torch.matmul(attn_weights[:, i, :, :], value_states[:, i, :, :])
+            if sliding_window_mask is not None and sliding_window_mask.any():
+                attn_weights_head.masked_fill_(sliding_window_mask, float("-inf"))
 
-        del value_states
+            # Softmax
+            attn_weights_head = torch.softmax(attn_weights_head, dim=-1, dtype=torch.float32).to(query_dtype)
+
+            # Dropout
+            if self.training and self.attention_dropout > 0:
+                attn_weights_head = F.dropout(attn_weights_head, p=self.attention_dropout)
+
+            # V matmul
+            value_head = value_states[:, i, :, :]
+            attn_output_head = torch.matmul(attn_weights_head, value_head)
+            attn_output_parts.append(attn_output_head)
+            
+            if output_attentions:
+                attn_weights_parts.append(attn_weights_head)
+
+        del query_states, key_states, value_states, sliding_window_mask
+        
+        attn_output = torch.stack(attn_output_parts, dim=1)
+
+        attn_weights = None
+        if output_attentions:
+            attn_weights = torch.stack(attn_weights_parts, dim=1)
 
         attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, q_len, -1)
         attn_output = self.o_proj(attn_output)
 
-        if output_attentions:
-            return attn_output, attn_weights
-
-        del attn_weights
-        return attn_output, None
+        return attn_output, attn_weights
 
 
 class MiniMaxM2LogitsProcessor(nn.Module):
