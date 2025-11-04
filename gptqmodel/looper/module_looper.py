@@ -820,22 +820,11 @@ class ModuleLooper():
         torch_sync()
 
         try:
-            # Smarter replication: reuse the original module for the primary device
-            # to avoid a redundant, memory-consuming copy.
-            primary_device = cur_layer_device
-            aux_devices = [dev for dev in devices if dev != primary_device]
-
-            module_replicas = {}
-            if aux_devices:
-                module_replicas = clone_module_for_devices(
-                    module,
-                    aux_devices,
-                    progress_callback=progress_cb,
-                )
-
-            # Add the original module for the primary device
-            module_replicas[primary_device] = module
-
+            module_replicas = clone_module_for_devices(
+                module,
+                devices,
+                progress_callback=progress_cb,
+            )
         finally:
             if replica_pb is not None:
                 replica_pb.close()
