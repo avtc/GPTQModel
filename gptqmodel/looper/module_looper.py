@@ -624,35 +624,6 @@ class ModuleLooper():
         if not preserve_module_devices:
             move_to(module, cur_layer_device)
 
-        # Determine execution device early
-        exec_device = cur_layer_device
-        if preserve_module_devices:
-            module_target = getattr(module, "target_device", None)
-            if module_target is not None:
-                exec_device = module_target
-        
-        # OPTIMIZATION: Pre-migrate all inputs to target device to minimize transfer overhead
-        # This improves GPU utilization by reducing repeated device synchronization points
-        layer_inputs_device = []
-        for batch_idx in range(len(layer_inputs)):
-            batch_inputs = [move_to(inp, device=exec_device) for inp in layer_inputs[batch_idx]]
-            layer_inputs_device.append(batch_inputs)
-        
-        # Pre-migrate attention masks
-        attention_masks_device = []
-        for mask in attention_masks:
-            attention_masks_device.append(
-                None if mask is None else move_to(mask, device=exec_device)
-            )
-            
-        # Pre-migrate position IDs
-        position_ids_device = []
-        if position_ids:
-            for pos in position_ids:
-                position_ids_device.append(
-                    None if pos is None else move_to(pos, device=exec_device)
-                )
-
         prev_kv = shared_kv_cache_dict.get(layer_index - 1) if reuse_kv else None
         total_batches = self._resolve_batch_total(processor.num_batches, layer_inputs)
         batch_row_counts = progress_rows_per_batch or self._collect_row_counts(layer_inputs)
@@ -671,13 +642,17 @@ class ModuleLooper():
         for batch_idx in range(total_batches):
             processor._set_current_batch_index(batch_idx)
             try:
-                # OPTIMIZATION: Use pre-migrated inputs to avoid repeated device transfers
-                layer_input = layer_inputs_device[batch_idx]
-                
-                # OPTIMIZATION: Use pre-migrated attention mask
-                attn_tensor = attention_masks_device[batch_idx]
+                exec_device = cur_layer_device
+                if preserve_module_devices:
+                    module_target = getattr(module, "target_device", None)
+                    if module_target is not None:
+                        exec_device = module_target
 
-                # OPTIMIZATION: Lazy mask processing - only compute when needed
+                layer_input = [move_to(inp, device=exec_device) for inp in layer_inputs[batch_idx]]
+
+                raw_mask = attention_masks[batch_idx]
+                attn_tensor = raw_mask if raw_mask is None else move_to(raw_mask, device=exec_device)
+
                 keep_mask = None
                 if attn_tensor is not None:
                     seq_len = layer_input[0].shape[1] if (len(layer_input) > 0 and layer_input[0].dim() >= 2) else None
@@ -688,13 +663,11 @@ class ModuleLooper():
                 if self.support_batch_quantize and attn_tensor is not None:
                     additional_inputs["attention_mask"] = attn_tensor
 
-                # OPTIMIZATION: Use pre-migrated position IDs
-                if position_ids_device:
-                    pos = position_ids_device[batch_idx]
+                if position_ids:
+                    pos = position_ids[batch_idx]
                     if pos is not None:
-                        additional_inputs["position_ids"] = pos
+                        additional_inputs["position_ids"] = move_to(pos, device=exec_device)
 
-                # Still need to move kwargs as they're not pre-migrated
                 for key, value in layer_input_kwargs[batch_idx].items():
                     additional_inputs[key] = nested_move_to(value, device=exec_device)
 
@@ -711,7 +684,13 @@ class ModuleLooper():
                     module_output = None
                 finally:
                     self._set_processor_mask(processor, None)
-                    # NOTE: Cleanup removed as we now use pre-migrated tensors
+                    if layer_input:
+                        layer_input.clear()
+                    del layer_input
+
+                    if additional_inputs:
+                        additional_inputs.clear()
+                    del additional_inputs
 
                 if (
                     reuse_kv
@@ -754,23 +733,6 @@ class ModuleLooper():
             finally:
                 processor._set_current_batch_index(None)
 
-        # OPTIMIZATION: Clean up pre-migrated tensors to free VRAM
-        for batch_inputs in layer_inputs_device:
-            if batch_inputs:
-                batch_inputs.clear()
-        del layer_inputs_device
-        
-        for mask in attention_masks_device:
-            if mask is not None:
-                del mask
-        del attention_masks_device
-        
-        if position_ids_device:
-            for pos in position_ids_device:
-                if pos is not None:
-                    del pos
-            del position_ids_device
-            
         return outputs
 
     def _run_forward_batches_parallel(
