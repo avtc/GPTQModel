@@ -150,38 +150,38 @@ class StageInputsCapture:
         self.gptq_model.pre_quantize_generate_hook_start()
 
         try:
-            with ctx(
-                DEVICE_THREAD_POOL.read_lock(self.gptq_model.quantize_config.device),
-                device_ctx(self.gptq_model.quantize_config.device),
-            ):
-                for batch_index, example in enumerate(calibration_data, start=1):
-                    for k, v in example.items():
-                        if self.gptq_model.ATTENTION_MASKS_REQUIRED_FOR_INPUT:
-                            data_device = self.gptq_model.quantize_config.device
-                        else:
-                            data_device = (
-                                self.gptq_model.quantize_config.device
-                                if k == "pixel_values"
-                                else cur_layer_device
+            for batch_index, example in enumerate(calibration_data, start=1):
+                for k, v in example.items():
+                    if self.gptq_model.ATTENTION_MASKS_REQUIRED_FOR_INPUT:
+                        data_device = self.gptq_model.quantize_config.device
+                    else:
+                        data_device = (
+                            self.gptq_model.quantize_config.device
+                            if k == "pixel_values"
+                            else cur_layer_device
+                        )
+                    if isinstance(v, list):
+                        for index in range(len(v)):
+                            if len(v[index].shape) == 1:
+                                v[index] = v[index].unsqueeze(0)
+                            v[index] = move_to(
+                                v[index].to(self.gptq_model.model.visual_tokenizer.dtype)
+                                if is_ovis
+                                else v[index],
+                                device=data_device,
                             )
-                        if isinstance(v, list):
-                            for index in range(len(v)):
-                                if len(v[index].shape) == 1:
-                                    v[index] = v[index].unsqueeze(0)
-                                v[index] = move_to(
-                                    v[index].to(self.gptq_model.model.visual_tokenizer.dtype)
-                                    if is_ovis
-                                    else v[index],
-                                    device=data_device,
-                                )
-                        else:
-                            if len(v.shape) == 1:
-                                v = v.unsqueeze(0)
-                            example[k] = move_to(v, device=data_device)
-                    try:
-                        if self.gptq_model.ATTENTION_MASKS_DTYPE is torch.long:
-                            example["attention_mask"] = example["attention_mask"].long()
+                    else:
+                        if len(v.shape) == 1:
+                            v = v.unsqueeze(0)
+                        example[k] = move_to(v, device=data_device)
+                try:
+                    if self.gptq_model.ATTENTION_MASKS_DTYPE is torch.long:
+                        example["attention_mask"] = example["attention_mask"].long()
 
+                    with ctx(
+                        DEVICE_THREAD_POOL.read_lock(self.gptq_model.quantize_config.device),
+                        device_ctx(self.gptq_model.quantize_config.device),
+                    ):
                         if self.gptq_model.INPUT_EMBEDDING_EXTRA_ARGS:
                             self.gptq_model.model.generate(
                                 **example,
@@ -191,24 +191,24 @@ class StageInputsCapture:
                             self.gptq_model.model.generate(inputs=example.pop("input_ids"), **example)
                         else:
                             self.gptq_model.model(**example, use_cache=use_cache)
-                    except StopForward:
-                        pass
-                    finally:
-                        processed_batches = batch_index
-                        if cache_forward_pb is not None:
-                            rows_for_batch = 0
-                            if batch_index <= len(layer_inputs):
-                                rows_for_batch = self.looper._batch_row_count(
-                                    layer_inputs[batch_index - 1]
-                                )
-                                if rows_for_batch <= 0:
-                                    rows_for_batch = 1
-                            processed_rows += rows_for_batch
-                            cache_forward_pb.current_iter_step = processed_batches
-                            subtitle = f"Batch {processed_batches}/{cache_total_batches}"
-                            if processed_rows > 0:
-                                subtitle += f" rows {processed_rows}"
-                            cache_forward_pb.subtitle(subtitle).draw()
+                except StopForward:
+                    pass
+                finally:
+                    processed_batches = batch_index
+                    if cache_forward_pb is not None:
+                        rows_for_batch = 0
+                        if batch_index <= len(layer_inputs):
+                            rows_for_batch = self.looper._batch_row_count(
+                                layer_inputs[batch_index - 1]
+                            )
+                            if rows_for_batch <= 0:
+                                rows_for_batch = 1
+                        processed_rows += rows_for_batch
+                        cache_forward_pb.current_iter_step = processed_batches
+                        subtitle = f"Batch {processed_batches}/{cache_total_batches}"
+                        if processed_rows > 0:
+                            subtitle += f" rows {processed_rows}"
+                        cache_forward_pb.subtitle(subtitle).draw()
         finally:
             if cache_forward_pb is not None:
                 cache_forward_pb.close()
