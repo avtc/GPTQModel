@@ -385,19 +385,22 @@ class MiniMaxM2Attention(nn.Module):
                 attn_weights_head.masked_fill_(sliding_window_mask, float("-inf"))
 
             # Softmax
-            attn_weights_head = torch.softmax(attn_weights_head, dim=-1, dtype=torch.float32).to(query_dtype)
+            # Keep in float32 for precision during matmul with value_head
+            attn_weights_head = torch.softmax(attn_weights_head, dim=-1, dtype=torch.float32)
 
             # Dropout
             if self.training and self.attention_dropout > 0:
                 attn_weights_head = F.dropout(attn_weights_head, p=self.attention_dropout)
 
             # V matmul
-            value_head = value_states[:, i, :, :]
-            attn_output_head = torch.matmul(attn_weights_head, value_head)
+            # Perform matmul in float32 for precision, then cast output back to query_dtype
+            value_head_fp32 = value_states[:, i, :, :].to(torch.float32)
+            attn_output_head = torch.matmul(attn_weights_head, value_head_fp32).to(query_dtype)
             attn_output_parts.append(attn_output_head)
+            del value_head_fp32
             
             if output_attentions:
-                attn_weights_parts.append(attn_weights_head)
+                attn_weights_parts.append(attn_weights_head.to(query_dtype))
 
         del query_states, key_states, value_states, sliding_window_mask
         
