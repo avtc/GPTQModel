@@ -356,46 +356,62 @@ class MiniMaxM2Attention(nn.Module):
 
         query_dtype = query_states.dtype
         key_states_shape_2 = key_states.shape[-2]
-
-        attn_weights = torch.empty(
-            (bsz, self.num_heads, q_len, key_states_shape_2), device=device, dtype=query_dtype
-        )
+        
+        # Process attention heads one at a time to avoid large tensor allocation
+        attn_output_parts = []
+        attn_weights_list = []  # Store individual head attention weights
+        
         for i in range(self.num_heads):
-            attn_weights[:, i, :, :] = torch.matmul(
+            # Compute attention weights for current head
+            head_attn_weights = torch.matmul(
                 query_states[:, i, :, :], key_states[:, i, :, :].transpose(-2, -1)
             )
-
-        attn_weights *= self.scaling
-        del query_states, key_states
-
-        if attention_mask is not None:
-            attn_weights.add_(attention_mask)
-
-        if self.sliding_window is not None and past_key_values is None:
-            query_positions = torch.arange(q_len, device=device).view(1, 1, q_len, 1)
-            key_positions = torch.arange(key_states_shape_2, device=device).view(1, 1, 1, -1)
-            window_mask = key_positions < (query_positions - self.sliding_window)
-            if window_mask.any():
-                attn_weights.masked_fill_(window_mask, float("-inf"))
-            del query_positions, key_positions, window_mask
-
-        for i in range(self.num_heads):
-            attn_weights[:, i, :, :] = torch.softmax(
-                attn_weights[:, i, :, :], dim=-1, dtype=torch.float32
+            
+            head_attn_weights *= self.scaling
+            
+            # Apply attention mask if provided
+            if attention_mask is not None:
+                head_attn_weights += attention_mask
+                
+            # Apply sliding window mask if applicable
+            if self.sliding_window is not None and past_key_values is None:
+                query_positions = torch.arange(q_len, device=device).view(1, 1, q_len, 1)
+                key_positions = torch.arange(key_states_shape_2, device=device).view(1, 1, 1, -1)
+                window_mask = key_positions < (query_positions - self.sliding_window)
+                if window_mask.any():
+                    head_attn_weights.masked_fill_(window_mask, float("-inf"))
+                del query_positions, key_positions, window_mask
+            
+            # Apply softmax
+            head_attn_weights = torch.softmax(
+                head_attn_weights, dim=-1, dtype=torch.float32
             ).to(query_dtype)
-
-        if self.training and self.attention_dropout > 0:
-            attn_weights = F.dropout(attn_weights, p=self.attention_dropout)
-
-        attn_output = torch.empty(
-            (bsz, self.num_heads, q_len, self.head_dim), device=attn_weights.device, dtype=attn_weights.dtype
-        )
-        for i in range(self.num_heads):
-            attn_output[:, i, :, :] = torch.matmul(attn_weights[:, i, :, :], value_states[:, i, :, :])
-
-        if not output_attentions:
+            
+            # Store attention weights for later concatenation if needed
+            if output_attentions:
+                attn_weights_list.append(head_attn_weights.clone())
+            
+            # Apply dropout if training
+            if self.training and self.attention_dropout > 0:
+                head_attn_weights = F.dropout(head_attn_weights, p=self.attention_dropout)
+            
+            # Compute attention output for current head
+            head_attn_output = torch.matmul(head_attn_weights, value_states[:, i, :, :])
+            attn_output_parts.append(head_attn_output)
+            
+            # Clean up intermediate tensors
+            del head_attn_weights, head_attn_output
+        
+        # Concatenate all head outputs
+        attn_output = torch.stack(attn_output_parts, dim=1)
+        del attn_output_parts, query_states, key_states, value_states
+        
+        # Stack attention weights if needed for output
+        if output_attentions and attn_weights_list:
+            attn_weights = torch.stack(attn_weights_list, dim=1)
+            del attn_weights_list
+        else:
             attn_weights = None
-        del value_states
 
         attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, q_len, -1)
         attn_output = self.o_proj(attn_output)
