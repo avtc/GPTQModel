@@ -471,9 +471,8 @@ class ModuleLooper():
                         torch_sync()
                     # ---- End Process Hook ----
 
-                    if index == len(modules) - 1:
-                        if auto_gc:
-                            torch_empty_cache()
+                    if auto_gc:
+                        torch_empty_cache()
 
                 is_last_module = layer_index == len(quant_modules_pb) - 1
                 # second forward after process()
