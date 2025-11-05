@@ -357,60 +357,45 @@ class MiniMaxM2Attention(nn.Module):
         query_dtype = query_states.dtype
         key_states_shape_2 = key_states.shape[-2]
 
-        # VRAM optimization: process heads sequentially to avoid allocating large attention tensor.
-        attn_output_parts = []
-        attn_weights_parts = [] if output_attentions else None
+        attn_weights = torch.empty(
+            (bsz, self.num_heads, q_len, key_states_shape_2), device=device, dtype=query_dtype
+        )
+        for i in range(self.num_heads):
+            attn_weights[:, i, :, :] = torch.matmul(
+                query_states[:, i, :, :], key_states[:, i, :, :].transpose(-2, -1)
+            )
 
-        # Common sliding window mask if needed
-        sliding_window_mask = None
+        attn_weights *= self.scaling
+        del query_states, key_states
+
+        if attention_mask is not None:
+            attn_weights.add_(attention_mask)
+
         if self.sliding_window is not None and past_key_values is None:
-            query_positions = torch.arange(q_len, device=device).view(1, q_len, 1)
-            key_positions = torch.arange(key_states_shape_2, device=device).view(1, 1, -1)
-            sliding_window_mask = key_positions < (query_positions - self.sliding_window)
-            del query_positions, key_positions
+            query_positions = torch.arange(q_len, device=device).view(1, 1, q_len, 1)
+            key_positions = torch.arange(key_states_shape_2, device=device).view(1, 1, 1, -1)
+            window_mask = key_positions < (query_positions - self.sliding_window)
+            if window_mask.any():
+                attn_weights.masked_fill_(window_mask, float("-inf"))
+            del query_positions, key_positions, window_mask
 
         for i in range(self.num_heads):
-            # Cast query and key to float32 for precision during QK matmul
-            query_head = query_states[:, i, :, :].to(torch.float32)
-            key_head = key_states[:, i, :, :].to(torch.float32)
-            
-            # QK matmul
-            attn_weights_head = torch.matmul(query_head, key_head.transpose(-2, -1))
-            del query_head, key_head # Release memory after use
-            attn_weights_head *= self.scaling
+            attn_weights[:, i, :, :] = torch.softmax(
+                attn_weights[:, i, :, :], dim=-1, dtype=torch.float32
+            ).to(query_dtype)
 
-            # Apply masks
-            if attention_mask is not None:
-                attn_weights_head = attn_weights_head + attention_mask
+        if self.training and self.attention_dropout > 0:
+            attn_weights = F.dropout(attn_weights, p=self.attention_dropout)
 
-            if sliding_window_mask is not None and sliding_window_mask.any():
-                attn_weights_head.masked_fill_(sliding_window_mask, float("-inf"))
+        attn_output = torch.empty(
+            (bsz, self.num_heads, q_len, self.head_dim), device=attn_weights.device, dtype=attn_weights.dtype
+        )
+        for i in range(self.num_heads):
+            attn_output[:, i, :, :] = torch.matmul(attn_weights[:, i, :, :], value_states[:, i, :, :])
 
-            # Softmax
-            # Keep in float32 for precision during matmul with value_head
-            attn_weights_head = torch.softmax(attn_weights_head, dim=-1, dtype=torch.float32)
-
-            # Dropout
-            if self.training and self.attention_dropout > 0:
-                attn_weights_head = F.dropout(attn_weights_head, p=self.attention_dropout)
-
-            # V matmul
-            # Perform matmul in float32 for precision, then cast output back to query_dtype
-            value_head_fp32 = value_states[:, i, :, :].to(torch.float32)
-            attn_output_head = torch.matmul(attn_weights_head, value_head_fp32).to(query_dtype)
-            attn_output_parts.append(attn_output_head)
-            del value_head_fp32
-            
-            if output_attentions:
-                attn_weights_parts.append(attn_weights_head.to(query_dtype))
-
-        del query_states, key_states, value_states, sliding_window_mask
-        
-        attn_output = torch.stack(attn_output_parts, dim=1)
-
-        attn_weights = None
-        if output_attentions:
-            attn_weights = torch.stack(attn_weights_parts, dim=1)
+        if not output_attentions:
+            attn_weights = None
+        del value_states
 
         attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, q_len, -1)
         attn_output = self.o_proj(attn_output)
