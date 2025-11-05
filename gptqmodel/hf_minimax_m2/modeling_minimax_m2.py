@@ -362,16 +362,15 @@ class MiniMaxM2Attention(nn.Module):
         attn_weights_list = []  # Store individual head attention weights
         
         for i in range(self.num_heads):
-            # Compute attention weights for current head
+            # Compute attention weights for current head (using inplace mul_)
             head_attn_weights = torch.matmul(
                 query_states[:, i, :, :], key_states[:, i, :, :].transpose(-2, -1)
             )
+            head_attn_weights.mul_(self.scaling)
             
-            head_attn_weights *= self.scaling
-            
-            # Apply attention mask if provided
+            # Apply attention mask if provided (using inplace add_)
             if attention_mask is not None:
-                head_attn_weights += attention_mask
+                head_attn_weights.add_(attention_mask)
                 
             # Apply sliding window mask if applicable
             if self.sliding_window is not None and past_key_values is None:
@@ -391,9 +390,9 @@ class MiniMaxM2Attention(nn.Module):
             if output_attentions:
                 attn_weights_list.append(head_attn_weights.clone())
             
-            # Apply dropout if training
+            # Apply dropout if training (inplace operation)
             if self.training and self.attention_dropout > 0:
-                head_attn_weights = F.dropout(head_attn_weights, p=self.attention_dropout)
+                F.dropout(head_attn_weights, p=self.attention_dropout, inplace=True)
             
             # Compute attention output for current head
             head_attn_output = torch.matmul(head_attn_weights, value_states[:, i, :, :])
