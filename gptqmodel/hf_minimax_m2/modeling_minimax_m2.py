@@ -370,11 +370,13 @@ class MiniMaxM2Attention(nn.Module):
             del query_positions, key_positions
 
         for i in range(self.num_heads):
-            query_head = query_states[:, i, :, :]
-            key_head = key_states[:, i, :, :]
+            # Cast query and key to float32 for precision during QK matmul
+            query_head = query_states[:, i, :, :].to(torch.float32)
+            key_head = key_states[:, i, :, :].to(torch.float32)
             
             # QK matmul
             attn_weights_head = torch.matmul(query_head, key_head.transpose(-2, -1))
+            del query_head, key_head # Release memory after use
             attn_weights_head *= self.scaling
 
             # Apply masks
