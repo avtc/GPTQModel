@@ -332,8 +332,9 @@ class ModuleLooper():
                                                       processor=processor,
                                                       fail_safe=fail_safe)
 
-                    if len(subset) == 0:
-                        continue
+                    # do not skip any subsets
+                    #if len(subset) == 0:
+                    #    continue
 
                     handle = []
                     device_next_reset()
