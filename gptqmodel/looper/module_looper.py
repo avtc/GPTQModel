@@ -98,7 +98,10 @@ class ModuleLooper():
             # but we treat this as a "pre-hook" by calling the inner hook before
             # StopForward can be raised. The output parameter is ignored by GPTQ.add_batch.
             
+            log.debug(f"[MOE_DEBUG] pre_hook called for {module.name}, hooks_paused: {getattr(processor, 'hooks_paused', False)}")
+            
             if getattr(processor, "hooks_paused", False):
+                log.debug(f"[MOE_DEBUG] Hooks paused, skipping for {module.name}")
                 return
 
             keep = getattr(processor, "current_attention_mask", None)
@@ -120,7 +123,9 @@ class ModuleLooper():
 
             # Call inner hook with inputs and output (GPTQ ignores output anyway)
             # We pass output as-is to maintain compatibility with the hook signature
+            log.debug(f"[MOE_DEBUG] Calling inner_hook for {module.name}")
             inner_hook(module, new_inputs, output)
+            log.debug(f"[MOE_DEBUG] inner_hook completed for {module.name}")
             
         return pre_hook
 
@@ -141,6 +146,8 @@ class ModuleLooper():
         original_forward = moe_block.forward
         replacements = []
 
+        log.info(f"[MOE_DEBUG] Patching MoE block: {block_name_prefix}")
+        
         # Replace internal modules with NamedModule wrappers
         # This ensures that when the expert calls its internal layers, it calls the wrapper with the hook.
         if block_name_prefix:
@@ -149,6 +156,8 @@ class ModuleLooper():
                 if name.startswith(block_name_prefix + "."):
                     rel_path = name[prefix_len + 1:] # e.g. "experts.0.gate_proj"
                     parts = rel_path.split(".")
+                    
+                    log.info(f"[MOE_DEBUG] Found MoE module to replace: {name}")
                     
                     # Traverse to parent of leaf
                     curr = moe_block
@@ -167,62 +176,87 @@ class ModuleLooper():
                             orig = parent[int(attr)]
                             parent[int(attr)] = named_module
                             replacements.append((parent, int(attr), orig))
+                            log.info(f"[MOE_DEBUG] Replaced {name} (list index {attr})")
                         else:
                             orig = getattr(parent, attr)
                             setattr(parent, attr, named_module)
                             replacements.append((parent, attr, orig))
+                            log.info(f"[MOE_DEBUG] Replaced {name} (attribute {attr})")
                             
                     except Exception as e:
                         log.warn(f"Failed to patch MoE module {name}: {e}")
+        
+        log.info(f"[MOE_DEBUG] Replaced {len(replacements)} modules total")
 
         def forced_forward(self, hidden_states, *args, **kwargs):
+            log.info(f"[MOE_DEBUG] forced_forward called with hidden_states shape: {hidden_states.shape}")
             stop_forward_raised = False
+            expert_call_count = 0
             
             # Run shared experts if they exist - this fires hooks and captures calibration data
             if hasattr(self, "shared_experts"):
                 try:
                     if isinstance(self.shared_experts, (list, torch.nn.ModuleList)):
-                        for exp in self.shared_experts:
+                        for i, exp in enumerate(self.shared_experts):
+                            log.info(f"[MOE_DEBUG] Calling shared_expert {i}")
                             exp(hidden_states)
+                            expert_call_count += 1
                     else:
+                        log.info(f"[MOE_DEBUG] Calling shared_experts (single)")
                         self.shared_experts(hidden_states)
+                        expert_call_count += 1
                 except StopForward:
+                    log.info(f"[MOE_DEBUG] StopForward raised in shared_experts")
                     stop_forward_raised = True
             
             # Qwen2Moe uses shared_expert (singular)
             if hasattr(self, "shared_expert"):
                 try:
                     if isinstance(self.shared_expert, (list, torch.nn.ModuleList)):
-                        for exp in self.shared_expert:
+                        for i, exp in enumerate(self.shared_expert):
+                            log.info(f"[MOE_DEBUG] Calling shared_expert {i}")
                             exp(hidden_states)
+                            expert_call_count += 1
                     else:
+                        log.info(f"[MOE_DEBUG] Calling shared_expert (single)")
                         self.shared_expert(hidden_states)
+                        expert_call_count += 1
                 except StopForward:
+                    log.info(f"[MOE_DEBUG] StopForward raised in shared_expert")
                     stop_forward_raised = True
 
             # Run routed experts - this fires hooks and captures calibration data
             if hasattr(self, "experts"):
                 if isinstance(self.experts, (list, torch.nn.ModuleList)):
-                    for expert in self.experts:
+                    log.info(f"[MOE_DEBUG] Found {len(self.experts)} experts")
+                    for i, expert in enumerate(self.experts):
                         try:
+                            log.info(f"[MOE_DEBUG] Calling expert {i}, type: {type(expert)}")
                             expert(hidden_states)
+                            expert_call_count += 1
                         except StopForward:
+                            log.info(f"[MOE_DEBUG] StopForward raised in expert {i}")
                             stop_forward_raised = True
                 else:
                     # Fallback for single expert or custom container?
                     pass
 
+            log.info(f"[MOE_DEBUG] Called {expert_call_count} experts total")
+            
             if stop_forward_raised:
+                log.info(f"[MOE_DEBUG] Raising STOP_FORWARD_EXCEPTION")
                 raise STOP_FORWARD_EXCEPTION
 
             # After forcing all experts to see the data for calibration,
             # call the original forward to get proper output (pause hooks to avoid double-counting)
+            log.info(f"[MOE_DEBUG] Pausing hooks and calling original_forward")
             processor.hooks_paused = True
             try:
                 result = original_forward(hidden_states, *args, **kwargs)
             finally:
                 processor.hooks_paused = False
             
+            log.info(f"[MOE_DEBUG] forced_forward complete")
             return result
 
         # Bind method

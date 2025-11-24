@@ -97,13 +97,16 @@ class NamedModule(torch.nn.Module):
             # else:
             #    log.debug(f"{self.full_name} has no parameter: {name}")
     def forward(self, *args, **kwargs):
+        log.debug(f"[MOE_DEBUG] NamedModule.forward called for {self.name}, has hook: {self.forward_hook is not None}")
         output = self.module(*args, **kwargs)
         
         # Call forward_hook if it exists (compatible with HookedLinear mechanism)
         if self.forward_hook:
             # Extract first positional arg as input for hook
             input_tensor = args[0] if args else None
+            log.debug(f"[MOE_DEBUG] Calling forward_hook for {self.name}")
             self.forward_hook(self, (input_tensor,), output)
+            log.debug(f"[MOE_DEBUG] forward_hook completed for {self.name}")
             # Note: We don't raise StopForward here because the wrapped module
             # (HookedLinear) will raise it if forward_hook_last is set on it
         
