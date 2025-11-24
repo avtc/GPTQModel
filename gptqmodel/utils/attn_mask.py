@@ -27,15 +27,28 @@ def normalize_seq_mask(mask: torch.Tensor | None, seq_len: int | None = None) ->
     print(f"  min={mask.min().item()}, max={mask.max().item()}")
     print(f"  unique values (first 10): {torch.unique(mask.flatten()[:1000])[:10].tolist()}")
     
-    # Convert numeric to bool 'keep' (HF tends to use >0 for keep; extended masks use big negatives for masked)
+    # Convert numeric to bool 'keep'
+    # Detect bias-style masks (0=keep, negative=mask) vs standard masks (positive=keep)
     if m.dtype != torch.bool:
-        print(f"[DEBUG] converting numeric mask to bool using > 0")
-        m = (m > 0)
-        print(f"  after > 0 conversion: True count={m.sum().item()}, False count={(~m).sum().item()}")
+        if mask.max() <= 0:
+            # Bias-style mask: 0 is keep, negative is mask
+            print(f"[DEBUG] bias-style mask detected (max <= 0), using >= 0")
+            m = (m >= 0)
+        else:
+            # Standard mask: positive is keep
+            print(f"[DEBUG] standard mask detected (max > 0), using > 0")
+            m = (m > 0)
+        print(f"  after conversion: True count={m.sum().item()}, False count={(~m).sum().item()}")
 
     # Squeeze broadcast dims to reach [B, S]
-    if m.dim() == 4 and m.size(1) == 1 and m.size(2) == 1:
-        m = m[:, 0, 0, :]  # [B, S]
+    if m.dim() == 4:
+        # For 4D masks [B, H, S_q, S_k], check if each query position can attend to anything
+        # This handles both causal masks and padding masks
+        print(f"[DEBUG] 4D mask detected, reducing with .any(dim=-1)")
+        m = m.any(dim=-1)  # [B, H, S_q]
+        print(f"  after .any(dim=-1): shape={m.shape}, True count={m.sum().item()}")
+        if m.size(1) == 1:
+            m = m[:, 0, :]  # [B, S]
     elif m.dim() == 3 and m.size(1) == 1:
         m = m[:, 0, :]  # [B, S]
     elif m.dim() == 2:
