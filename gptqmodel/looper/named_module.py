@@ -134,6 +134,9 @@ class NamedModule(torch.nn.Module):
             # This ensures hooks fire even if NamedModule wrapper is not in the model
             # Only do this if self.module is already set (to avoid AttributeError during __init__)
             if name in ["forward_hook", "forward_hook_last"] and 'module' in self.__dict__ and hasattr(self.module, name):
+                # Debug logging
+                if name == "forward_hook" and value is not None and "self_attn" in self.full_name:
+                    log.info(f"[DEBUG] Proxying {name} to inner module {type(self.module).__name__} for {self.full_name}")
                 setattr(self.module, name, value)
                 # Also set on self for consistency/inspection
                 self.__dict__[name] = value
