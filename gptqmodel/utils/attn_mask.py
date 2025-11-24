@@ -23,12 +23,15 @@ def normalize_seq_mask(mask: torch.Tensor | None, seq_len: int | None = None) ->
 
     m = mask
     # Debug logging
-    # print(f"[DEBUG] normalize_seq_mask input: shape={mask.shape}, dtype={mask.dtype}")
+    print(f"[DEBUG] normalize_seq_mask input: shape={mask.shape}, dtype={mask.dtype}")
+    print(f"  min={mask.min().item()}, max={mask.max().item()}")
+    print(f"  unique values (first 10): {torch.unique(mask.flatten()[:1000])[:10].tolist()}")
     
     # Convert numeric to bool 'keep' (HF tends to use >0 for keep; extended masks use big negatives for masked)
     if m.dtype != torch.bool:
-        # print(f"[DEBUG] converting numeric mask to bool using > 0")
+        print(f"[DEBUG] converting numeric mask to bool using > 0")
         m = (m > 0)
+        print(f"  after > 0 conversion: True count={m.sum().item()}, False count={(~m).sum().item()}")
 
     # Squeeze broadcast dims to reach [B, S]
     if m.dim() == 4 and m.size(1) == 1 and m.size(2) == 1:
@@ -44,7 +47,7 @@ def normalize_seq_mask(mask: torch.Tensor | None, seq_len: int | None = None) ->
         else:
             raise ValueError(f"Unsupported attention_mask shape: {tuple(mask.shape)}")
             
-    # print(f"[DEBUG] normalize_seq_mask output: shape={m.shape}, kept={m.sum().item()}/{m.numel()}")
+    print(f"[DEBUG] normalize_seq_mask output: shape={m.shape}, kept={m.sum().item()}/{m.numel()}")
     return m.to(dtype=torch.bool)
 
 
