@@ -12,6 +12,7 @@ from torch.nn import Parameter
 from torch.nn.modules.conv import _ConvNd
 
 from ..utils.logger import setup_logger
+from ..nn_modules.hooked_linear import StopForward
 
 log = setup_logger()
 
@@ -26,6 +27,9 @@ class NamedModule(torch.nn.Module):
         self.name = name # module name
         self.full_name = full_name # module full name (path) within model
         self.layer_index = layer_index # layerid in a repeating layer, if in outside layer, this info may be fake
+        
+        # Flag to track if StopForward was raised by the wrapped module
+        self._stop_forward_raised = False
 
         # some processing will move this module to target_device gptq, eora, etc
         # self.target_device, self.target_device_stream = device_next()
@@ -93,7 +97,12 @@ class NamedModule(torch.nn.Module):
             # else:
             #    log.debug(f"{self.full_name} has no parameter: {name}")
     def forward(self, *args, **kwargs):
-        return self.module(*args, **kwargs)
+        try:
+            return self.module(*args, **kwargs)
+        except StopForward:
+            self._stop_forward_raised = True
+            # Return input as dummy output to allow hooks to fire
+            return args[0] if args else None
 
     # return stats for mo
     # def stats(self) -> Dict[str, float]:
