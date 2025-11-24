@@ -89,42 +89,34 @@ class GPTQProcessor(LoopProcessor):
         tmp.quantizer.configure(
             perchannel=True,
         )
-        self.tasks[module.name] = tmp
+        # Debug: log task storage
+        if "self_attn" in module.full_name and ".0." in module.full_name:
+            log.info(f"[DEBUG] Storing task with key: '{module.full_name}'")
+        self.tasks[module.full_name] = tmp
 
     def is_skipped(self, module: NamedModule) -> bool:
         # gptq has no dynamic method of full override (removal)
-        t = self.tasks.get(module.name, False)
+        t = self.tasks.get(module.full_name, False)
         if t == False:
             return True
         else:
             return False
 
-    def pre_process_fwd_hook(self, name: str) -> Callable[[Module, Tuple[torch.Tensor, ...], torch.Tensor], None]:
-        call_count = [0]
+    def pre_process_fwd_hook(self, full_name: str) -> Callable[[Module, Tuple[torch.Tensor, ...], torch.Tensor], None]:
+        # Debug: log what full_name is being registered
+        if "self_attn" in full_name and ".0." in full_name:
+            log.info(f"[DEBUG] Creating hook for full_name: '{full_name}'")
+        
         def tmp(module, inp: Tuple[torch.Tensor, ...], out: torch.Tensor):
-            call_count[0] += 1
-            # Debug logging for self_attn
-            if call_count[0] <= 3 and "self_attn" in name:
-                log.info(f"[TRACE] pre_process_fwd_hook.tmp() called for {name}, call #{call_count[0]}")
-            
-            g = self.tasks[name]  # noqa: F821
-            
-            if call_count[0] <= 3 and "self_attn" in name:
-                log.info(f"[TRACE] Calling g.add_batch for {name}, fwd_counter before: {g.fwd_counter}")
-            
+            g = self.tasks[full_name]  # noqa: F821
             g.add_batch(inp[0].data, out.data)  # noqa: F821
-            
-            if hasattr(module, 'layer_index') and module.layer_index == 0 and ".experts.1." in name:
-                log.info(f"[MOE_DEBUG] Layer {module.layer_index}: GPTQ.add_batch completed for {name}, fwd_counter now: {g.fwd_counter}")
-            
-            if call_count[0] <= 3 and "self_attn" in name:
-                log.info(f"[TRACE] g.add_batch completed for {name}, fwd_counter after: {g.fwd_counter}")
-            
+            if hasattr(module, 'layer_index') and module.layer_index == 0 and ".experts.1." in full_name:
+                log.info(f"[MOE_DEBUG] Layer {module.layer_index}: GPTQ.add_batch completed for {full_name}, fwd_counter now: {g.fwd_counter}")
             del inp, out
         return tmp
 
     def pre_process_streaming(self, module: NamedModule):
-        g = self.tasks[module.name]
+        g = self.tasks[module.full_name]
         with torch_streamCtx(module.target_device_stream):
             # log.debug(f"streaming module `{g.name}` to device = `{module.target_device}`")
             if g.H is not None:
@@ -139,7 +131,7 @@ class GPTQProcessor(LoopProcessor):
         # logger.info(f"Quantizing module START: {name}, {gptq[name].shape()}")
         ## Need to return the quantized_weight for offloading
         with self.lock:
-            g = self.tasks[module.name]
+            g = self.tasks[module.full_name]
 
         wq, q_scales, q_zeros, q_g_idx, duration, avg_loss, damp_percent, nsamples = g.quantize()
 
@@ -205,7 +197,7 @@ class GPTQProcessor(LoopProcessor):
                 })
 
         with self.lock:
-            self.tasks[module.name].free()
+            self.tasks[module.full_name].free()
 
             # logger.info(f"Quantizing module END: {name}, {gptq[name].shape()}")
             module.state.update({

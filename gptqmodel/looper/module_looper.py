@@ -624,7 +624,7 @@ class ModuleLooper():
 
                         # Wrap the processor hook with masking
                         if hasattr(subset[name], 'forward_hook'):
-                            original_hook = processor.pre_process_fwd_hook(name)
+                            original_hook = processor.pre_process_fwd_hook(subset[name].full_name)
                             if is_moe_module:
                                 # Use pre-hook for MoE modules (fires before StopForward)
                                 subset[name].forward_hook = self._masked_pre_hook_wrapper(processor, original_hook)
@@ -637,7 +637,7 @@ class ModuleLooper():
                                 log.info(f"[DEBUG] Registered forward_hook on {name}, is_moe={is_moe_module}, is_last={is_last}")
                         else:
                             # Older registration path
-                            original_hook = processor.pre_process_fwd_hook(name)
+                            original_hook = processor.pre_process_fwd_hook(subset[name].full_name)
                             if is_moe_module:
                                 # Register pre-forward hook for MoE modules
                                 wrapped_hook = self._masked_pre_hook_wrapper(processor, original_hook)
