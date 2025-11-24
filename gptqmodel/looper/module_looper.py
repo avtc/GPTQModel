@@ -212,10 +212,12 @@ class ModuleLooper():
                             expert_modules_in_subset[expert_idx] = set()
                         expert_modules_in_subset[expert_idx].add(module_name)
 
-        # Cache for intermediate values: {expert_idx: [list of intermediate tensors]}
-        # This accumulates intermediate values from ALL calibration samples
-        # Allows w2/down_proj to receive full dataset calibration
-        expert_intermediate_cache = {}
+        # Cache for intermediate values: stored on processor so it persists across subsets
+        # {expert_idx: [list of intermediate tensors]}
+        # This accumulates intermediate values from ALL calibration samples in w1/w3 subset
+        # and is used when processing w2/down_proj subset
+        if not hasattr(processor, 'expert_intermediate_cache'):
+            processor.expert_intermediate_cache = {}
 
         def forced_forward(self, hidden_states, *args, **kwargs):
             if layer_index == 0:
@@ -321,22 +323,22 @@ class ModuleLooper():
                                     intermediate = torch.nn.functional.silu(w1_output) * w3_output
                                 
                                 # Initialize list if not exists
-                                if i not in expert_intermediate_cache:
-                                    expert_intermediate_cache[i] = []
+                                if i not in processor.expert_intermediate_cache:
+                                    processor.expert_intermediate_cache[i] = []
                                 # Append to accumulate across all samples
-                                expert_intermediate_cache[i].append(intermediate.detach())
+                                processor.expert_intermediate_cache[i].append(intermediate.detach())
                                 
                                 if layer_index == 0 and i == 1:
-                                    log.info(f"[MOE_DEBUG] Layer {layer_index}: Accumulated intermediate for expert {i}, shape: {intermediate.shape}, total samples: {len(expert_intermediate_cache[i])}")
+                                    log.info(f"[MOE_DEBUG] Layer {layer_index}: Accumulated intermediate for expert {i}, shape: {intermediate.shape}, total samples: {len(processor.expert_intermediate_cache[i])}")
                             
                             # Call w2/down_proj with ALL accumulated intermediates
                             if hasattr(expert, 'w2') and 'w2' in modules_to_call:
-                                if i in expert_intermediate_cache and len(expert_intermediate_cache[i]) > 0:
+                                if i in processor.expert_intermediate_cache and len(processor.expert_intermediate_cache[i]) > 0:
                                     if layer_index == 0 and i == 1:
-                                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Replaying {len(expert_intermediate_cache[i])} intermediate samples through expert.w2")
+                                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Replaying {len(processor.expert_intermediate_cache[i])} intermediate samples through expert.w2")
                                     # Get device from w2.weight (Linear layers always have weight parameter)
                                     target_device = expert.w2.weight.device if hasattr(expert.w2, 'weight') else None
-                                    for idx, cached_intermediate in enumerate(expert_intermediate_cache[i]):
+                                    for idx, cached_intermediate in enumerate(processor.expert_intermediate_cache[i]):
                                         if layer_index == 0 and i == 1 and idx == 0:
                                             log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert.w2 with intermediate shape: {cached_intermediate.shape}")
                                         # Move to target device if needed
@@ -345,25 +347,25 @@ class ModuleLooper():
                                     # Clear cache for this expert to free memory
                                     if layer_index == 0 and i == 1:
                                         log.info(f"[MOE_DEBUG] Layer {layer_index}: Clearing intermediate cache for expert {i}")
-                                    del expert_intermediate_cache[i]
+                                    del processor.expert_intermediate_cache[i]
                                 else:
                                     if layer_index == 0 and i == 1:
                                         log.info(f"[MOE_DEBUG] Layer {layer_index}: WARNING - w2 in subset but no cached intermediate for expert {i}")
                                         
                             if hasattr(expert, 'down_proj') and 'down_proj' in modules_to_call:
-                                if i in expert_intermediate_cache and len(expert_intermediate_cache[i]) > 0:
+                                if i in processor.expert_intermediate_cache and len(processor.expert_intermediate_cache[i]) > 0:
                                     if layer_index == 0 and i == 1:
-                                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Replaying {len(expert_intermediate_cache[i])} intermediate samples through expert.down_proj")
+                                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Replaying {len(processor.expert_intermediate_cache[i])} intermediate samples through expert.down_proj")
                                     # Get device from down_proj.weight
                                     target_device = expert.down_proj.weight.device if hasattr(expert.down_proj, 'weight') else None
-                                    for cached_intermediate in expert_intermediate_cache[i]:
+                                    for cached_intermediate in processor.expert_intermediate_cache[i]:
                                         # Move to target device if needed
                                         inp = cached_intermediate.to(target_device) if target_device else cached_intermediate
                                         expert.down_proj(inp)
                                     # Clear cache for this expert to free memory
                                     if layer_index == 0 and i == 1:
                                         log.info(f"[MOE_DEBUG] Layer {layer_index}: Clearing intermediate cache for expert {i}")
-                                    del expert_intermediate_cache[i]
+                                    del processor.expert_intermediate_cache[i]
                                 else:
                                     if layer_index == 0 and i == 1:
                                         log.info(f"[MOE_DEBUG] Layer {layer_index}: WARNING - down_proj in subset but no cached intermediate for expert {i}")
