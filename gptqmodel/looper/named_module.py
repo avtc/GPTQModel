@@ -92,6 +92,9 @@ class NamedModule(torch.nn.Module):
                 #    log.debug(f"{self.full_name} has no attribute: {name}")
             # else:
             #    log.debug(f"{self.full_name} has no parameter: {name}")
+    def forward(self, *args, **kwargs):
+        return self.module(*args, **kwargs)
+
     # return stats for mo
     # def stats(self) -> Dict[str, float]:
     #     # -1 means no stats have yet to gathered for the stat property

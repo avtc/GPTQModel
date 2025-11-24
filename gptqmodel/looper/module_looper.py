@@ -97,19 +97,46 @@ class ModuleLooper():
                     block = layer
                     for p in block_path:
                         block = getattr(block, p)
-                    return block
-        return None
+                    return block, ".".join(block_path)
+        return None, None
 
-    def _patch_moe_forward(self, moe_block, subset):
+    def _patch_moe_forward(self, moe_block, subset, block_name_prefix):
         original_forward = moe_block.forward
+        replacements = []
 
-        # Create a mapping from expert module to NamedModule
-        # This is needed because hooks are registered on NamedModule, but moe_block holds raw modules.
-        # forced_forward must call NamedModule to trigger hooks.
-        expert_to_named = {}
-        for name, named_module in subset.items():
-            if hasattr(named_module, "module"):
-                 expert_to_named[named_module.module] = named_module
+        # Replace internal modules with NamedModule wrappers
+        # This ensures that when the expert calls its internal layers, it calls the wrapper with the hook.
+        if block_name_prefix:
+            prefix_len = len(block_name_prefix)
+            for name, named_module in subset.items():
+                if name.startswith(block_name_prefix + "."):
+                    rel_path = name[prefix_len + 1:] # e.g. "experts.0.gate_proj"
+                    parts = rel_path.split(".")
+                    
+                    # Traverse to parent of leaf
+                    curr = moe_block
+                    try:
+                        for i, part in enumerate(parts[:-1]):
+                            if part.isdigit() and isinstance(curr, (list, torch.nn.ModuleList)):
+                                curr = curr[int(part)]
+                            else:
+                                curr = getattr(curr, part)
+                        
+                        parent = curr
+                        attr = parts[-1]
+                        
+                        # Get original module
+                        if attr.isdigit() and isinstance(parent, (list, torch.nn.ModuleList)):
+                            orig = parent[int(attr)]
+                            parent[int(attr)] = named_module
+                            replacements.append((parent, int(attr), orig))
+                        else:
+                            orig = getattr(parent, attr)
+                            setattr(parent, attr, named_module)
+                            replacements.append((parent, attr, orig))
+                            
+                    except Exception as e:
+                        log.warn(f"Failed to patch MoE module {name}: {e}")
 
         def forced_forward(self, hidden_states, *args, **kwargs):
             stop_forward_raised = False
@@ -119,12 +146,20 @@ class ModuleLooper():
                 try:
                     if isinstance(self.shared_experts, (list, torch.nn.ModuleList)):
                         for exp in self.shared_experts:
-                            # Call NamedModule if available to trigger hooks
-                            target = expert_to_named.get(exp, exp)
-                            target(hidden_states)
+                            exp(hidden_states)
                     else:
-                        target = expert_to_named.get(self.shared_experts, self.shared_experts)
-                        target(hidden_states)
+                        self.shared_experts(hidden_states)
+                except StopForward:
+                    stop_forward_raised = True
+            
+            # Qwen2Moe uses shared_expert (singular)
+            if hasattr(self, "shared_expert"):
+                try:
+                    if isinstance(self.shared_expert, (list, torch.nn.ModuleList)):
+                        for exp in self.shared_expert:
+                            exp(hidden_states)
+                    else:
+                        self.shared_expert(hidden_states)
                 except StopForward:
                     stop_forward_raised = True
 
@@ -133,9 +168,7 @@ class ModuleLooper():
                 if isinstance(self.experts, (list, torch.nn.ModuleList)):
                     for expert in self.experts:
                         try:
-                            # Call NamedModule if available to trigger hooks
-                            target = expert_to_named.get(expert, expert)
-                            target(hidden_states)
+                            expert(hidden_states)
                         except StopForward:
                             stop_forward_raised = True
                 else:
@@ -149,7 +182,16 @@ class ModuleLooper():
 
         # Bind method
         moe_block.forward = forced_forward.__get__(moe_block, moe_block.__class__)
-        return original_forward
+        
+        def restore():
+            moe_block.forward = original_forward
+            for parent, attr, orig in replacements:
+                if isinstance(attr, int):
+                    parent[attr] = orig
+                else:
+                    setattr(parent, attr, orig)
+
+        return restore
 
     def cache_inputs(self, layers, auto_gc, calibration_data, use_cache):
         layer_inputs = []
@@ -404,10 +446,10 @@ class ModuleLooper():
                     #    continue
 
                     # MoE: Patch forward to force routing to all experts
-                    moe_block = self._get_moe_block(layers[layer_index], subset)
-                    orig_fwd = None
+                    moe_block, moe_block_name = self._get_moe_block(layers[layer_index], subset)
+                    restore_moe = None
                     if moe_block:
-                        orig_fwd = self._patch_moe_forward(moe_block, subset)
+                        restore_moe = self._patch_moe_forward(moe_block, subset, moe_block_name)
 
                     handle = []
                     device_next_reset()
@@ -548,8 +590,8 @@ class ModuleLooper():
                             subset[name].forward_hook_last = False
 
                     # MoE: Unpatch forward
-                    if moe_block and orig_fwd:
-                        moe_block.forward = orig_fwd
+                    if restore_moe:
+                        restore_moe()
 
                     # MoE coverage check for GPTQ
                     moe_skip_modules = []
