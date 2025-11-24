@@ -48,6 +48,9 @@ class ModuleLooper():
     # passes down to the processor capture path is masked.
     def _masked_hook_wrapper(self, processor: LoopProcessor, inner_hook):
         def hook(module, inputs, output):
+            if getattr(processor, "hooks_paused", False):
+                return
+
             keep = getattr(processor, "current_attention_mask", None)
 
             # Mask first tensor-like input if it's [B, S, ...]
@@ -83,6 +86,57 @@ class ModuleLooper():
 
             return inner_hook(module, new_inputs, new_output)
         return hook
+
+    def _get_moe_block(self, layer, subset):
+        for name in subset:
+            if "experts" in name:
+                parts = name.split(".")
+                if "experts" in parts:
+                    idx = parts.index("experts")
+                    block_path = parts[:idx]
+                    block = layer
+                    for p in block_path:
+                        block = getattr(block, p)
+                    return block
+        return None
+
+    def _patch_moe_forward(self, moe_block):
+        original_forward = moe_block.forward
+
+        def forced_forward(self, hidden_states, *args, **kwargs):
+            stop_forward_raised = False
+            
+            # Run shared experts if they exist
+            if hasattr(self, "shared_experts"):
+                try:
+                    if isinstance(self.shared_experts, (list, torch.nn.ModuleList)):
+                        for exp in self.shared_experts:
+                            exp(hidden_states)
+                    else:
+                        self.shared_experts(hidden_states)
+                except StopForward:
+                    stop_forward_raised = True
+
+            # Run routed experts
+            if hasattr(self, "experts"):
+                if isinstance(self.experts, (list, torch.nn.ModuleList)):
+                    for expert in self.experts:
+                        try:
+                            expert(hidden_states)
+                        except StopForward:
+                            stop_forward_raised = True
+                else:
+                    # Fallback for single expert or custom container?
+                    pass
+
+            if stop_forward_raised:
+                raise STOP_FORWARD_EXCEPTION
+
+            return hidden_states  # Dummy output
+
+        # Bind method
+        moe_block.forward = forced_forward.__get__(moe_block, moe_block.__class__)
+        return original_forward
 
     def cache_inputs(self, layers, auto_gc, calibration_data, use_cache):
         layer_inputs = []
@@ -336,6 +390,12 @@ class ModuleLooper():
                     #if len(subset) == 0:
                     #    continue
 
+                    # MoE: Patch forward to force routing to all experts
+                    moe_block = self._get_moe_block(layers[layer_index], subset)
+                    orig_fwd = None
+                    if moe_block:
+                        orig_fwd = self._patch_moe_forward(moe_block)
+
                     handle = []
                     device_next_reset()
 
@@ -389,6 +449,7 @@ class ModuleLooper():
                         for k, v in layer_input_kwargs[j].items():
                             additional_layer_inputs[k] = nested_move_to(v, device=cur_layer_device, stream=False)
 
+                        layer_output = None # Initialize to avoid UnboundLocalError
                         try:
                             # reuse_kv special-case
                             if hasattr(module, "reuse_kv") and module.reuse_kv:
@@ -406,11 +467,56 @@ class ModuleLooper():
                             del layer_input
                             del additional_layer_inputs
 
+                        # If MoE patching was active, layer_output is invalid (dummy).
+                        # We must restore original forward and re-run to get valid output for the next layer/processor
+                        # if this processor expects to pass data along (fwd_after_process=False).
+                        # Even if fwd_after_process=True, we might as well be safe, but strictly it's needed for False.
+                        if moe_block and not processor.fwd_after_process:
+                             # Unpatch temporarily to run real forward
+                             moe_block.forward = orig_fwd
+                             
+                             # Pause hooks to prevent double-counting
+                             processor.hooks_paused = True
+                             
+                             # Re-construct inputs (they were deleted in finally)
+                             # Note: This is expensive but necessary for MoE + NativeProcessor
+                             # We need to re-fetch inputs from cache or reconstruct them.
+                             # Actually, we are inside the batch loop, so we can just re-prepare them.
+                             
+                             # Re-prepare inputs
+                             layer_input = []
+                             for k, layer_inp in enumerate(layer_inputs[j]):
+                                 layer_input.append(move_to(layer_inp, device=cur_layer_device, stream=False))
+                             
+                             additional_layer_inputs = {"attention_mask": layer_attention_mask} if self.support_batch_quantize else {}
+                             if layer_position_ids is not None:
+                                 additional_layer_inputs["position_ids"] = layer_position_ids
+                             for k, v in layer_input_kwargs[j].items():
+                                 additional_layer_inputs[k] = nested_move_to(v, device=cur_layer_device, stream=False)
+
+                             if hasattr(module, "reuse_kv") and module.reuse_kv:
+                                 additional_layer_inputs["kv_last_layer"] = shared_kv_cache_dict.get(layer_index - 1)
+                                 layer_output = module(*layer_input) if is_lm_head_module else module(*layer_input, **additional_layer_inputs)
+                             else:
+                                 layer_output = module(*layer_input) if is_lm_head_module else module(*layer_input, **additional_layer_inputs)
+                             
+                             # Resume hooks
+                             processor.hooks_paused = False
+
+                             # Repatch for next batch iteration (if any)
+                             # But wait, we are inside the loop. If we unpatch, we must repatch.
+                             # Actually, simpler: Unpatch -> Run -> Repatch.
+                             moe_block.forward = forced_forward.__get__(moe_block, moe_block.__class__)
+                             
+                             del layer_input
+                             del additional_layer_inputs
+
                         if not processor.fwd_after_process:
-                            if isinstance(layer_output, tuple):
-                                layer_outputs.append([layer_output[0]])
-                            else:
-                                layer_outputs.append([layer_output])
+                            if layer_output is not None:
+                                if isinstance(layer_output, tuple):
+                                    layer_outputs.append([layer_output[0]])
+                                else:
+                                    layer_outputs.append([layer_output])
 
                     if not processor.fwd_after_process:
                         processor.receive_layer_inputs(layer_outputs)
@@ -427,6 +533,10 @@ class ModuleLooper():
                         if hasattr(subset[name], 'forward_hook'):
                             subset[name].forward_hook = None
                             subset[name].forward_hook_last = False
+
+                    # MoE: Unpatch forward
+                    if moe_block and orig_fwd:
+                        moe_block.forward = orig_fwd
 
                     # MoE coverage check for GPTQ
                     moe_skip_modules = []
