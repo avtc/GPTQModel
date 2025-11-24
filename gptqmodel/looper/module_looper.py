@@ -212,20 +212,27 @@ class ModuleLooper():
                             expert_modules_in_subset[expert_idx] = set()
                         expert_modules_in_subset[expert_idx].add(module_name)
 
+        # Cache for intermediate values: {expert_idx: [list of intermediate tensors]}
+        # This accumulates intermediate values from ALL calibration samples
+        # Allows w2/down_proj to receive full dataset calibration
+        expert_intermediate_cache = {}
+
         def forced_forward(self, hidden_states, *args, **kwargs):
             if layer_index == 0:
                 log.info(f"[MOE_DEBUG] Layer {layer_index}: forced_forward called with hidden_states shape: {hidden_states.shape}")
-                # Inspect first expert structure
+                # Inspect first expert structure (only on first call)
                 if hasattr(self, "experts") and len(self.experts) > 0:
                     expert0 = self.experts[0]
-                    log.info(f"[MOE_DEBUG] Layer {layer_index}: Expert type: {type(expert0)}")
-                    log.info(f"[MOE_DEBUG] Layer {layer_index}: Expert has forward: {hasattr(expert0, 'forward')}")
-                    if hasattr(expert0, 'w1'):
-                        log.info(f"[MOE_DEBUG] Layer {layer_index}: w1 type: {type(expert0.w1)}, w1.weight.shape: {expert0.w1.weight.shape if hasattr(expert0.w1, 'weight') else 'N/A'}")
-                    if hasattr(expert0, 'w2'):
-                        log.info(f"[MOE_DEBUG] Layer {layer_index}: w2 type: {type(expert0.w2)}, w2.weight.shape: {expert0.w2.weight.shape if hasattr(expert0.w2, 'weight') else 'N/A'}")
-                    if hasattr(expert0, 'w3'):
-                        log.info(f"[MOE_DEBUG] Layer {layer_index}: w3 type: {type(expert0.w3)}, w3.weight.shape: {expert0.w3.weight.shape if hasattr(expert0.w3, 'weight') else 'N/A'}")
+                    if not hasattr(self, '_debug_logged'):
+                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Expert type: {type(expert0)}")
+                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Expert has forward: {hasattr(expert0, 'forward')}")
+                        if hasattr(expert0, 'w1'):
+                            log.info(f"[MOE_DEBUG] Layer {layer_index}: w1 type: {type(expert0.w1)}, w1.weight.shape: {expert0.w1.weight.shape if hasattr(expert0.w1, 'weight') else 'N/A'}")
+                        if hasattr(expert0, 'w2'):
+                            log.info(f"[MOE_DEBUG] Layer {layer_index}: w2 type: {type(expert0.w2)}, w2.weight.shape: {expert0.w2.weight.shape if hasattr(expert0.w2, 'weight') else 'N/A'}")
+                        if hasattr(expert0, 'w3'):
+                            log.info(f"[MOE_DEBUG] Layer {layer_index}: w3 type: {type(expert0.w3)}, w3.weight.shape: {expert0.w3.weight.shape if hasattr(expert0.w3, 'weight') else 'N/A'}")
+                        self._debug_logged = True
             stop_forward_raised = False
             expert_call_count = 0
             
@@ -261,7 +268,7 @@ class ModuleLooper():
                     log.info(f"[MOE_DEBUG] StopForward raised in shared_expert")
                     stop_forward_raised = True
 
-            # Run routed experts - only call modules that are in this subset
+            # Run routed experts - compute and accumulate intermediate values for w2
             if hasattr(self, "experts"):
                 if isinstance(self.experts, (list, torch.nn.ModuleList)):
                     if layer_index == 0:
@@ -285,23 +292,65 @@ class ModuleLooper():
                             if layer_index == 0 and i == 1:
                                 log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert {i} modules: {modules_to_call}, input shape: {hidden_states_2d.shape}")
                             
-                            # Only call modules that are in the current subset
+                            # Call w1/gate_proj and w3/up_proj if present, compute and accumulate intermediate
+                            w1_output = None
+                            w3_output = None
+                            
                             if hasattr(expert, 'w1') and 'w1' in modules_to_call:
                                 if layer_index == 0 and i == 1:
-                                    log.info(f"[MOE_DEBUG] Layer {layer_index}: About to call expert.w1 with shape {hidden_states_2d.shape}, expert.w1 type: {type(expert.w1)}")
-                                result = expert.w1(hidden_states_2d)
-                                if layer_index == 0 and i == 1:
-                                    log.info(f"[MOE_DEBUG] Layer {layer_index}: expert.w1 returned shape {result.shape if hasattr(result, 'shape') else 'N/A'}")
+                                    log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert.w1")
+                                w1_output = expert.w1(hidden_states_2d)
+                                
                             if hasattr(expert, 'w3') and 'w3' in modules_to_call:
-                                expert.w3(hidden_states_2d)
-                            if hasattr(expert, 'w2') and 'w2' in modules_to_call:
-                                expert.w2(hidden_states_2d)
+                                if layer_index == 0 and i == 1:
+                                    log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert.w3")
+                                w3_output = expert.w3(hidden_states_2d)
+                            
                             if hasattr(expert, 'gate_proj') and 'gate_proj' in modules_to_call:
-                                expert.gate_proj(hidden_states_2d)
+                                w1_output = expert.gate_proj(hidden_states_2d)
+                                
                             if hasattr(expert, 'up_proj') and 'up_proj' in modules_to_call:
-                                expert.up_proj(hidden_states_2d)
+                                w3_output = expert.up_proj(hidden_states_2d)
+                            
+                            # If both w1 and w3 outputs exist, compute and ACCUMULATE intermediate for w2
+                            if w1_output is not None and w3_output is not None:
+                                # Get activation function from expert or use default SiLU
+                                if hasattr(expert, 'act_fn'):
+                                    intermediate = expert.act_fn(w1_output) * w3_output
+                                else:
+                                    intermediate = torch.nn.functional.silu(w1_output) * w3_output
+                                
+                                # Initialize list if not exists
+                                if i not in expert_intermediate_cache:
+                                    expert_intermediate_cache[i] = []
+                                # Append to accumulate across all samples
+                                expert_intermediate_cache[i].append(intermediate.detach())
+                                
+                                if layer_index == 0 and i == 1:
+                                    log.info(f"[MOE_DEBUG] Layer {layer_index}: Accumulated intermediate for expert {i}, shape: {intermediate.shape}, total samples: {len(expert_intermediate_cache[i])}")
+                            
+                            # Call w2/down_proj with ALL accumulated intermediates
+                            if hasattr(expert, 'w2') and 'w2' in modules_to_call:
+                                if i in expert_intermediate_cache and len(expert_intermediate_cache[i]) > 0:
+                                    if layer_index == 0 and i == 1:
+                                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Replaying {len(expert_intermediate_cache[i])} intermediate samples through expert.w2")
+                                    for idx, cached_intermediate in enumerate(expert_intermediate_cache[i]):
+                                        if layer_index == 0 and i == 1 and idx == 0:
+                                            log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert.w2 with intermediate shape: {cached_intermediate.shape}")
+                                        expert.w2(cached_intermediate)
+                                else:
+                                    if layer_index == 0 and i == 1:
+                                        log.info(f"[MOE_DEBUG] Layer {layer_index}: WARNING - w2 in subset but no cached intermediate for expert {i}")
+                                        
                             if hasattr(expert, 'down_proj') and 'down_proj' in modules_to_call:
-                                expert.down_proj(hidden_states_2d)
+                                if i in expert_intermediate_cache and len(expert_intermediate_cache[i]) > 0:
+                                    if layer_index == 0 and i == 1:
+                                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Replaying {len(expert_intermediate_cache[i])} intermediate samples through expert.down_proj")
+                                    for cached_intermediate in expert_intermediate_cache[i]:
+                                        expert.down_proj(cached_intermediate)
+                                else:
+                                    if layer_index == 0 and i == 1:
+                                        log.info(f"[MOE_DEBUG] Layer {layer_index}: WARNING - down_proj in subset but no cached intermediate for expert {i}")
                             
                             expert_call_count += 1
                         except StopForward:
