@@ -47,22 +47,8 @@ class ModuleLooper():
     # We *do not* alter the module's actual computation; only what the hook
     # passes down to the processor capture path is masked.
     def _masked_hook_wrapper(self, processor: LoopProcessor, inner_hook):
-        call_count = [0]  # Use list to make it mutable in closure
-        
+
         def hook(module, inputs, output):
-            # Debug logging - log first few calls to see what's happening
-            call_count[0] += 1
-            if call_count[0] <= 3:
-                paused = getattr(processor, "hooks_paused", False)
-                module_type = type(module).__name__
-                # Try to get module identifier
-                module_id = "unknown"
-                if hasattr(module, 'full_name'):
-                    module_id = module.full_name
-                elif hasattr(module, '__class__'):
-                    module_id = f"{module_type}@{id(module)}"
-                log.info(f"[DEBUG] _masked_hook_wrapper #{call_count[0]}: module={module_id}, type={module_type}, paused={paused}")
-            
             if getattr(processor, "hooks_paused", False):
                 return
 
@@ -99,15 +85,6 @@ class ModuleLooper():
             except Exception:
                 new_output = output
 
-            # Debug: log before calling inner_hook
-            if call_count[0] <= 3:
-                log.info(f"[DEBUG] About to call inner_hook for {module_id}")
-                if "self_attn" in module_id and ".0." in module_id:
-                     log.info(f"[DEBUG] Hook inputs[0] shape: {new_inputs[0].shape if isinstance(new_inputs, (tuple, list)) and len(new_inputs) > 0 else 'unknown'}")
-                     log.info(f"[DEBUG] keep_mask: {keep.shape if keep is not None else 'None'}")
-                     if keep is not None:
-                         log.info(f"[DEBUG] keep_mask stats: sum={keep.sum().item()}, numel={keep.numel()}")
-            
             return inner_hook(module, new_inputs, new_output)
         return hook
 
@@ -602,15 +579,8 @@ class ModuleLooper():
                     #if len(subset) == 0:
                     #    continue
 
-                    # Debug logging for layer 0 to understand subset composition
-                    if layer_index == 0:
-                        module_names = list(subset.keys())
-                        log.info(f"[DEBUG] Processing subset {index}, contains {len(module_names)} modules: {module_names[:5]}...")  # Show first 5
-
                     # MoE: Patch forward to force routing to all experts
                     moe_block, moe_block_name = self._get_moe_block(layers[layer_index], subset)
-                    if layer_index == 0:
-                        log.info(f"[DEBUG] Subset {index}: moe_block_name={moe_block_name}")
                     restore_moe = None
                     if moe_block:
                         restore_moe = self._patch_moe_forward(moe_block, subset, moe_block_name, processor, layer_index)
@@ -637,9 +607,6 @@ class ModuleLooper():
                                 subset[name].forward_hook = self._masked_hook_wrapper(processor, original_hook)
                             if is_last:
                                 subset[name].forward_hook_last = True
-                            # Debug logging
-                            if layer_index == 0 and "self_attn" in name:
-                                log.info(f"[DEBUG] Registered forward_hook on {name}, is_moe={is_moe_module}, is_last={is_last}")
                         else:
                             # Older registration path
                             original_hook = processor.pre_process_fwd_hook(subset[name].full_name)
@@ -651,9 +618,6 @@ class ModuleLooper():
                                 handle.append(subset[name].register_forward_hook(
                                     self._masked_hook_wrapper(processor, original_hook)
                                 ))
-                            # Debug logging
-                            if layer_index == 0 and "self_attn" in name:
-                                log.info(f"[DEBUG] Registered PyTorch hook on {name}, is_moe={is_moe_module}")
 
                     # ---- Start Pre-Quantized Forward ----
                     fwd_start = time.time()
@@ -674,10 +638,6 @@ class ModuleLooper():
                             keep_mask_bs = normalize_seq_mask(layer_attention_mask, seq_len=seq_len)
                             # We don't require LoopProcessor to declare this attribute; set dynamically.
                             setattr(processor, "current_attention_mask", keep_mask_bs)
-                            if layer_index == 0 and j == 0:
-                                log.info(f"[DEBUG] Set current_attention_mask for layer 0 batch 0")
-                                log.info(f"  raw_mask shape: {raw_mask.shape}")
-                                log.info(f"  keep_mask_bs shape: {keep_mask_bs.shape if keep_mask_bs is not None else 'None'}")
                         else:
                             setattr(processor, "current_attention_mask", None)
 

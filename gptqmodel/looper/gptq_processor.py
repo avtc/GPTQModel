@@ -103,8 +103,6 @@ class GPTQProcessor(LoopProcessor):
     def pre_process_fwd_hook(self, full_name: str) -> Callable[[Module, Tuple[torch.Tensor, ...], torch.Tensor], None]:
         def tmp(module, inp: Tuple[torch.Tensor, ...], out: torch.Tensor):
             g = self.tasks[full_name]  # noqa: F821
-            if "self_attn" in full_name and ".0." in full_name:
-                 log.info(f"[DEBUG] Hook called for {full_name}, input shape: {inp[0].shape}")
             g.add_batch(inp[0].data, out.data)  # noqa: F821
             del inp, out
         return tmp
