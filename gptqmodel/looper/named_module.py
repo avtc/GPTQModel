@@ -97,6 +97,12 @@ class NamedModule(torch.nn.Module):
             # else:
             #    log.debug(f"{self.full_name} has no parameter: {name}")
     def forward(self, *args, **kwargs):
+        # Debug trace for self_attn in layer 0
+        if self.layer_index == 0 and "self_attn" in self.full_name:
+            has_hook = self.forward_hook is not None
+            inner_has_hook = hasattr(self.module, 'forward_hook') and self.module.forward_hook is not None
+            log.info(f"[TRACE] NamedModule.forward() for {self.full_name}, has_hook={has_hook}, inner_has_hook={inner_has_hook}")
+        
         output = self.module(*args, **kwargs)
         
         # Call forward_hook if it exists (compatible with HookedLinear mechanism)

@@ -55,7 +55,13 @@ class ModuleLooper():
             if call_count[0] <= 3:
                 paused = getattr(processor, "hooks_paused", False)
                 module_type = type(module).__name__
-                log.info(f"[DEBUG] _masked_hook_wrapper called #{call_count[0]}, module_type={module_type}, hooks_paused={paused}")
+                # Try to get module identifier
+                module_id = "unknown"
+                if hasattr(module, 'full_name'):
+                    module_id = module.full_name
+                elif hasattr(module, '__class__'):
+                    module_id = f"{module_type}@{id(module)}"
+                log.info(f"[DEBUG] _masked_hook_wrapper #{call_count[0]}: module={module_id}, type={module_type}, paused={paused}")
             
             if getattr(processor, "hooks_paused", False):
                 return
@@ -93,6 +99,10 @@ class ModuleLooper():
             except Exception:
                 new_output = output
 
+            # Debug: log before calling inner_hook
+            if call_count[0] <= 3:
+                log.info(f"[DEBUG] About to call inner_hook for {module_id}")
+            
             return inner_hook(module, new_inputs, new_output)
         return hook
 
