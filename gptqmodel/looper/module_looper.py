@@ -219,7 +219,7 @@ class ModuleLooper():
             # call the original forward to get proper output (pause hooks to avoid double-counting)
             processor.hooks_paused = True
             try:
-                result = original_forward(self, hidden_states, *args, **kwargs)
+                result = original_forward(hidden_states, *args, **kwargs)
             finally:
                 processor.hooks_paused = False
             
