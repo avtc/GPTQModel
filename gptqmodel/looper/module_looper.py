@@ -578,8 +578,15 @@ class ModuleLooper():
                     #if len(subset) == 0:
                     #    continue
 
+                    # Debug logging for layer 0 to understand subset composition
+                    if layer_index == 0:
+                        module_names = list(subset.keys())
+                        log.info(f"[DEBUG] Processing subset {index}, contains {len(module_names)} modules: {module_names[:5]}...")  # Show first 5
+
                     # MoE: Patch forward to force routing to all experts
                     moe_block, moe_block_name = self._get_moe_block(layers[layer_index], subset)
+                    if layer_index == 0:
+                        log.info(f"[DEBUG] Subset {index}: moe_block_name={moe_block_name}")
                     restore_moe = None
                     if moe_block:
                         restore_moe = self._patch_moe_forward(moe_block, subset, moe_block_name, processor, layer_index)
