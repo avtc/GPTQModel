@@ -220,6 +220,11 @@ class ModuleLooper():
             processor.expert_intermediate_cache = {}
 
         def forced_forward(self, hidden_states, *args, **kwargs):
+            # If not configured to pass whole dataset to each expert, use standard forward pass
+            # This allows hooks to fire naturally during routing (standard calibration)
+            if not getattr(processor.qcfg, "pass_whole_dataset_to_each_expert", False):
+                return original_forward(hidden_states, *args, **kwargs)
+
             if layer_index == 0:
                 log.info(f"[MOE_DEBUG] Layer {layer_index}: forced_forward called with hidden_states shape: {hidden_states.shape}")
                 # Inspect first expert structure (only on first call)

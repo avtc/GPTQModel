@@ -225,6 +225,10 @@ class QuantizeConfig():
     # skip all heavy computations for testing model loading
     mock_quantization: bool = field(default=False, metadata={"help": "Skip heavy computations for fast model loading validation"})
 
+    # moe only:
+    # pass whole dataset to each expert for calibration
+    pass_whole_dataset_to_each_expert: bool = field(default=False, metadata={"help": "Pass whole dataset to each expert for calibration"})
+
     def __post_init__(self):
         fields_info = fields(self)
 
