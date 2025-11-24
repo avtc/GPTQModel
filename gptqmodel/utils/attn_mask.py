@@ -22,33 +22,25 @@ def normalize_seq_mask(mask: torch.Tensor | None, seq_len: int | None = None) ->
         return None
 
     m = mask
-    # Debug logging
-    print(f"[DEBUG] normalize_seq_mask input: shape={mask.shape}, dtype={mask.dtype}")
-    print(f"  min={mask.min().item()}, max={mask.max().item()}")
-    print(f"  unique values (first 10): {torch.unique(mask.flatten()[:1000])[:10].tolist()}")
-    
-    # Convert numeric to bool 'keep'
-    # Detect bias-style masks (0=keep, negative=mask) vs standard masks (positive=keep)
+    # Convert numeric to bool 'keep' (HF tends to use >0 for keep; extended masks use big negatives for masked)
     if m.dtype != torch.bool:
-        if mask.max() <= 0:
-            # Bias-style mask: 0 is keep, negative is mask
-            print(f"[DEBUG] bias-style mask detected (max <= 0), using >= 0")
+        if torch.any(m < 0):
             m = (m >= 0)
         else:
-            # Standard mask: positive is keep
-            print(f"[DEBUG] standard mask detected (max > 0), using > 0")
             m = (m > 0)
-        print(f"  after conversion: True count={m.sum().item()}, False count={(~m).sum().item()}")
 
     # Squeeze broadcast dims to reach [B, S]
-    if m.dim() == 4:
-        # For 4D masks [B, H, S_q, S_k], check if each query position can attend to anything
-        # This handles both causal masks and padding masks
-        print(f"[DEBUG] 4D mask detected, reducing with .any(dim=-1)")
-        m = m.any(dim=-1)  # [B, H, S_q]
-        print(f"  after .any(dim=-1): shape={m.shape}, True count={m.sum().item()}")
-        if m.size(1) == 1:
-            m = m[:, 0, :]  # [B, S]
+    if m.dim() == 4 and m.size(1) == 1:
+        if m.size(2) == 1:
+            # Common HF format: [B, 1, 1, S]
+            m = m[:, 0, 0, :]
+        elif m.size(2) == m.size(3):
+            # Causal mask expanded to [B, 1, S, S]; collapse query axis so any
+            # attended position is marked for retention.
+            m = m[:, 0].any(dim=1)
+        else:
+            # Fallback: collapse singleton dim, leave seq axis for later handling
+            m = m[:, 0, 0, :]
     elif m.dim() == 3 and m.size(1) == 1:
         m = m[:, 0, :]  # [B, S]
     elif m.dim() == 2:
@@ -59,8 +51,7 @@ def normalize_seq_mask(mask: torch.Tensor | None, seq_len: int | None = None) ->
             m = m.reshape(m.size(0), -1)[..., :seq_len]
         else:
             raise ValueError(f"Unsupported attention_mask shape: {tuple(mask.shape)}")
-            
-    print(f"[DEBUG] normalize_seq_mask output: shape={m.shape}, kept={m.sum().item()}/{m.numel()}")
+
     return m.to(dtype=torch.bool)
 
 
