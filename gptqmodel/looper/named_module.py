@@ -126,6 +126,14 @@ class NamedModule(torch.nn.Module):
 
     def __setattr__(self, name: str, value: Any) -> None:
         with self._lock:
+            # Proxy forward_hook to inner module if it supports it (e.g. HookedLinear)
+            # This ensures hooks fire even if NamedModule wrapper is not in the model
+            if name in ["forward_hook", "forward_hook_last"] and hasattr(self.module, name):
+                setattr(self.module, name, value)
+                # Also set on self for consistency/inspection
+                self.__dict__[name] = value
+                return
+
             if name in ["module", "module_dtype", "name", "full_name", "layer_index", "state", "target_device", 
                         "forward_hook", "forward_hook_last", "target_device_stream",
                         "register_buffer", "unregister_buffer", "register_parameter", "unregister_parameter"]:
