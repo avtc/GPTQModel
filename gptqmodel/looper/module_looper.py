@@ -90,10 +90,14 @@ class ModuleLooper():
     def _masked_pre_hook_wrapper(self, processor: LoopProcessor, inner_hook):
         """
         Pre-forward hook wrapper for MoE expert modules.
-        Pre-hooks fire before forward() executes, so they aren't affected by StopForward.
-        GPTQ.add_batch ignores the output parameter anyway, so we pass None.
+        This is called BEFORE forward executes (when used with HookedLinear.forward_hook).
+        GPTQ.add_batch ignores the output parameter anyway, so we can pass None or the actual output.
         """
-        def pre_hook(module, inputs):
+        def pre_hook(module, inputs, output):
+            # Note: For HookedLinear's custom hook mechanism, output may be available,
+            # but we treat this as a "pre-hook" by calling the inner hook before
+            # StopForward can be raised. The output parameter is ignored by GPTQ.add_batch.
+            
             if getattr(processor, "hooks_paused", False):
                 return
 
@@ -114,8 +118,9 @@ class ModuleLooper():
                 # Never break the forward due to masking; fall back to original
                 new_inputs = inputs
 
-            # Call inner hook with inputs and None for output (GPTQ doesn't use it)
-            inner_hook(module, new_inputs, None)
+            # Call inner hook with inputs and output (GPTQ ignores output anyway)
+            # We pass output as-is to maintain compatibility with the hook signature
+            inner_hook(module, new_inputs, output)
             
         return pre_hook
 
