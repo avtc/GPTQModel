@@ -48,6 +48,11 @@ class ModuleLooper():
     # passes down to the processor capture path is masked.
     def _masked_hook_wrapper(self, processor: LoopProcessor, inner_hook):
         def hook(module, inputs, output):
+            # Debug logging for self_attn in layer 0
+            if hasattr(module, 'layer_index') and module.layer_index == 0 and hasattr(module, 'full_name') and "self_attn" in module.full_name:
+                paused = getattr(processor, "hooks_paused", False)
+                log.info(f"[DEBUG] _masked_hook_wrapper called for {module.full_name}, hooks_paused={paused}")
+            
             if getattr(processor, "hooks_paused", False):
                 return
 
