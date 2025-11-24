@@ -27,6 +27,10 @@ class NamedModule(torch.nn.Module):
         self.full_name = full_name # module full name (path) within model
         self.layer_index = layer_index # layerid in a repeating layer, if in outside layer, this info may be fake
 
+        # Forward hook mechanism (compatible with HookedLinear)
+        self.forward_hook = None
+        self.forward_hook_last = False
+
         # some processing will move this module to target_device gptq, eora, etc
         # self.target_device, self.target_device_stream = device_next()
         self.target_device, self.target_device_stream = None, None
@@ -93,7 +97,17 @@ class NamedModule(torch.nn.Module):
             # else:
             #    log.debug(f"{self.full_name} has no parameter: {name}")
     def forward(self, *args, **kwargs):
-        return self.module(*args, **kwargs)
+        output = self.module(*args, **kwargs)
+        
+        # Call forward_hook if it exists (compatible with HookedLinear mechanism)
+        if self.forward_hook:
+            # Extract first positional arg as input for hook
+            input_tensor = args[0] if args else None
+            self.forward_hook(self, (input_tensor,), output)
+            # Note: We don't raise StopForward here because the wrapped module
+            # (HookedLinear) will raise it if forward_hook_last is set on it
+        
+        return output
 
     # return stats for mo
     # def stats(self) -> Dict[str, float]:
@@ -110,10 +124,11 @@ class NamedModule(torch.nn.Module):
         with self._lock:
             return getattr(self.module, name)
 
-    # setattr is always called by python even if attr exists in `self`
     def __setattr__(self, name: str, value: Any) -> None:
         with self._lock:
-            if name in ["module", "module_dtype", "name", "full_name", "layer_index", "state", "target_device", "register_buffer", "unregister_buffer", "register_parameter", "unregister_parameter"]:
+            if name in ["module", "module_dtype", "name", "full_name", "layer_index", "state", "target_device", 
+                        "forward_hook", "forward_hook_last", "target_device_stream",
+                        "register_buffer", "unregister_buffer", "register_parameter", "unregister_parameter"]:
                 self.__dict__[name] = value
             else:
                 self.module.__dict__[name] = value
