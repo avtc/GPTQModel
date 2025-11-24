@@ -190,13 +190,6 @@ class ModuleLooper():
                             expert_modules_in_subset[expert_idx] = set()
                         expert_modules_in_subset[expert_idx].add(module_name)
 
-        # Cache for intermediate values: stored on processor so it persists across subsets
-        # {expert_idx: [list of intermediate tensors]}
-        # This accumulates intermediate values from ALL calibration samples in w1/w3 subset
-        # and is used when processing w2/down_proj subset
-        if not hasattr(processor, 'expert_intermediate_cache'):
-            processor.expert_intermediate_cache = {}
-
         def forced_forward(self, hidden_states, *args, **kwargs):
             # If not configured to pass whole dataset to each expert, use standard forward pass
             # This allows hooks to fire naturally during routing (standard calibration)
@@ -232,7 +225,7 @@ class ModuleLooper():
                 except StopForward:
                     stop_forward_raised = True
 
-            # Run routed experts - compute and accumulate intermediate values for w2
+            # Run routed experts
             if hasattr(self, "experts"):
                 if isinstance(self.experts, (list, torch.nn.ModuleList)):
                     # Reshape hidden_states from [B, S, H] to [B*S, H] for expert modules
@@ -250,59 +243,55 @@ class ModuleLooper():
                             continue  # No modules from this expert in current subset
                         
                         try:
-                            # Call w1/gate_proj and w3/up_proj if present, compute and accumulate intermediate
-                            w1_output = None
-                            w3_output = None
+                            # Strategy: If w2/down_proj is in subset, compute intermediate on-the-fly
+                            # by calling w1/w3 with hooks paused, then call w2/down_proj with hooks enabled
                             
-                            if hasattr(expert, 'w1') and 'w1' in modules_to_call:
-                                w1_output = expert.w1(hidden_states_2d)
-                                
-                            if hasattr(expert, 'w3') and 'w3' in modules_to_call:
-                                w3_output = expert.w3(hidden_states_2d)
-                            
-                            if hasattr(expert, 'gate_proj') and 'gate_proj' in modules_to_call:
-                                w1_output = expert.gate_proj(hidden_states_2d)
-                                
-                            if hasattr(expert, 'up_proj') and 'up_proj' in modules_to_call:
-                                w3_output = expert.up_proj(hidden_states_2d)
-                            
-                            # If both w1 and w3 outputs exist, compute and ACCUMULATE intermediate for w2
-                            if w1_output is not None and w3_output is not None:
-                                # Get activation function from expert or use default SiLU
-                                if hasattr(expert, 'act_fn'):
-                                    intermediate = expert.act_fn(w1_output) * w3_output
-                                else:
-                                    intermediate = torch.nn.functional.silu(w1_output) * w3_output
-                                
-                                # Initialize list if not exists
-                                if i not in processor.expert_intermediate_cache:
-                                    processor.expert_intermediate_cache[i] = []
-                                # Append to accumulate across all samples
-                                # Move to CPU to save GPU memory
-                                processor.expert_intermediate_cache[i].append(intermediate.detach().cpu())
-                            
-                            # Call w2/down_proj with ALL accumulated intermediates
+                            # Determine which down-projection module to use
+                            down_proj_module = None
                             if hasattr(expert, 'w2') and 'w2' in modules_to_call:
-                                if i in processor.expert_intermediate_cache and len(processor.expert_intermediate_cache[i]) > 0:
-                                    # Get device from w2.weight (Linear layers always have weight parameter)
-                                    target_device = expert.w2.weight.device if hasattr(expert.w2, 'weight') else None
-                                    for idx, cached_intermediate in enumerate(processor.expert_intermediate_cache[i]):
-                                        # Move to target device if needed
-                                        inp = cached_intermediate.to(target_device) if target_device else cached_intermediate
-                                        expert.w2(inp)
-                                    # Clear cache for this expert to free memory
-                                    del processor.expert_intermediate_cache[i]
-                                        
-                            if hasattr(expert, 'down_proj') and 'down_proj' in modules_to_call:
-                                if i in processor.expert_intermediate_cache and len(processor.expert_intermediate_cache[i]) > 0:
-                                    # Get device from down_proj.weight
-                                    target_device = expert.down_proj.weight.device if hasattr(expert.down_proj, 'weight') else None
-                                    for cached_intermediate in processor.expert_intermediate_cache[i]:
-                                        # Move to target device if needed
-                                        inp = cached_intermediate.to(target_device) if target_device else cached_intermediate
-                                        expert.down_proj(inp)
-                                    # Clear cache for this expert to free memory
-                                    del processor.expert_intermediate_cache[i]
+                                down_proj_module = expert.w2
+                            elif hasattr(expert, 'down_proj') and 'down_proj' in modules_to_call:
+                                down_proj_module = expert.down_proj
+                            
+                            if down_proj_module is not None:
+                                # Compute intermediate by calling w1/w3 with paused hooks
+                                processor.hooks_paused = True
+                                try:
+                                    w1_output = None
+                                    w3_output = None
+                                    
+                                    # Try all possible up-projection module names
+                                    if hasattr(expert, 'w1'):
+                                        w1_output = expert.w1(hidden_states_2d)
+                                    if hasattr(expert, 'w3'):
+                                        w3_output = expert.w3(hidden_states_2d)
+                                    if hasattr(expert, 'gate_proj'):
+                                        w1_output = expert.gate_proj(hidden_states_2d)
+                                    if hasattr(expert, 'up_proj'):
+                                        w3_output = expert.up_proj(hidden_states_2d)
+                                    
+                                    if w1_output is not None and w3_output is not None:
+                                        # Compute intermediate
+                                        if hasattr(expert, 'act_fn'):
+                                            intermediate = expert.act_fn(w1_output) * w3_output
+                                        else:
+                                            intermediate = torch.nn.functional.silu(w1_output) * w3_output
+                                finally:
+                                    processor.hooks_paused = False
+                                
+                                # Now call down-projection with hooks enabled
+                                if w1_output is not None and w3_output is not None:
+                                    down_proj_module(intermediate)
+                            else:
+                                # For w1/w3/gate_proj/up_proj, just call them directly (hooks enabled)
+                                if hasattr(expert, 'w1') and 'w1' in modules_to_call:
+                                    expert.w1(hidden_states_2d)
+                                if hasattr(expert, 'w3') and 'w3' in modules_to_call:
+                                    expert.w3(hidden_states_2d)
+                                if hasattr(expert, 'gate_proj') and 'gate_proj' in modules_to_call:
+                                    expert.gate_proj(hidden_states_2d)
+                                if hasattr(expert, 'up_proj') and 'up_proj' in modules_to_call:
+                                    expert.up_proj(hidden_states_2d)
                             
                             expert_call_count += 1
                         except StopForward:
