@@ -197,6 +197,21 @@ class ModuleLooper():
         if layer_index == 0:
             log.info(f"[MOE_DEBUG] Layer {layer_index}: Replaced {len(replacements)} modules total")
 
+        # Build a mapping of expert index to which internal modules are in this subset
+        expert_modules_in_subset = {}  # {expert_idx: {'w1': True, 'w3': True, ...}}
+        if block_name_prefix:
+            for name in subset.keys():
+                if name.startswith(block_name_prefix + ".experts."):
+                    # Parse: "block_sparse_moe.experts.0.w1" -> expert_idx=0, module_name="w1"
+                    parts = name.split(".")
+                    experts_idx = parts.index("experts")
+                    if experts_idx + 2 < len(parts):
+                        expert_idx = int(parts[experts_idx + 1])
+                        module_name = parts[experts_idx + 2]
+                        if expert_idx not in expert_modules_in_subset:
+                            expert_modules_in_subset[expert_idx] = set()
+                        expert_modules_in_subset[expert_idx].add(module_name)
+
         def forced_forward(self, hidden_states, *args, **kwargs):
             if layer_index == 0:
                 log.info(f"[MOE_DEBUG] Layer {layer_index}: forced_forward called with hidden_states shape: {hidden_states.shape}")
@@ -235,31 +250,34 @@ class ModuleLooper():
                     log.info(f"[MOE_DEBUG] StopForward raised in shared_expert")
                     stop_forward_raised = True
 
-            # Run routed experts - call INTERNAL MODULES directly to bypass routing logic
+            # Run routed experts - only call modules that are in this subset
             if hasattr(self, "experts"):
                 if isinstance(self.experts, (list, torch.nn.ModuleList)):
                     if layer_index == 0:
                         log.info(f"[MOE_DEBUG] Layer {layer_index}: Found {len(self.experts)} experts")
                     for i, expert in enumerate(self.experts):
+                        # Check which modules are in subset for this expert
+                        modules_to_call = expert_modules_in_subset.get(i, set())
+                        if not modules_to_call:
+                            continue  # No modules from this expert in current subset
+                        
                         try:
                             if layer_index == 0 and i == 1:
-                                log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert {i} internal modules")
+                                log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert {i} modules: {modules_to_call}")
                             
-                            # Call internal linear layers directly with full hidden_states
-                            # Common patterns: w1/w2/w3 or gate_proj/up_proj/down_proj
-                            if hasattr(expert, 'w1'):
-                                # MiniMax, DeepSeek pattern: w1, w3, w2
+                            # Only call modules that are in the current subset
+                            if hasattr(expert, 'w1') and 'w1' in modules_to_call:
                                 expert.w1(hidden_states)
+                            if hasattr(expert, 'w3') and 'w3' in modules_to_call:
                                 expert.w3(hidden_states)
+                            if hasattr(expert, 'w2') and 'w2' in modules_to_call:
                                 expert.w2(hidden_states)
-                            elif hasattr(expert, 'gate_proj'):
-                                # Standard pattern: gate_proj, up_proj, down_proj
+                            if hasattr(expert, 'gate_proj') and 'gate_proj' in modules_to_call:
                                 expert.gate_proj(hidden_states)
+                            if hasattr(expert, 'up_proj') and 'up_proj' in modules_to_call:
                                 expert.up_proj(hidden_states)
+                            if hasattr(expert, 'down_proj') and 'down_proj' in modules_to_call:
                                 expert.down_proj(hidden_states)
-                            else:
-                                # Fallback: call the expert (may get 0 tokens but at least we tried)
-                                expert(hidden_states)
                             
                             expert_call_count += 1
                         except StopForward:
