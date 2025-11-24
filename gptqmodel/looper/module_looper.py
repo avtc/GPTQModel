@@ -606,6 +606,9 @@ class ModuleLooper():
                                 subset[name].forward_hook = self._masked_hook_wrapper(processor, original_hook)
                             if is_last:
                                 subset[name].forward_hook_last = True
+                            # Debug logging
+                            if layer_index == 0 and "self_attn" in name:
+                                log.info(f"[DEBUG] Registered forward_hook on {name}, is_moe={is_moe_module}, is_last={is_last}")
                         else:
                             # Older registration path
                             original_hook = processor.pre_process_fwd_hook(name)
@@ -617,6 +620,9 @@ class ModuleLooper():
                                 handle.append(subset[name].register_forward_hook(
                                     self._masked_hook_wrapper(processor, original_hook)
                                 ))
+                            # Debug logging
+                            if layer_index == 0 and "self_attn" in name:
+                                log.info(f"[DEBUG] Registered PyTorch hook on {name}, is_moe={is_moe_module}")
 
                     # ---- Start Pre-Quantized Forward ----
                     fwd_start = time.time()

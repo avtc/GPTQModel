@@ -100,12 +100,16 @@ class NamedModule(torch.nn.Module):
         output = self.module(*args, **kwargs)
         
         # Call forward_hook if it exists (compatible with HookedLinear mechanism)
+        # BUT only if we didn't proxy it to the inner module (to avoid double-counting)
         if self.forward_hook:
-            # Extract first positional arg as input for hook
-            input_tensor = args[0] if args else None
-            self.forward_hook(self, (input_tensor,), output)
-            # Note: We don't raise StopForward here because the wrapped module
-            # (HookedLinear) will raise it if forward_hook_last is set on it
+            # Check if inner module has its own forward_hook (meaning we proxied it)
+            # If so, don't call it again here to avoid double-counting
+            if not hasattr(self.module, 'forward_hook') or self.module.forward_hook is None:
+                # Extract first positional arg as input for hook
+                input_tensor = args[0] if args else None
+                self.forward_hook(self, (input_tensor,), output)
+                # Note: We don't raise StopForward here because the wrapped module
+                # (HookedLinear) will raise it if forward_hook_last is set on it
         
         return output
 
