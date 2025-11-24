@@ -102,6 +102,11 @@ class ModuleLooper():
             # Debug: log before calling inner_hook
             if call_count[0] <= 3:
                 log.info(f"[DEBUG] About to call inner_hook for {module_id}")
+                if "self_attn" in module_id and ".0." in module_id:
+                     log.info(f"[DEBUG] Hook inputs[0] shape: {new_inputs[0].shape if isinstance(new_inputs, (tuple, list)) and len(new_inputs) > 0 else 'unknown'}")
+                     log.info(f"[DEBUG] keep_mask: {keep.shape if keep is not None else 'None'}")
+                     if keep is not None:
+                         log.info(f"[DEBUG] keep_mask stats: sum={keep.sum().item()}, numel={keep.numel()}")
             
             return inner_hook(module, new_inputs, new_output)
         return hook
@@ -669,6 +674,10 @@ class ModuleLooper():
                             keep_mask_bs = normalize_seq_mask(layer_attention_mask, seq_len=seq_len)
                             # We don't require LoopProcessor to declare this attribute; set dynamically.
                             setattr(processor, "current_attention_mask", keep_mask_bs)
+                            if layer_index == 0 and j == 0:
+                                log.info(f"[DEBUG] Set current_attention_mask for layer 0 batch 0")
+                                log.info(f"  raw_mask shape: {raw_mask.shape}")
+                                log.info(f"  keep_mask_bs shape: {keep_mask_bs.shape if keep_mask_bs is not None else 'None'}")
                         else:
                             setattr(processor, "current_attention_mask", None)
 

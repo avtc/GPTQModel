@@ -22,8 +22,12 @@ def normalize_seq_mask(mask: torch.Tensor | None, seq_len: int | None = None) ->
         return None
 
     m = mask
+    # Debug logging
+    # print(f"[DEBUG] normalize_seq_mask input: shape={mask.shape}, dtype={mask.dtype}")
+    
     # Convert numeric to bool 'keep' (HF tends to use >0 for keep; extended masks use big negatives for masked)
     if m.dtype != torch.bool:
+        # print(f"[DEBUG] converting numeric mask to bool using > 0")
         m = (m > 0)
 
     # Squeeze broadcast dims to reach [B, S]
@@ -39,7 +43,8 @@ def normalize_seq_mask(mask: torch.Tensor | None, seq_len: int | None = None) ->
             m = m.reshape(m.size(0), -1)[..., :seq_len]
         else:
             raise ValueError(f"Unsupported attention_mask shape: {tuple(mask.shape)}")
-
+            
+    # print(f"[DEBUG] normalize_seq_mask output: shape={m.shape}, kept={m.sum().item()}/{m.numel()}")
     return m.to(dtype=torch.bool)
 
 

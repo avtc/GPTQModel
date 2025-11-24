@@ -322,7 +322,28 @@ class MiniMaxM2Attention(nn.Module):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         bsz, q_len, _ = hidden_states.size()
         if self.layer_idx == 0:
-            print(f"DEBUG: MiniMaxM2Attention layer {self.layer_idx} input shape: {hidden_states.shape}")
+            print(f"DEBUG: MiniMaxM2Attention layer {self.layer_idx}")
+            print(f"  hidden_states: shape={hidden_states.shape}, dtype={hidden_states.dtype}")
+            print(f"  hidden_states stats: min={hidden_states.min().item():.4f}, max={hidden_states.max().item():.4f}, isnan={torch.isnan(hidden_states).any().item()}")
+            
+            if attention_mask is not None:
+                print(f"  attention_mask: shape={attention_mask.shape}, dtype={attention_mask.dtype}")
+                print(f"  attention_mask stats: min={attention_mask.min().item()}, max={attention_mask.max().item()}")
+                # Check for unique values to understand mask type (0/1 or large negatives)
+                unique_vals = torch.unique(attention_mask.flatten()[:1000]) # check first 1000 elements
+                print(f"  attention_mask unique vals (sample): {unique_vals.tolist()}")
+                print(f"  attention_mask slice: {attention_mask.flatten()[:20].tolist()}")
+            else:
+                print("  attention_mask: None")
+
+            if position_ids is not None:
+                print(f"  position_ids: shape={position_ids.shape}, dtype={position_ids.dtype}")
+                print(f"  position_ids slice: {position_ids.flatten()[:20].tolist()}")
+            else:
+                print("  position_ids: None")
+                
+            print(f"  past_key_values: {type(past_key_values)}")
+
 
         device = hidden_states.device
 
