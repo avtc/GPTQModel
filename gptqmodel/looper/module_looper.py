@@ -100,8 +100,16 @@ class ModuleLooper():
                     return block
         return None
 
-    def _patch_moe_forward(self, moe_block):
+    def _patch_moe_forward(self, moe_block, subset):
         original_forward = moe_block.forward
+
+        # Create a mapping from expert module to NamedModule
+        # This is needed because hooks are registered on NamedModule, but moe_block holds raw modules.
+        # forced_forward must call NamedModule to trigger hooks.
+        expert_to_named = {}
+        for name, named_module in subset.items():
+            if hasattr(named_module, "module"):
+                 expert_to_named[named_module.module] = named_module
 
         def forced_forward(self, hidden_states, *args, **kwargs):
             stop_forward_raised = False
@@ -111,9 +119,12 @@ class ModuleLooper():
                 try:
                     if isinstance(self.shared_experts, (list, torch.nn.ModuleList)):
                         for exp in self.shared_experts:
-                            exp(hidden_states)
+                            # Call NamedModule if available to trigger hooks
+                            target = expert_to_named.get(exp, exp)
+                            target(hidden_states)
                     else:
-                        self.shared_experts(hidden_states)
+                        target = expert_to_named.get(self.shared_experts, self.shared_experts)
+                        target(hidden_states)
                 except StopForward:
                     stop_forward_raised = True
 
@@ -122,7 +133,9 @@ class ModuleLooper():
                 if isinstance(self.experts, (list, torch.nn.ModuleList)):
                     for expert in self.experts:
                         try:
-                            expert(hidden_states)
+                            # Call NamedModule if available to trigger hooks
+                            target = expert_to_named.get(expert, expert)
+                            target(hidden_states)
                         except StopForward:
                             stop_forward_raised = True
                 else:
@@ -394,7 +407,7 @@ class ModuleLooper():
                     moe_block = self._get_moe_block(layers[layer_index], subset)
                     orig_fwd = None
                     if moe_block:
-                        orig_fwd = self._patch_moe_forward(moe_block)
+                        orig_fwd = self._patch_moe_forward(moe_block, subset)
 
                     handle = []
                     device_next_reset()
