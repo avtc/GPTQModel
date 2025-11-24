@@ -100,11 +100,26 @@ class GPTQProcessor(LoopProcessor):
             return False
 
     def pre_process_fwd_hook(self, name: str) -> Callable[[Module, Tuple[torch.Tensor, ...], torch.Tensor], None]:
+        call_count = [0]
         def tmp(module, inp: Tuple[torch.Tensor, ...], out: torch.Tensor):
+            call_count[0] += 1
+            # Debug logging for self_attn
+            if call_count[0] <= 3 and "self_attn" in name:
+                log.info(f"[TRACE] pre_process_fwd_hook.tmp() called for {name}, call #{call_count[0]}")
+            
             g = self.tasks[name]  # noqa: F821
+            
+            if call_count[0] <= 3 and "self_attn" in name:
+                log.info(f"[TRACE] Calling g.add_batch for {name}, fwd_counter before: {g.fwd_counter}")
+            
             g.add_batch(inp[0].data, out.data)  # noqa: F821
+            
             if hasattr(module, 'layer_index') and module.layer_index == 0 and ".experts.1." in name:
                 log.info(f"[MOE_DEBUG] Layer {module.layer_index}: GPTQ.add_batch completed for {name}, fwd_counter now: {g.fwd_counter}")
+            
+            if call_count[0] <= 3 and "self_attn" in name:
+                log.info(f"[TRACE] g.add_batch completed for {name}, fwd_counter after: {g.fwd_counter}")
+            
             del inp, out
         return tmp
 
