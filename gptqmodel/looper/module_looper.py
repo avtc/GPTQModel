@@ -140,48 +140,40 @@ class ModuleLooper():
 
         def forced_forward(self, hidden_states, *args, **kwargs):
             stop_forward_raised = False
-            expert_wrappers = []  # Track NamedModule wrappers to check flags
             
             # Run shared experts if they exist
             if hasattr(self, "shared_experts"):
-                if isinstance(self.shared_experts, (list, torch.nn.ModuleList)):
-                    for exp in self.shared_experts:
-                        exp(hidden_states)
-                        if hasattr(exp, '_stop_forward_raised'):
-                            expert_wrappers.append(exp)
-                else:
-                    self.shared_experts(hidden_states)
-                    if hasattr(self.shared_experts, '_stop_forward_raised'):
-                        expert_wrappers.append(self.shared_experts)
+                try:
+                    if isinstance(self.shared_experts, (list, torch.nn.ModuleList)):
+                        for exp in self.shared_experts:
+                            exp(hidden_states)
+                    else:
+                        self.shared_experts(hidden_states)
+                except StopForward:
+                    stop_forward_raised = True
             
             # Qwen2Moe uses shared_expert (singular)
             if hasattr(self, "shared_expert"):
-                if isinstance(self.shared_expert, (list, torch.nn.ModuleList)):
-                    for exp in self.shared_expert:
-                        exp(hidden_states)
-                        if hasattr(exp, '_stop_forward_raised'):
-                            expert_wrappers.append(exp)
-                else:
-                    self.shared_expert(hidden_states)
-                    if hasattr(self.shared_expert, '_stop_forward_raised'):
-                        expert_wrappers.append(self.shared_expert)
+                try:
+                    if isinstance(self.shared_expert, (list, torch.nn.ModuleList)):
+                        for exp in self.shared_expert:
+                            exp(hidden_states)
+                    else:
+                        self.shared_expert(hidden_states)
+                except StopForward:
+                    stop_forward_raised = True
 
             # Run routed experts
             if hasattr(self, "experts"):
                 if isinstance(self.experts, (list, torch.nn.ModuleList)):
                     for expert in self.experts:
-                        expert(hidden_states)
-                        if hasattr(expert, '_stop_forward_raised'):
-                            expert_wrappers.append(expert)
+                        try:
+                            expert(hidden_states)
+                        except StopForward:
+                            stop_forward_raised = True
                 else:
                     # Fallback for single expert or custom container?
                     pass
-
-            # Check if any wrapper caught StopForward
-            for wrapper in expert_wrappers:
-                if wrapper._stop_forward_raised:
-                    stop_forward_raised = True
-                    wrapper._stop_forward_raised = False  # Reset flag
 
             if stop_forward_raised:
                 raise STOP_FORWARD_EXCEPTION
