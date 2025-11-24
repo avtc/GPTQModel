@@ -98,11 +98,11 @@ class ModuleLooper():
             # but we treat this as a "pre-hook" by calling the inner hook before
             # StopForward can be raised. The output parameter is ignored by GPTQ.add_batch.
             
-            if module.layer_index == 0 and "experts.1" in module.name:
+            if module.layer_index == 0 and ".experts.1." in module.name:
                 log.info(f"[MOE_DEBUG] Layer {module.layer_index}: pre_hook called for {module.name}, hooks_paused: {getattr(processor, 'hooks_paused', False)}")
             
             if getattr(processor, "hooks_paused", False):
-                if module.layer_index == 0 and "experts.1" in module.name:
+                if module.layer_index == 0 and ".experts.1." in module.name:
                     log.info(f"[MOE_DEBUG] Layer {module.layer_index}: Hooks paused, skipping for {module.name}")
                 return
 
@@ -125,10 +125,10 @@ class ModuleLooper():
 
             # Call inner hook with inputs and output (GPTQ ignores output anyway)
             # We pass output as-is to maintain compatibility with the hook signature
-            if module.layer_index == 0 and "experts.1" in module.name:
+            if module.layer_index == 0 and ".experts.1." in module.name:
                 log.info(f"[MOE_DEBUG] Layer {module.layer_index}: Calling inner_hook for {module.name}")
             inner_hook(module, new_inputs, output)
-            if module.layer_index == 0 and "experts.1" in module.name:
+            if module.layer_index == 0 and ".experts.1." in module.name:
                 log.info(f"[MOE_DEBUG] Layer {module.layer_index}: inner_hook completed for {module.name}")
             
         return pre_hook
@@ -162,7 +162,7 @@ class ModuleLooper():
                     rel_path = name[prefix_len + 1:] # e.g. "experts.0.gate_proj"
                     parts = rel_path.split(".")
                     
-                    if layer_index == 0 and "experts.1" in name:
+                    if layer_index == 0 and ".experts.1." in name:
                         log.info(f"[MOE_DEBUG] Layer {layer_index}: Found MoE module to replace: {name}")
                     
                     # Traverse to parent of leaf
@@ -182,13 +182,13 @@ class ModuleLooper():
                             orig = parent[int(attr)]
                             parent[int(attr)] = named_module
                             replacements.append((parent, int(attr), orig))
-                            if layer_index == 0 and "experts.1" in name:
+                            if layer_index == 0 and ".experts.1." in name:
                                 log.info(f"[MOE_DEBUG] Layer {layer_index}: Replaced {name} (list index {attr})")
                         else:
                             orig = getattr(parent, attr)
                             setattr(parent, attr, named_module)
                             replacements.append((parent, attr, orig))
-                            if layer_index == 0 and "experts.1" in name:
+                            if layer_index == 0 and ".experts.1." in name:
                                 log.info(f"[MOE_DEBUG] Layer {layer_index}: Replaced {name} (attribute {attr})")
                             
                     except Exception as e:
@@ -235,7 +235,7 @@ class ModuleLooper():
                     log.info(f"[MOE_DEBUG] StopForward raised in shared_expert")
                     stop_forward_raised = True
 
-            # Run routed experts - this fires hooks and captures calibration data
+            # Run routed experts - call INTERNAL MODULES directly to bypass routing logic
             if hasattr(self, "experts"):
                 if isinstance(self.experts, (list, torch.nn.ModuleList)):
                     if layer_index == 0:
@@ -243,11 +243,28 @@ class ModuleLooper():
                     for i, expert in enumerate(self.experts):
                         try:
                             if layer_index == 0 and i == 1:
-                                log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert {i}, type: {type(expert)}")
-                            expert(hidden_states)
+                                log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert {i} internal modules")
+                            
+                            # Call internal linear layers directly with full hidden_states
+                            # Common patterns: w1/w2/w3 or gate_proj/up_proj/down_proj
+                            if hasattr(expert, 'w1'):
+                                # MiniMax, DeepSeek pattern: w1, w3, w2
+                                expert.w1(hidden_states)
+                                expert.w3(hidden_states)
+                                expert.w2(hidden_states)
+                            elif hasattr(expert, 'gate_proj'):
+                                # Standard pattern: gate_proj, up_proj, down_proj
+                                expert.gate_proj(hidden_states)
+                                expert.up_proj(hidden_states)
+                                expert.down_proj(hidden_states)
+                            else:
+                                # Fallback: call the expert (may get 0 tokens but at least we tried)
+                                expert(hidden_states)
+                            
                             expert_call_count += 1
                         except StopForward:
-                            log.info(f"[MOE_DEBUG] StopForward raised in expert {i}")
+                            if layer_index == 0 and i == 1:
+                                log.info(f"[MOE_DEBUG] StopForward raised in expert {i}")
                             stop_forward_raised = True
                 else:
                     # Fallback for single expert or custom container?

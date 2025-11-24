@@ -102,10 +102,10 @@ class GPTQProcessor(LoopProcessor):
     def pre_process_fwd_hook(self, name: str) -> Callable[[Module, Tuple[torch.Tensor, ...], torch.Tensor], None]:
         def tmp(module, inp: Tuple[torch.Tensor, ...], out: torch.Tensor):
             g = self.tasks[name]  # noqa: F821
-            if hasattr(module, 'layer_index') and module.layer_index == 0 and "experts.1" in name:
+            if hasattr(module, 'layer_index') and module.layer_index == 0 and ".experts.1." in name:
                 log.info(f"[MOE_DEBUG] Layer {module.layer_index}: GPTQ.add_batch called for {name}, inp shape: {inp[0].shape if inp else 'None'}")
             g.add_batch(inp[0].data, out.data)  # noqa: F821
-            if hasattr(module, 'layer_index') and module.layer_index == 0 and "experts.1" in name:
+            if hasattr(module, 'layer_index') and module.layer_index == 0 and ".experts.1." in name:
                 log.info(f"[MOE_DEBUG] Layer {module.layer_index}: GPTQ.add_batch completed for {name}, fwd_counter now: {g.fwd_counter}")
             del inp, out
         return tmp
