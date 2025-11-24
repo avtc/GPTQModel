@@ -87,6 +87,38 @@ class ModuleLooper():
             return inner_hook(module, new_inputs, new_output)
         return hook
 
+    def _masked_pre_hook_wrapper(self, processor: LoopProcessor, inner_hook):
+        """
+        Pre-forward hook wrapper for MoE expert modules.
+        Pre-hooks fire before forward() executes, so they aren't affected by StopForward.
+        GPTQ.add_batch ignores the output parameter anyway, so we pass None.
+        """
+        def pre_hook(module, inputs):
+            if getattr(processor, "hooks_paused", False):
+                return
+
+            keep = getattr(processor, "current_attention_mask", None)
+
+            # Mask first tensor-like input if it's [B, S, ...]
+            new_inputs = inputs
+            try:
+                if isinstance(inputs, (tuple, list)) and len(inputs) > 0 and torch.is_tensor(inputs[0]):
+                    x = inputs[0]
+                    if keep is not None and x.dim() >= 3:
+                        xk = apply_keep_mask_bt(x, keep)
+                        if isinstance(inputs, tuple):
+                            new_inputs = (xk,) + tuple(inputs[1:])
+                        else:
+                            new_inputs = [xk] + list(inputs[1:])
+            except Exception:
+                # Never break the forward due to masking; fall back to original
+                new_inputs = inputs
+
+            # Call inner hook with inputs and None for output (GPTQ doesn't use it)
+            inner_hook(module, new_inputs, None)
+            
+        return pre_hook
+
     def _get_moe_block(self, layer, subset):
         for name in subset:
             if "experts" in name:
@@ -460,18 +492,30 @@ class ModuleLooper():
 
                         m.module.target_device, m.module.target_device_stream = device_next()
 
+                        # Determine if this module is part of MoE block (needs pre-hook to avoid StopForward)
+                        is_moe_module = moe_block_name and name.startswith(moe_block_name + ".")
+
                         # Wrap the processor hook with masking
                         if hasattr(subset[name], 'forward_hook'):
                             original_hook = processor.pre_process_fwd_hook(name)
-                            subset[name].forward_hook = self._masked_hook_wrapper(processor, original_hook)
+                            if is_moe_module:
+                                # Use pre-hook for MoE modules (fires before StopForward)
+                                subset[name].forward_hook = self._masked_pre_hook_wrapper(processor, original_hook)
+                            else:
+                                subset[name].forward_hook = self._masked_hook_wrapper(processor, original_hook)
                             if is_last:
                                 subset[name].forward_hook_last = True
                         else:
                             # Older registration path
                             original_hook = processor.pre_process_fwd_hook(name)
-                            handle.append(subset[name].register_forward_hook(
-                                self._masked_hook_wrapper(processor, original_hook)
-                            ))
+                            if is_moe_module:
+                                # Register pre-forward hook for MoE modules
+                                wrapped_hook = self._masked_pre_hook_wrapper(processor, original_hook)
+                                handle.append(subset[name].register_forward_pre_hook(wrapped_hook))
+                            else:
+                                handle.append(subset[name].register_forward_hook(
+                                    self._masked_hook_wrapper(processor, original_hook)
+                                ))
 
                     # ---- Start Pre-Quantized Forward ----
                     fwd_start = time.time()
