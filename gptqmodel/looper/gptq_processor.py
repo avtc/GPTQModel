@@ -89,9 +89,7 @@ class GPTQProcessor(LoopProcessor):
         tmp.quantizer.configure(
             perchannel=True,
         )
-        # Debug: log task storage
-        if "self_attn" in module.full_name and ".0." in module.full_name:
-            log.info(f"[DEBUG] Storing task with key: '{module.full_name}'")
+
         self.tasks[module.full_name] = tmp
 
     def is_skipped(self, module: NamedModule) -> bool:
@@ -103,15 +101,11 @@ class GPTQProcessor(LoopProcessor):
             return False
 
     def pre_process_fwd_hook(self, full_name: str) -> Callable[[Module, Tuple[torch.Tensor, ...], torch.Tensor], None]:
-        # Debug: log what full_name is being registered
-        if "self_attn" in full_name and ".0." in full_name:
-            log.info(f"[DEBUG] Creating hook for full_name: '{full_name}'")
-        
         def tmp(module, inp: Tuple[torch.Tensor, ...], out: torch.Tensor):
             g = self.tasks[full_name]  # noqa: F821
+            if "self_attn" in full_name and ".0." in full_name:
+                 log.info(f"[DEBUG] Hook called for {full_name}, input shape: {inp[0].shape}")
             g.add_batch(inp[0].data, out.data)  # noqa: F821
-            if hasattr(module, 'layer_index') and module.layer_index == 0 and ".experts.1." in full_name:
-                log.info(f"[MOE_DEBUG] Layer {module.layer_index}: GPTQ.add_batch completed for {full_name}, fwd_counter now: {g.fwd_counter}")
             del inp, out
         return tmp
 

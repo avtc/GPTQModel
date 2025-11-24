@@ -201,19 +201,11 @@ class HookedLinear(torch.nn.Linear):
         return custom_linear
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        # Debug trace - log first few calls
-        if not hasattr(self, '_trace_count'):
-            self._trace_count = 0
-        self._trace_count += 1
-        if self._trace_count <= 3:
-            has_hook = self.forward_hook is not None
-            log.info(f"[TRACE] HookedLinear.forward() #{self._trace_count}, has_hook={has_hook}")
-        
+
         input = input.to(device=self.weight.data.device)
         output = super().forward(input)
         if self.forward_hook:
-            if self._trace_count <= 3:
-                log.info(f"[TRACE] HookedLinear calling forward_hook #{self._trace_count}")
+
             self.forward_hook(self, (input,), output)
             if self.forward_hook_last:
                 raise STOP_FORWARD_EXCEPTION.with_traceback(None)

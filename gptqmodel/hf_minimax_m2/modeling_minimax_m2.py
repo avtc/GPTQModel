@@ -321,6 +321,9 @@ class MiniMaxM2Attention(nn.Module):
         output_attentions: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         bsz, q_len, _ = hidden_states.size()
+        if self.layer_idx == 0:
+            print(f"DEBUG: MiniMaxM2Attention layer {self.layer_idx} input shape: {hidden_states.shape}")
+
         device = hidden_states.device
 
         # projections
