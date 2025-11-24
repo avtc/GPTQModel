@@ -98,12 +98,7 @@ class ModuleLooper():
             # but we treat this as a "pre-hook" by calling the inner hook before
             # StopForward can be raised. The output parameter is ignored by GPTQ.add_batch.
             
-            if module.layer_index == 0 and ".experts.1." in module.name:
-                log.info(f"[MOE_DEBUG] Layer {module.layer_index}: pre_hook called for {module.name}, hooks_paused: {getattr(processor, 'hooks_paused', False)}")
-            
             if getattr(processor, "hooks_paused", False):
-                if module.layer_index == 0 and ".experts.1." in module.name:
-                    log.info(f"[MOE_DEBUG] Layer {module.layer_index}: Hooks paused, skipping for {module.name}")
                 return
 
             keep = getattr(processor, "current_attention_mask", None)
@@ -125,11 +120,7 @@ class ModuleLooper():
 
             # Call inner hook with inputs and output (GPTQ ignores output anyway)
             # We pass output as-is to maintain compatibility with the hook signature
-            if module.layer_index == 0 and ".experts.1." in module.name:
-                log.info(f"[MOE_DEBUG] Layer {module.layer_index}: Calling inner_hook for {module.name}")
             inner_hook(module, new_inputs, output)
-            if module.layer_index == 0 and ".experts.1." in module.name:
-                log.info(f"[MOE_DEBUG] Layer {module.layer_index}: inner_hook completed for {module.name}")
             
         return pre_hook
 
@@ -150,9 +141,6 @@ class ModuleLooper():
         original_forward = moe_block.forward
         replacements = []
 
-        if layer_index == 0:
-            log.info(f"[MOE_DEBUG] Layer {layer_index}: Patching MoE block: {block_name_prefix}")
-        
         # Replace internal modules with NamedModule wrappers
         # This ensures that when the expert calls its internal layers, it calls the wrapper with the hook.
         if block_name_prefix:
@@ -161,9 +149,6 @@ class ModuleLooper():
                 if name.startswith(block_name_prefix + "."):
                     rel_path = name[prefix_len + 1:] # e.g. "experts.0.gate_proj"
                     parts = rel_path.split(".")
-                    
-                    if layer_index == 0 and ".experts.1." in name:
-                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Found MoE module to replace: {name}")
                     
                     # Traverse to parent of leaf
                     curr = moe_block
@@ -182,21 +167,14 @@ class ModuleLooper():
                             orig = parent[int(attr)]
                             parent[int(attr)] = named_module
                             replacements.append((parent, int(attr), orig))
-                            if layer_index == 0 and ".experts.1." in name:
-                                log.info(f"[MOE_DEBUG] Layer {layer_index}: Replaced {name} (list index {attr})")
                         else:
                             orig = getattr(parent, attr)
                             setattr(parent, attr, named_module)
                             replacements.append((parent, attr, orig))
-                            if layer_index == 0 and ".experts.1." in name:
-                                log.info(f"[MOE_DEBUG] Layer {layer_index}: Replaced {name} (attribute {attr})")
                             
                     except Exception as e:
                         log.warn(f"Failed to patch MoE module {name}: {e}")
         
-        if layer_index == 0:
-            log.info(f"[MOE_DEBUG] Layer {layer_index}: Replaced {len(replacements)} modules total")
-
         # Build a mapping of expert index to which internal modules are in this subset
         expert_modules_in_subset = {}  # {expert_idx: {'w1': True, 'w3': True, ...}}
         if block_name_prefix:
@@ -225,21 +203,6 @@ class ModuleLooper():
             if not getattr(processor.qcfg, "pass_whole_dataset_to_each_expert", False):
                 return original_forward(hidden_states, *args, **kwargs)
 
-            if layer_index == 0:
-                log.info(f"[MOE_DEBUG] Layer {layer_index}: forced_forward called with hidden_states shape: {hidden_states.shape}")
-                # Inspect first expert structure (only on first call)
-                if hasattr(self, "experts") and len(self.experts) > 0:
-                    expert0 = self.experts[0]
-                    if not hasattr(self, '_debug_logged'):
-                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Expert type: {type(expert0)}")
-                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Expert has forward: {hasattr(expert0, 'forward')}")
-                        if hasattr(expert0, 'w1'):
-                            log.info(f"[MOE_DEBUG] Layer {layer_index}: w1 type: {type(expert0.w1)}, w1.weight.shape: {expert0.w1.weight.shape if hasattr(expert0.w1, 'weight') else 'N/A'}")
-                        if hasattr(expert0, 'w2'):
-                            log.info(f"[MOE_DEBUG] Layer {layer_index}: w2 type: {type(expert0.w2)}, w2.weight.shape: {expert0.w2.weight.shape if hasattr(expert0.w2, 'weight') else 'N/A'}")
-                        if hasattr(expert0, 'w3'):
-                            log.info(f"[MOE_DEBUG] Layer {layer_index}: w3 type: {type(expert0.w3)}, w3.weight.shape: {expert0.w3.weight.shape if hasattr(expert0.w3, 'weight') else 'N/A'}")
-                        self._debug_logged = True
             stop_forward_raised = False
             expert_call_count = 0
             
@@ -248,15 +211,12 @@ class ModuleLooper():
                 try:
                     if isinstance(self.shared_experts, (list, torch.nn.ModuleList)):
                         for i, exp in enumerate(self.shared_experts):
-                            log.info(f"[MOE_DEBUG] Calling shared_expert {i}")
                             exp(hidden_states)
                             expert_call_count += 1
                     else:
-                        log.info(f"[MOE_DEBUG] Calling shared_experts (single)")
                         self.shared_experts(hidden_states)
                         expert_call_count += 1
                 except StopForward:
-                    log.info(f"[MOE_DEBUG] StopForward raised in shared_experts")
                     stop_forward_raised = True
             
             # Qwen2Moe uses shared_expert (singular)
@@ -264,23 +224,17 @@ class ModuleLooper():
                 try:
                     if isinstance(self.shared_expert, (list, torch.nn.ModuleList)):
                         for i, exp in enumerate(self.shared_expert):
-                            log.info(f"[MOE_DEBUG] Calling shared_expert {i}")
                             exp(hidden_states)
                             expert_call_count += 1
                     else:
-                        log.info(f"[MOE_DEBUG] Calling shared_expert (single)")
                         self.shared_expert(hidden_states)
                         expert_call_count += 1
                 except StopForward:
-                    log.info(f"[MOE_DEBUG] StopForward raised in shared_expert")
                     stop_forward_raised = True
 
             # Run routed experts - compute and accumulate intermediate values for w2
             if hasattr(self, "experts"):
                 if isinstance(self.experts, (list, torch.nn.ModuleList)):
-                    if layer_index == 0:
-                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Found {len(self.experts)} experts")
-                    
                     # Reshape hidden_states from [B, S, H] to [B*S, H] for expert modules
                     # Expert internal modules expect 2D input: [num_tokens, hidden_dim]
                     original_shape = hidden_states.shape
@@ -296,21 +250,14 @@ class ModuleLooper():
                             continue  # No modules from this expert in current subset
                         
                         try:
-                            if layer_index == 0 and i == 1:
-                                log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert {i} modules: {modules_to_call}, input shape: {hidden_states_2d.shape}")
-                            
                             # Call w1/gate_proj and w3/up_proj if present, compute and accumulate intermediate
                             w1_output = None
                             w3_output = None
                             
                             if hasattr(expert, 'w1') and 'w1' in modules_to_call:
-                                if layer_index == 0 and i == 1:
-                                    log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert.w1")
                                 w1_output = expert.w1(hidden_states_2d)
                                 
                             if hasattr(expert, 'w3') and 'w3' in modules_to_call:
-                                if layer_index == 0 and i == 1:
-                                    log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert.w3")
                                 w3_output = expert.w3(hidden_states_2d)
                             
                             if hasattr(expert, 'gate_proj') and 'gate_proj' in modules_to_call:
@@ -332,35 +279,21 @@ class ModuleLooper():
                                     processor.expert_intermediate_cache[i] = []
                                 # Append to accumulate across all samples
                                 processor.expert_intermediate_cache[i].append(intermediate.detach())
-                                
-                                if layer_index == 0 and i == 1:
-                                    log.info(f"[MOE_DEBUG] Layer {layer_index}: Accumulated intermediate for expert {i}, shape: {intermediate.shape}, total samples: {len(processor.expert_intermediate_cache[i])}")
                             
                             # Call w2/down_proj with ALL accumulated intermediates
                             if hasattr(expert, 'w2') and 'w2' in modules_to_call:
                                 if i in processor.expert_intermediate_cache and len(processor.expert_intermediate_cache[i]) > 0:
-                                    if layer_index == 0 and i == 1:
-                                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Replaying {len(processor.expert_intermediate_cache[i])} intermediate samples through expert.w2")
                                     # Get device from w2.weight (Linear layers always have weight parameter)
                                     target_device = expert.w2.weight.device if hasattr(expert.w2, 'weight') else None
                                     for idx, cached_intermediate in enumerate(processor.expert_intermediate_cache[i]):
-                                        if layer_index == 0 and i == 1 and idx == 0:
-                                            log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert.w2 with intermediate shape: {cached_intermediate.shape}")
                                         # Move to target device if needed
                                         inp = cached_intermediate.to(target_device) if target_device else cached_intermediate
                                         expert.w2(inp)
                                     # Clear cache for this expert to free memory
-                                    if layer_index == 0 and i == 1:
-                                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Clearing intermediate cache for expert {i}")
                                     del processor.expert_intermediate_cache[i]
-                                else:
-                                    if layer_index == 0 and i == 1:
-                                        log.info(f"[MOE_DEBUG] Layer {layer_index}: WARNING - w2 in subset but no cached intermediate for expert {i}")
                                         
                             if hasattr(expert, 'down_proj') and 'down_proj' in modules_to_call:
                                 if i in processor.expert_intermediate_cache and len(processor.expert_intermediate_cache[i]) > 0:
-                                    if layer_index == 0 and i == 1:
-                                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Replaying {len(processor.expert_intermediate_cache[i])} intermediate samples through expert.down_proj")
                                     # Get device from down_proj.weight
                                     target_device = expert.down_proj.weight.device if hasattr(expert.down_proj, 'weight') else None
                                     for cached_intermediate in processor.expert_intermediate_cache[i]:
@@ -368,41 +301,26 @@ class ModuleLooper():
                                         inp = cached_intermediate.to(target_device) if target_device else cached_intermediate
                                         expert.down_proj(inp)
                                     # Clear cache for this expert to free memory
-                                    if layer_index == 0 and i == 1:
-                                        log.info(f"[MOE_DEBUG] Layer {layer_index}: Clearing intermediate cache for expert {i}")
                                     del processor.expert_intermediate_cache[i]
-                                else:
-                                    if layer_index == 0 and i == 1:
-                                        log.info(f"[MOE_DEBUG] Layer {layer_index}: WARNING - down_proj in subset but no cached intermediate for expert {i}")
                             
                             expert_call_count += 1
                         except StopForward:
-                            if layer_index == 0 and i == 1:
-                                log.info(f"[MOE_DEBUG] StopForward raised in expert {i}")
                             stop_forward_raised = True
                 else:
                     # Fallback for single expert or custom container?
                     pass
 
-            if layer_index == 0:
-                log.info(f"[MOE_DEBUG] Layer {layer_index}: Called {expert_call_count} experts total")
-            
             if stop_forward_raised:
-                log.info(f"[MOE_DEBUG] Raising STOP_FORWARD_EXCEPTION")
                 raise STOP_FORWARD_EXCEPTION
 
             # After forcing all experts to see the data for calibration,
             # call the original forward to get proper output (pause hooks to avoid double-counting)
-            if layer_index == 0:
-                log.info(f"[MOE_DEBUG] Layer {layer_index}: Pausing hooks and calling original_forward")
             processor.hooks_paused = True
             try:
                 result = original_forward(hidden_states, *args, **kwargs)
             finally:
                 processor.hooks_paused = False
             
-            if layer_index == 0:
-                log.info(f"[MOE_DEBUG] Layer {layer_index}: forced_forward complete")
             return result
 
         # Bind method
