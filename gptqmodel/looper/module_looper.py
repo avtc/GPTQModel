@@ -255,6 +255,15 @@ class ModuleLooper():
                 if isinstance(self.experts, (list, torch.nn.ModuleList)):
                     if layer_index == 0:
                         log.info(f"[MOE_DEBUG] Layer {layer_index}: Found {len(self.experts)} experts")
+                    
+                    # Reshape hidden_states from [B, S, H] to [B*S, H] for expert modules
+                    # Expert internal modules expect 2D input: [num_tokens, hidden_dim]
+                    original_shape = hidden_states.shape
+                    if hidden_states.dim() == 3:
+                        hidden_states_2d = hidden_states.reshape(-1, hidden_states.shape[-1])
+                    else:
+                        hidden_states_2d = hidden_states
+                    
                     for i, expert in enumerate(self.experts):
                         # Check which modules are in subset for this expert
                         modules_to_call = expert_modules_in_subset.get(i, set())
@@ -263,21 +272,25 @@ class ModuleLooper():
                         
                         try:
                             if layer_index == 0 and i == 1:
-                                log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert {i} modules: {modules_to_call}")
+                                log.info(f"[MOE_DEBUG] Layer {layer_index}: Calling expert {i} modules: {modules_to_call}, input shape: {hidden_states_2d.shape}")
                             
                             # Only call modules that are in the current subset
                             if hasattr(expert, 'w1') and 'w1' in modules_to_call:
-                                expert.w1(hidden_states)
+                                if layer_index == 0 and i == 1:
+                                    log.info(f"[MOE_DEBUG] Layer {layer_index}: About to call expert.w1 with shape {hidden_states_2d.shape}, expert.w1 type: {type(expert.w1)}")
+                                result = expert.w1(hidden_states_2d)
+                                if layer_index == 0 and i == 1:
+                                    log.info(f"[MOE_DEBUG] Layer {layer_index}: expert.w1 returned shape {result.shape if hasattr(result, 'shape') else 'N/A'}")
                             if hasattr(expert, 'w3') and 'w3' in modules_to_call:
-                                expert.w3(hidden_states)
+                                expert.w3(hidden_states_2d)
                             if hasattr(expert, 'w2') and 'w2' in modules_to_call:
-                                expert.w2(hidden_states)
+                                expert.w2(hidden_states_2d)
                             if hasattr(expert, 'gate_proj') and 'gate_proj' in modules_to_call:
-                                expert.gate_proj(hidden_states)
+                                expert.gate_proj(hidden_states_2d)
                             if hasattr(expert, 'up_proj') and 'up_proj' in modules_to_call:
-                                expert.up_proj(hidden_states)
+                                expert.up_proj(hidden_states_2d)
                             if hasattr(expert, 'down_proj') and 'down_proj' in modules_to_call:
-                                expert.down_proj(hidden_states)
+                                expert.down_proj(hidden_states_2d)
                             
                             expert_call_count += 1
                         except StopForward:
