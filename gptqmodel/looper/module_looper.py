@@ -215,6 +215,17 @@ class ModuleLooper():
         def forced_forward(self, hidden_states, *args, **kwargs):
             if layer_index == 0:
                 log.info(f"[MOE_DEBUG] Layer {layer_index}: forced_forward called with hidden_states shape: {hidden_states.shape}")
+                # Inspect first expert structure
+                if hasattr(self, "experts") and len(self.experts) > 0:
+                    expert0 = self.experts[0]
+                    log.info(f"[MOE_DEBUG] Layer {layer_index}: Expert type: {type(expert0)}")
+                    log.info(f"[MOE_DEBUG] Layer {layer_index}: Expert has forward: {hasattr(expert0, 'forward')}")
+                    if hasattr(expert0, 'w1'):
+                        log.info(f"[MOE_DEBUG] Layer {layer_index}: w1 type: {type(expert0.w1)}, w1.weight.shape: {expert0.w1.weight.shape if hasattr(expert0.w1, 'weight') else 'N/A'}")
+                    if hasattr(expert0, 'w2'):
+                        log.info(f"[MOE_DEBUG] Layer {layer_index}: w2 type: {type(expert0.w2)}, w2.weight.shape: {expert0.w2.weight.shape if hasattr(expert0.w2, 'weight') else 'N/A'}")
+                    if hasattr(expert0, 'w3'):
+                        log.info(f"[MOE_DEBUG] Layer {layer_index}: w3 type: {type(expert0.w3)}, w3.weight.shape: {expert0.w3.weight.shape if hasattr(expert0.w3, 'weight') else 'N/A'}")
             stop_forward_raised = False
             expert_call_count = 0
             
