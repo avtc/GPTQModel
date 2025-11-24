@@ -103,6 +103,8 @@ class GPTQProcessor(LoopProcessor):
         def tmp(module, inp: Tuple[torch.Tensor, ...], out: torch.Tensor):
             g = self.tasks[name]  # noqa: F821
             g.add_batch(inp[0].data, out.data)  # noqa: F821
+            if hasattr(module, 'layer_index') and module.layer_index == 0 and ".experts.1." in name:
+                log.info(f"[MOE_DEBUG] Layer {module.layer_index}: GPTQ.add_batch completed for {name}, fwd_counter now: {g.fwd_counter}")
             del inp, out
         return tmp
 

@@ -278,7 +278,8 @@ class ModuleLooper():
                                 if i not in processor.expert_intermediate_cache:
                                     processor.expert_intermediate_cache[i] = []
                                 # Append to accumulate across all samples
-                                processor.expert_intermediate_cache[i].append(intermediate.detach())
+                                # Move to CPU to save GPU memory
+                                processor.expert_intermediate_cache[i].append(intermediate.detach().cpu())
                             
                             # Call w2/down_proj with ALL accumulated intermediates
                             if hasattr(expert, 'w2') and 'w2' in modules_to_call:
