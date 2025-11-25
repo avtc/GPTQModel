@@ -51,6 +51,12 @@ class LoopProcessor:
         # toggle to enable stream from gpu to cpu
         self.stream = False
 
+        # Thread-safe attributes for hook masking (used by module_looper)
+        # Set these dynamically per batch to control hook behavior and mask application  
+        self.hooks_paused: bool = False  # Pause hook execution when computing intermediates
+        self.current_attention_mask: Optional[torch.Tensor] = None  # Current batch's keep-mask [B, S]
+        self._hook_state_lock = threading.Lock()  # Lock for thread-safe access to hook state
+
         self.tokenizer = tokenizer
         self.qcfg = qcfg
         self.qcfg_dynamic = None # cloned and dynamic filtered

@@ -47,8 +47,13 @@ class ModuleLooper():
     # We *do not* alter the module's actual computation; only what the hook
     # passes down to the processor capture path is masked.
     def _masked_hook_wrapper(self, processor: LoopProcessor, inner_hook):
+        
         def hook(module, inputs, output):
-            keep = getattr(processor, "current_attention_mask", None)
+            # Thread-safe access to hook state
+            with processor._hook_state_lock:
+                if processor.hooks_paused:
+                    return
+                keep = processor.current_attention_mask
 
             # Mask first tensor-like input if it's [B, S, ...]
             new_inputs = inputs
@@ -61,8 +66,9 @@ class ModuleLooper():
                             new_inputs = (xk,) + tuple(inputs[1:])
                         else:
                             new_inputs = [xk] + list(inputs[1:])
-            except Exception:
+            except Exception as e:
                 # Never break the forward due to masking; fall back to original
+                log.warn(f"Masking failed for {module.__class__.__name__}: {e}")
                 new_inputs = inputs
 
             # Mask primary tensor output if it's [B, S, ...]
@@ -78,11 +84,264 @@ class ModuleLooper():
                             new_output = [yk] + list(output[1:])
                 elif torch.is_tensor(output) and keep is not None and output.dim() >= 3:
                     new_output = apply_keep_mask_bt(output, keep)
-            except Exception:
+            except Exception as e:
+                log.warn(f"Masking failed for {module.__class__.__name__}: {e}")
                 new_output = output
 
             return inner_hook(module, new_inputs, new_output)
         return hook
+
+    def _masked_pre_hook_wrapper(self, processor: LoopProcessor, inner_hook):
+        """
+        Pre-forward hook wrapper for MoE expert modules.
+        This is called BEFORE forward executes (when used with HookedLinear.forward_hook).
+        GPTQ.add_batch ignores the output parameter anyway, so we can pass None or the actual output.
+        """
+        def pre_hook(module, inputs, output):
+            # Note: For HookedLinear's custom hook mechanism, output may be available,
+            # but we treat this as a "pre-hook" by calling the inner hook before
+            # StopForward can be raised. The output parameter is ignored by GPTQ.add_batch.
+            
+            # Thread-safe access to hook state
+            with processor._hook_state_lock:
+                if processor.hooks_paused:
+                    return
+                keep = processor.current_attention_mask
+
+            # Mask first tensor-like input if it's [B, S, ...]
+            new_inputs = inputs
+            try:
+                if isinstance(inputs, (tuple, list)) and len(inputs) > 0 and torch.is_tensor(inputs[0]):
+                    x = inputs[0]
+                    if keep is not None and x.dim() >= 3:
+                        xk = apply_keep_mask_bt(x, keep)
+                        if isinstance(inputs, tuple):
+                            new_inputs = (xk,) + tuple(inputs[1:])
+                        else:
+                            new_inputs = [xk] + list(inputs[1:])
+            except Exception as e:
+                # Never break the forward due to masking; fall back to original
+                log.warn(f"Masking failed for {module.__class__.__name__}: {e}")
+                new_inputs = inputs
+
+            # Call inner hook with inputs and output (GPTQ ignores output anyway)
+            # We pass output as-is to maintain compatibility with the hook signature
+            inner_hook(module, new_inputs, output)
+            
+        return pre_hook
+
+    def _get_moe_block(self, layer, subset):
+        for name in subset:
+            if "experts" in name:
+                parts = name.split(".")
+                if "experts" in parts:
+                    idx = parts.index("experts")
+                    block_path = parts[:idx]
+                    block = layer
+                    for p in block_path:
+                        block = getattr(block, p)
+                    return block, ".".join(block_path)
+        return None, None
+
+    def _patch_moe_forward(self, moe_block, subset, block_name_prefix, processor, layer_index):
+        original_forward = moe_block.forward
+        replacements = []
+
+        # Replace internal modules with NamedModule wrappers
+        # This ensures that when the expert calls its internal layers, it calls the wrapper with the hook.
+        if block_name_prefix:
+            prefix_len = len(block_name_prefix)
+            for name, named_module in subset.items():
+                if name.startswith(block_name_prefix + "."):
+                    rel_path = name[prefix_len + 1:] # e.g. "experts.0.gate_proj"
+                    parts = rel_path.split(".")
+                    
+                    # Traverse to parent of leaf
+                    curr = moe_block
+                    try:
+                        for i, part in enumerate(parts[:-1]):
+                            if part.isdigit() and isinstance(curr, (list, torch.nn.ModuleList)):
+                                curr = curr[int(part)]
+                            else:
+                                curr = getattr(curr, part)
+                        
+                        parent = curr
+                        attr = parts[-1]
+                        
+                        # Get original module
+                        if attr.isdigit() and isinstance(parent, (list, torch.nn.ModuleList)):
+                            orig = parent[int(attr)]
+                            parent[int(attr)] = named_module
+                            replacements.append((parent, int(attr), orig))
+                        else:
+                            orig = getattr(parent, attr)
+                            setattr(parent, attr, named_module)
+                            replacements.append((parent, attr, orig))
+                            
+                    except Exception as e:
+                        log.warn(f"Failed to patch MoE module {name}: {e}")
+        
+        # Build a mapping of expert index to which internal modules are in this subset
+        expert_modules_in_subset = {}  # {expert_idx: {'w1': True, 'w3': True, ...}}
+        shared_experts_in_subset = False
+        shared_expert_in_subset = False
+        
+        if block_name_prefix:
+            for name in subset.keys():
+                if name.startswith(block_name_prefix + ".experts."):
+                    # Parse: "block_sparse_moe.experts.0.w1" -> expert_idx=0, module_name="w1"
+                    parts = name.split(".")
+                    experts_idx = parts.index("experts")
+                    if experts_idx + 2 < len(parts):
+                        expert_idx = int(parts[experts_idx + 1])
+                        module_name = parts[experts_idx + 2]
+                        if expert_idx not in expert_modules_in_subset:
+                            expert_modules_in_subset[expert_idx] = set()
+                        expert_modules_in_subset[expert_idx].add(module_name)
+                elif name.startswith(block_name_prefix + ".shared_experts."):
+                    # e.g., "mlp.shared_experts.gate_proj"
+                    shared_experts_in_subset = True
+                elif name.startswith(block_name_prefix + ".shared_expert."):
+                    # e.g., "mlp.shared_expert.gate_proj" (Qwen2Moe uses singular)
+                    shared_expert_in_subset = True
+
+        def forced_forward(self, hidden_states, *args, **kwargs):
+            # If not configured to pass whole dataset to each expert, use standard forward pass
+            # This allows hooks to fire naturally during routing (standard calibration)
+            if not getattr(processor.qcfg, "pass_whole_dataset_to_each_expert", False):
+                return original_forward(hidden_states, *args, **kwargs)
+
+            stop_forward_raised = False
+            
+            # Run shared experts if they exist AND if any of their modules are in this subset
+            # This avoids wasted computation when shared experts aren't being calibrated
+            if hasattr(self, "shared_experts") and shared_experts_in_subset:
+                try:
+                    if isinstance(self.shared_experts, (list, torch.nn.ModuleList)):
+                        for i, exp in enumerate(self.shared_experts):
+                            exp(hidden_states)
+                    else:
+                        self.shared_experts(hidden_states)
+                except StopForward:
+                    stop_forward_raised = True
+            
+            # Qwen2Moe uses shared_expert (singular)
+            if hasattr(self, "shared_expert") and shared_expert_in_subset:
+                try:
+                    if isinstance(self.shared_expert, (list, torch.nn.ModuleList)):
+                        for i, exp in enumerate(self.shared_expert):
+                            exp(hidden_states)
+                    else:
+                        self.shared_expert(hidden_states)
+                except StopForward:
+                    stop_forward_raised = True
+
+            # Run routed experts
+            if hasattr(self, "experts"):
+                if isinstance(self.experts, (list, torch.nn.ModuleList)):
+                    # Reshape hidden_states from [B, S, H] to [B*S, H] for expert modules
+                    # Expert internal modules expect 2D input: [num_tokens, hidden_dim]
+                    if hidden_states.dim() == 3:
+                        hidden_states_2d = hidden_states.reshape(-1, hidden_states.shape[-1])
+                    else:
+                        hidden_states_2d = hidden_states
+                    
+                    for i, expert in enumerate(self.experts):
+                        # Check which modules are in subset for this expert
+                        modules_to_call = expert_modules_in_subset.get(i, set())
+                        if not modules_to_call:
+                            continue  # No modules from this expert in current subset
+                        
+                        try:
+                            # Strategy: If w2/down_proj is in subset, compute intermediate on-the-fly
+                            # by calling w1/w3 with hooks paused, then call w2/down_proj with hooks enabled
+                            
+                            # Determine which down-projection module to use
+                            down_proj_module = None
+                            if hasattr(expert, 'w2') and 'w2' in modules_to_call:
+                                down_proj_module = expert.w2
+                            elif hasattr(expert, 'down_proj') and 'down_proj' in modules_to_call:
+                                down_proj_module = expert.down_proj
+                            
+                            if down_proj_module is not None:
+                                # Compute intermediate by calling w1/w3 with paused hooks
+                                intermediate = None
+                                with processor._hook_state_lock:
+                                    processor.hooks_paused = True
+                                try:
+                                    w1_output = None
+                                    w3_output = None
+                                    
+                                    # Try all possible up-projection module names
+                                    if hasattr(expert, 'w1'):
+                                        w1_output = expert.w1(hidden_states_2d)
+                                    elif hasattr(expert, 'gate_proj'):
+                                        w1_output = expert.gate_proj(hidden_states_2d)
+
+                                    if hasattr(expert, 'w3'):
+                                        w3_output = expert.w3(hidden_states_2d)
+                                    elif hasattr(expert, 'up_proj'):
+                                        w3_output = expert.up_proj(hidden_states_2d)
+                                    
+                                    if w1_output is not None and w3_output is not None:
+                                        # Compute intermediate, assume weights are on same device
+                                        if hasattr(expert, 'act_fn'):
+                                            intermediate = expert.act_fn(w1_output) * w3_output
+                                        else:
+                                            intermediate = torch.nn.functional.silu(w1_output) * w3_output
+                                finally:
+                                    with processor._hook_state_lock:
+                                        processor.hooks_paused = False
+                                
+                                # Now call down-projection with hooks enabled
+                                if intermediate is not None:
+                                    down_proj_module(intermediate)
+                            else:
+                                # For w1/w3/gate_proj/up_proj, just call them directly (hooks enabled)
+                                if hasattr(expert, 'w1') and 'w1' in modules_to_call:
+                                    expert.w1(hidden_states_2d)
+                                elif hasattr(expert, 'gate_proj') and 'gate_proj' in modules_to_call:
+                                    expert.gate_proj(hidden_states_2d)
+                                
+                                if hasattr(expert, 'w3') and 'w3' in modules_to_call:
+                                    expert.w3(hidden_states_2d)
+                                elif hasattr(expert, 'up_proj') and 'up_proj' in modules_to_call:
+                                    expert.up_proj(hidden_states_2d)
+                            
+                        except StopForward:
+                            stop_forward_raised = True
+                else:
+                    # Fallback for single expert or custom container?
+                    log.warn(f"Unexpected experts container type: {type(self.experts)}")
+                    pass
+
+            if stop_forward_raised:
+                raise STOP_FORWARD_EXCEPTION
+
+            # After forcing all experts to see the data for calibration,
+            # call the original forward to get proper output (pause hooks to avoid double-counting)
+            with processor._hook_state_lock:
+                processor.hooks_paused = True
+            try:
+                result = original_forward(hidden_states, *args, **kwargs)
+            finally:
+                with processor._hook_state_lock:
+                    processor.hooks_paused = False
+            
+            return result
+
+        # Bind method
+        moe_block.forward = forced_forward.__get__(moe_block, moe_block.__class__)
+        
+        def restore():
+            moe_block.forward = original_forward
+            for parent, attr, orig in replacements:
+                if isinstance(attr, int):
+                    parent[attr] = orig
+                else:
+                    setattr(parent, attr, orig)
+
+        return restore
 
     def cache_inputs(self, layers, auto_gc, calibration_data, use_cache):
         layer_inputs = []
@@ -336,6 +595,12 @@ class ModuleLooper():
                     #if len(subset) == 0:
                     #    continue
 
+                    # MoE: Patch forward to force routing to all experts
+                    moe_block, moe_block_name = self._get_moe_block(layers[layer_index], subset)
+                    restore_moe = None
+                    if moe_block:
+                        restore_moe = self._patch_moe_forward(moe_block, subset, moe_block_name, processor, layer_index)
+
                     handle = []
                     device_next_reset()
 
@@ -345,18 +610,30 @@ class ModuleLooper():
 
                         m.module.target_device, m.module.target_device_stream = device_next()
 
+                        # Determine if this module is part of MoE block (needs pre-hook to avoid StopForward)
+                        is_moe_module = moe_block_name and name.startswith(moe_block_name + ".")
+
                         # Wrap the processor hook with masking
                         if hasattr(subset[name], 'forward_hook'):
                             original_hook = processor.pre_process_fwd_hook(name)
-                            subset[name].forward_hook = self._masked_hook_wrapper(processor, original_hook)
+                            if is_moe_module:
+                                # Use pre-hook for MoE modules (fires before StopForward)
+                                subset[name].forward_hook = self._masked_pre_hook_wrapper(processor, original_hook)
+                            else:
+                                subset[name].forward_hook = self._masked_hook_wrapper(processor, original_hook)
                             if is_last:
                                 subset[name].forward_hook_last = True
                         else:
                             # Older registration path
                             original_hook = processor.pre_process_fwd_hook(name)
-                            handle.append(subset[name].register_forward_hook(
-                                self._masked_hook_wrapper(processor, original_hook)
-                            ))
+                            if is_moe_module:
+                                # Register pre-forward hook for MoE modules
+                                wrapped_hook = self._masked_pre_hook_wrapper(processor, original_hook)
+                                handle.append(subset[name].register_forward_pre_hook(wrapped_hook))
+                            else:
+                                handle.append(subset[name].register_forward_hook(
+                                    self._masked_hook_wrapper(processor, original_hook)
+                                ))
 
                     # ---- Start Pre-Quantized Forward ----
                     fwd_start = time.time()
@@ -375,10 +652,12 @@ class ModuleLooper():
                             # Assume hidden_states is first arg with shape [B, S, H]
                             seq_len = layer_input[0].shape[1] if (len(layer_input) > 0 and layer_input[0].dim() >= 2) else None
                             keep_mask_bs = normalize_seq_mask(layer_attention_mask, seq_len=seq_len)
-                            # We don't require LoopProcessor to declare this attribute; set dynamically.
-                            setattr(processor, "current_attention_mask", keep_mask_bs)
+                            # Set attention mask with thread safety
+                            with processor._hook_state_lock:
+                                processor.current_attention_mask = keep_mask_bs
                         else:
-                            setattr(processor, "current_attention_mask", None)
+                            with processor._hook_state_lock:
+                                processor.current_attention_mask = None
 
                         additional_layer_inputs = {"attention_mask": layer_attention_mask} if self.support_batch_quantize else {}
                         layer_position_ids = (
@@ -389,6 +668,7 @@ class ModuleLooper():
                         for k, v in layer_input_kwargs[j].items():
                             additional_layer_inputs[k] = nested_move_to(v, device=cur_layer_device, stream=False)
 
+                        layer_output = None # Initialize to avoid UnboundLocalError
                         try:
                             # reuse_kv special-case
                             if hasattr(module, "reuse_kv") and module.reuse_kv:
@@ -402,15 +682,17 @@ class ModuleLooper():
                             pass
                         finally:
                             # Clear the per-batch mask no matter what
-                            setattr(processor, "current_attention_mask", None)
+                            with processor._hook_state_lock:
+                                processor.current_attention_mask = None
                             del layer_input
                             del additional_layer_inputs
 
                         if not processor.fwd_after_process:
-                            if isinstance(layer_output, tuple):
-                                layer_outputs.append([layer_output[0]])
-                            else:
-                                layer_outputs.append([layer_output])
+                            if layer_output is not None:
+                                if isinstance(layer_output, tuple):
+                                    layer_outputs.append([layer_output[0]])
+                                else:
+                                    layer_outputs.append([layer_output])
 
                     if not processor.fwd_after_process:
                         processor.receive_layer_inputs(layer_outputs)
@@ -427,6 +709,10 @@ class ModuleLooper():
                         if hasattr(subset[name], 'forward_hook'):
                             subset[name].forward_hook = None
                             subset[name].forward_hook_last = False
+
+                    # MoE: Unpatch forward
+                    if restore_moe:
+                        restore_moe()
 
                     # MoE coverage check for GPTQ
                     moe_skip_modules = []
@@ -491,9 +777,11 @@ class ModuleLooper():
                         if raw_mask is not None:
                             seq_len = layer_input[0].shape[1] if (len(layer_input) > 0 and layer_input[0].dim() >= 2) else None
                             keep_mask_bs = normalize_seq_mask(layer_attention_mask, seq_len=seq_len)
-                            setattr(processor, "current_attention_mask", keep_mask_bs)
+                            with processor._hook_state_lock:
+                                processor.current_attention_mask = keep_mask_bs
                         else:
-                            setattr(processor, "current_attention_mask", None)
+                            with processor._hook_state_lock:
+                                processor.current_attention_mask = None
 
                         additional_layer_inputs = {"attention_mask": layer_attention_mask} if self.support_batch_quantize else {}
                         layer_position_ids = None if not position_ids else move_to(position_ids[j], device=cur_layer_device)
@@ -524,7 +812,8 @@ class ModuleLooper():
                         layer_outputs.append([layer_output])
 
                         # Clear per-batch mask
-                        setattr(processor, "current_attention_mask", None)
+                        with processor._hook_state_lock:
+                            processor.current_attention_mask = None
 
                         del layer_input
                         del additional_layer_inputs
