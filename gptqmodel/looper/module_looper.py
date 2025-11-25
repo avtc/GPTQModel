@@ -47,7 +47,7 @@ class ModuleLooper():
     # We *do not* alter the module's actual computation; only what the hook
     # passes down to the processor capture path is masked.
     def _masked_hook_wrapper(self, processor: LoopProcessor, inner_hook):
-
+        
         def hook(module, inputs, output):
             if getattr(processor, "hooks_paused", False):
                 return
@@ -699,7 +699,7 @@ class ModuleLooper():
                     moe_skip_modules = []
                     if isinstance(processor, GPTQProcessor):
                         for name in subset:
-                            if processor.tasks[subset[name].full_name].fwd_counter == 0:
+                            if processor.tasks[name].fwd_counter == 0:
                                 log.error(f"`{name}` was not invoked, if it is a MoE module, it may lack sufficient calibration data routed to it.")
                                 moe_skip_modules.append(name)
 
