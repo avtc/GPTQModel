@@ -130,6 +130,7 @@ class NamedModule(torch.nn.Module):
         with self._lock:
             return getattr(self.module, name)
 
+    # setattr is always called by python even if attr exists in `self`
     def __setattr__(self, name: str, value: Any) -> None:
         with self._lock:
             # Proxy forward_hook to inner module if it supports it (e.g. HookedLinear)

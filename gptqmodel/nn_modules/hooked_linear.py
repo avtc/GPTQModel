@@ -201,11 +201,9 @@ class HookedLinear(torch.nn.Linear):
         return custom_linear
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-
         input = input.to(device=self.weight.data.device)
         output = super().forward(input)
         if self.forward_hook:
-
             self.forward_hook(self, (input,), output)
             if self.forward_hook_last:
                 raise STOP_FORWARD_EXCEPTION.with_traceback(None)

@@ -599,7 +599,7 @@ class ModuleLooper():
 
                         # Wrap the processor hook with masking
                         if hasattr(subset[name], 'forward_hook'):
-                            original_hook = processor.pre_process_fwd_hook(subset[name].full_name)
+                            original_hook = processor.pre_process_fwd_hook(name)
                             if is_moe_module:
                                 # Use pre-hook for MoE modules (fires before StopForward)
                                 subset[name].forward_hook = self._masked_pre_hook_wrapper(processor, original_hook)
@@ -609,7 +609,7 @@ class ModuleLooper():
                                 subset[name].forward_hook_last = True
                         else:
                             # Older registration path
-                            original_hook = processor.pre_process_fwd_hook(subset[name].full_name)
+                            original_hook = processor.pre_process_fwd_hook(name)
                             if is_moe_module:
                                 # Register pre-forward hook for MoE modules
                                 wrapped_hook = self._masked_pre_hook_wrapper(processor, original_hook)
@@ -668,12 +668,12 @@ class ModuleLooper():
                             del layer_input
                             del additional_layer_inputs
 
-                    if not processor.fwd_after_process:
-                        if layer_output is not None:
-                            if isinstance(layer_output, tuple):
-                                layer_outputs.append([layer_output[0]])
-                            else:
-                                layer_outputs.append([layer_output])
+                        if not processor.fwd_after_process:
+                            if layer_output is not None:
+                                if isinstance(layer_output, tuple):
+                                    layer_outputs.append([layer_output[0]])
+                                else:
+                                    layer_outputs.append([layer_output])
 
                     if not processor.fwd_after_process:
                         processor.receive_layer_inputs(layer_outputs)
