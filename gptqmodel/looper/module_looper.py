@@ -183,6 +183,9 @@ class ModuleLooper():
         
         # Build a mapping of expert index to which internal modules are in this subset
         expert_modules_in_subset = {}  # {expert_idx: {'w1': True, 'w3': True, ...}}
+        shared_experts_in_subset = False
+        shared_expert_in_subset = False
+        
         if block_name_prefix:
             for name in subset.keys():
                 if name.startswith(block_name_prefix + ".experts."):
@@ -195,6 +198,12 @@ class ModuleLooper():
                         if expert_idx not in expert_modules_in_subset:
                             expert_modules_in_subset[expert_idx] = set()
                         expert_modules_in_subset[expert_idx].add(module_name)
+                elif name.startswith(block_name_prefix + ".shared_experts."):
+                    # e.g., "mlp.shared_experts.gate_proj"
+                    shared_experts_in_subset = True
+                elif name.startswith(block_name_prefix + ".shared_expert."):
+                    # e.g., "mlp.shared_expert.gate_proj" (Qwen2Moe uses singular)
+                    shared_expert_in_subset = True
 
         def forced_forward(self, hidden_states, *args, **kwargs):
             # If not configured to pass whole dataset to each expert, use standard forward pass
@@ -204,8 +213,9 @@ class ModuleLooper():
 
             stop_forward_raised = False
             
-            # Run shared experts if they exist - this fires hooks and captures calibration data
-            if hasattr(self, "shared_experts"):
+            # Run shared experts if they exist AND if any of their modules are in this subset
+            # This avoids wasted computation when shared experts aren't being calibrated
+            if hasattr(self, "shared_experts") and shared_experts_in_subset:
                 try:
                     if isinstance(self.shared_experts, (list, torch.nn.ModuleList)):
                         for i, exp in enumerate(self.shared_experts):
@@ -216,7 +226,7 @@ class ModuleLooper():
                     stop_forward_raised = True
             
             # Qwen2Moe uses shared_expert (singular)
-            if hasattr(self, "shared_expert"):
+            if hasattr(self, "shared_expert") and shared_expert_in_subset:
                 try:
                     if isinstance(self.shared_expert, (list, torch.nn.ModuleList)):
                         for i, exp in enumerate(self.shared_expert):
