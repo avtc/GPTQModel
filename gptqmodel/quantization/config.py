@@ -305,6 +305,10 @@ class QuantizeConfig():
         if self.act_group_aware and self.desc_act:
             raise ValueError("QuantizeConfig:: `act_group_aware` == `True` requires `desc_act` == `False`.")
 
+        # validate MoE parameters
+        if self.pass_whole_dataset_to_each_expert and self.quant_method != METHOD.GPTQ:
+            log.warn("QuantizeConfig: `pass_whole_dataset_to_each_expert` is only applicable for GPTQ quantization method")
+
         # validate meta
         if self.meta is not None:
             if not isinstance(self.meta, dict):

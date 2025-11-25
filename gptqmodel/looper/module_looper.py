@@ -49,10 +49,11 @@ class ModuleLooper():
     def _masked_hook_wrapper(self, processor: LoopProcessor, inner_hook):
         
         def hook(module, inputs, output):
-            if getattr(processor, "hooks_paused", False):
-                return
-
-            keep = getattr(processor, "current_attention_mask", None)
+            # Thread-safe access to hook state
+            with processor._hook_state_lock:
+                if processor.hooks_paused:
+                    return
+                keep = processor.current_attention_mask
 
             # Mask first tensor-like input if it's [B, S, ...]
             new_inputs = inputs
@@ -65,8 +66,9 @@ class ModuleLooper():
                             new_inputs = (xk,) + tuple(inputs[1:])
                         else:
                             new_inputs = [xk] + list(inputs[1:])
-            except Exception:
+            except Exception as e:
                 # Never break the forward due to masking; fall back to original
+                log.warn(f"Masking failed for {module.__class__.__name__}: {e}")
                 new_inputs = inputs
 
             # Mask primary tensor output if it's [B, S, ...]
@@ -82,7 +84,8 @@ class ModuleLooper():
                             new_output = [yk] + list(output[1:])
                 elif torch.is_tensor(output) and keep is not None and output.dim() >= 3:
                     new_output = apply_keep_mask_bt(output, keep)
-            except Exception:
+            except Exception as e:
+                log.warn(f"Masking failed for {module.__class__.__name__}: {e}")
                 new_output = output
 
             return inner_hook(module, new_inputs, new_output)
@@ -99,10 +102,11 @@ class ModuleLooper():
             # but we treat this as a "pre-hook" by calling the inner hook before
             # StopForward can be raised. The output parameter is ignored by GPTQ.add_batch.
             
-            if getattr(processor, "hooks_paused", False):
-                return
-
-            keep = getattr(processor, "current_attention_mask", None)
+            # Thread-safe access to hook state
+            with processor._hook_state_lock:
+                if processor.hooks_paused:
+                    return
+                keep = processor.current_attention_mask
 
             # Mask first tensor-like input if it's [B, S, ...]
             new_inputs = inputs
@@ -115,8 +119,9 @@ class ModuleLooper():
                             new_inputs = (xk,) + tuple(inputs[1:])
                         else:
                             new_inputs = [xk] + list(inputs[1:])
-            except Exception:
+            except Exception as e:
                 # Never break the forward due to masking; fall back to original
+                log.warn(f"Masking failed for {module.__class__.__name__}: {e}")
                 new_inputs = inputs
 
             # Call inner hook with inputs and output (GPTQ ignores output anyway)
@@ -198,7 +203,6 @@ class ModuleLooper():
                 return original_forward(hidden_states, *args, **kwargs)
 
             stop_forward_raised = False
-            expert_call_count = 0
             
             # Run shared experts if they exist - this fires hooks and captures calibration data
             if hasattr(self, "shared_experts"):
@@ -206,10 +210,8 @@ class ModuleLooper():
                     if isinstance(self.shared_experts, (list, torch.nn.ModuleList)):
                         for i, exp in enumerate(self.shared_experts):
                             exp(hidden_states)
-                            expert_call_count += 1
                     else:
                         self.shared_experts(hidden_states)
-                        expert_call_count += 1
                 except StopForward:
                     stop_forward_raised = True
             
@@ -219,10 +221,8 @@ class ModuleLooper():
                     if isinstance(self.shared_expert, (list, torch.nn.ModuleList)):
                         for i, exp in enumerate(self.shared_expert):
                             exp(hidden_states)
-                            expert_call_count += 1
                     else:
                         self.shared_expert(hidden_states)
-                        expert_call_count += 1
                 except StopForward:
                     stop_forward_raised = True
 
@@ -231,7 +231,6 @@ class ModuleLooper():
                 if isinstance(self.experts, (list, torch.nn.ModuleList)):
                     # Reshape hidden_states from [B, S, H] to [B*S, H] for expert modules
                     # Expert internal modules expect 2D input: [num_tokens, hidden_dim]
-                    original_shape = hidden_states.shape
                     if hidden_states.dim() == 3:
                         hidden_states_2d = hidden_states.reshape(-1, hidden_states.shape[-1])
                     else:
@@ -256,7 +255,9 @@ class ModuleLooper():
                             
                             if down_proj_module is not None:
                                 # Compute intermediate by calling w1/w3 with paused hooks
-                                processor.hooks_paused = True
+                                intermediate = None
+                                with processor._hook_state_lock:
+                                    processor.hooks_paused = True
                                 try:
                                     w1_output = None
                                     w3_output = None
@@ -264,41 +265,44 @@ class ModuleLooper():
                                     # Try all possible up-projection module names
                                     if hasattr(expert, 'w1'):
                                         w1_output = expert.w1(hidden_states_2d)
+                                    elif hasattr(expert, 'gate_proj'):
+                                        w1_output = expert.gate_proj(hidden_states_2d)
+
                                     if hasattr(expert, 'w3'):
                                         w3_output = expert.w3(hidden_states_2d)
-                                    if hasattr(expert, 'gate_proj'):
-                                        w1_output = expert.gate_proj(hidden_states_2d)
-                                    if hasattr(expert, 'up_proj'):
+                                    elif hasattr(expert, 'up_proj'):
                                         w3_output = expert.up_proj(hidden_states_2d)
                                     
                                     if w1_output is not None and w3_output is not None:
-                                        # Compute intermediate
+                                        # Compute intermediate, assume weights are on same device
                                         if hasattr(expert, 'act_fn'):
                                             intermediate = expert.act_fn(w1_output) * w3_output
                                         else:
                                             intermediate = torch.nn.functional.silu(w1_output) * w3_output
                                 finally:
-                                    processor.hooks_paused = False
+                                    with processor._hook_state_lock:
+                                        processor.hooks_paused = False
                                 
                                 # Now call down-projection with hooks enabled
-                                if w1_output is not None and w3_output is not None:
+                                if intermediate is not None:
                                     down_proj_module(intermediate)
                             else:
                                 # For w1/w3/gate_proj/up_proj, just call them directly (hooks enabled)
                                 if hasattr(expert, 'w1') and 'w1' in modules_to_call:
                                     expert.w1(hidden_states_2d)
+                                elif hasattr(expert, 'gate_proj') and 'gate_proj' in modules_to_call:
+                                    expert.gate_proj(hidden_states_2d)
+                                
                                 if hasattr(expert, 'w3') and 'w3' in modules_to_call:
                                     expert.w3(hidden_states_2d)
-                                if hasattr(expert, 'gate_proj') and 'gate_proj' in modules_to_call:
-                                    expert.gate_proj(hidden_states_2d)
-                                if hasattr(expert, 'up_proj') and 'up_proj' in modules_to_call:
+                                elif hasattr(expert, 'up_proj') and 'up_proj' in modules_to_call:
                                     expert.up_proj(hidden_states_2d)
                             
-                            expert_call_count += 1
                         except StopForward:
                             stop_forward_raised = True
                 else:
                     # Fallback for single expert or custom container?
+                    log.warn(f"Unexpected experts container type: {type(self.experts)}")
                     pass
 
             if stop_forward_raised:
@@ -306,11 +310,13 @@ class ModuleLooper():
 
             # After forcing all experts to see the data for calibration,
             # call the original forward to get proper output (pause hooks to avoid double-counting)
-            processor.hooks_paused = True
+            with processor._hook_state_lock:
+                processor.hooks_paused = True
             try:
                 result = original_forward(hidden_states, *args, **kwargs)
             finally:
-                processor.hooks_paused = False
+                with processor._hook_state_lock:
+                    processor.hooks_paused = False
             
             return result
 
@@ -636,10 +642,12 @@ class ModuleLooper():
                             # Assume hidden_states is first arg with shape [B, S, H]
                             seq_len = layer_input[0].shape[1] if (len(layer_input) > 0 and layer_input[0].dim() >= 2) else None
                             keep_mask_bs = normalize_seq_mask(layer_attention_mask, seq_len=seq_len)
-                            # We don't require LoopProcessor to declare this attribute; set dynamically.
-                            setattr(processor, "current_attention_mask", keep_mask_bs)
+                            # Set attention mask with thread safety
+                            with processor._hook_state_lock:
+                                processor.current_attention_mask = keep_mask_bs
                         else:
-                            setattr(processor, "current_attention_mask", None)
+                            with processor._hook_state_lock:
+                                processor.current_attention_mask = None
 
                         additional_layer_inputs = {"attention_mask": layer_attention_mask} if self.support_batch_quantize else {}
                         layer_position_ids = (
@@ -664,7 +672,8 @@ class ModuleLooper():
                             pass
                         finally:
                             # Clear the per-batch mask no matter what
-                            setattr(processor, "current_attention_mask", None)
+                            with processor._hook_state_lock:
+                                processor.current_attention_mask = None
                             del layer_input
                             del additional_layer_inputs
 
@@ -758,9 +767,11 @@ class ModuleLooper():
                         if raw_mask is not None:
                             seq_len = layer_input[0].shape[1] if (len(layer_input) > 0 and layer_input[0].dim() >= 2) else None
                             keep_mask_bs = normalize_seq_mask(layer_attention_mask, seq_len=seq_len)
-                            setattr(processor, "current_attention_mask", keep_mask_bs)
+                            with processor._hook_state_lock:
+                                processor.current_attention_mask = keep_mask_bs
                         else:
-                            setattr(processor, "current_attention_mask", None)
+                            with processor._hook_state_lock:
+                                processor.current_attention_mask = None
 
                         additional_layer_inputs = {"attention_mask": layer_attention_mask} if self.support_batch_quantize else {}
                         layer_position_ids = None if not position_ids else move_to(position_ids[j], device=cur_layer_device)
@@ -791,7 +802,8 @@ class ModuleLooper():
                         layer_outputs.append([layer_output])
 
                         # Clear per-batch mask
-                        setattr(processor, "current_attention_mask", None)
+                        with processor._hook_state_lock:
+                            processor.current_attention_mask = None
 
                         del layer_input
                         del additional_layer_inputs
