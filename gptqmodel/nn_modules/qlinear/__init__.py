@@ -568,6 +568,7 @@ class PackableQuantLinear(BaseQuantLinear):
 
         disable_ext = env_flag("GPTQMODEL_DISABLE_PACK_EXT")
         force_ext = env_flag("GPTQMODEL_FORCE_PACK_EXT")
+        force_recompile_ext = env_flag("GPTQMODEL_RECOMPILE_PACK_EXT")
         pack_block_threads = workers if workers and workers > 0 else 1
         env_threads = os.getenv("GPTQMODEL_PACK_THREADS")
         if env_threads:
@@ -583,6 +584,9 @@ class PackableQuantLinear(BaseQuantLinear):
         if not disable_ext and bits in (2, 4, 8):
             try:
                 from .pack_block_ext import pack_block_cpu as pack_block_cpu_ext
+
+                if force_recompile_ext:
+                    log.info("pack_block: forcing C++ extension recompilation due to GPTQMODEL_RECOMPILE_PACK_EXT")
 
                 qweight_ext, qzeros_ext = pack_block_cpu_ext(
                     W,

@@ -23,17 +23,22 @@ _PACK_BLOCK_EXTENSION: Optional[bool] = None
 _PACK_BLOCK_EXTENSION_INITIALISED = False
 
 
-def load_pack_block_extension(*, verbose: bool = False) -> Optional[object]:
+def load_pack_block_extension(*, verbose: bool = False, force_recompile: bool = False) -> Optional[object]:
     """Ensure the pack_block CPU extension is built and loaded."""
 
     global _PACK_BLOCK_EXTENSION, _PACK_BLOCK_EXTENSION_INITIALISED
 
-    if hasattr(torch.ops.gptqmodel, "pack_block_cpu"):
+    # Force extension unload if requested (for debugging/recompilation)
+    if force_recompile and hasattr(torch.ops.gptqmodel, "pack_block_cpu"):
+        log.info("Forcing pack_block_cpu extension unload for recompilation")
+        # Note: PyTorch doesn't provide a clean way to unload extensions, so we'll recompile
+
+    if hasattr(torch.ops.gptqmodel, "pack_block_cpu") and not force_recompile:
         _PACK_BLOCK_EXTENSION_INITIALISED = True
         _PACK_BLOCK_EXTENSION = True
         return _PACK_BLOCK_EXTENSION
 
-    if _PACK_BLOCK_EXTENSION_INITIALISED and _PACK_BLOCK_EXTENSION:
+    if _PACK_BLOCK_EXTENSION_INITIALISED and _PACK_BLOCK_EXTENSION and not force_recompile:
         return _PACK_BLOCK_EXTENSION
 
     try:
@@ -71,6 +76,18 @@ def load_pack_block_extension(*, verbose: bool = False) -> Optional[object]:
         verbose = env_flag("GPTQMODEL_EXT_VERBOSE", True)
 
     try:
+        # Force rebuild by creating unique build directory when requested
+        if force_recompile:
+            import hashlib
+            import time
+            # Create unique build dir to force recompilation
+            hash_input = f"{source_path}_{time.time()}_{os.getpid()}"
+            unique_hash = hashlib.md5(hash_input.encode()).hexdigest()[:8]
+            build_dir = os.path.join(build_dir or tempfile.gettempdir(), f"gptqmodel_pack_block_{unique_hash}")
+            log.info(f"Force recompiling pack_block extension with build_dir: {build_dir}")
+        else:
+            build_dir = build_dir
+
         load(
             name="gptqmodel_pack_block_cpu",
             sources=[str(source_path)],

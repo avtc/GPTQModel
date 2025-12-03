@@ -22,7 +22,10 @@ def pack_block_cpu(
     block_in: int,
     threads: int,
 ) -> Tuple[Tensor, Tensor]:
-    ext = load_pack_block_extension()
+    from ..utils.env import env_flag
+    force_recompile_ext = env_flag("GPTQMODEL_RECOMPILE_PACK_EXT")
+
+    ext = load_pack_block_extension(force_recompile=force_recompile_ext)
     if ext is None:
         raise RuntimeError("pack_block_cpu extension unavailable")
     return torch.ops.gptqmodel.pack_block_cpu(
