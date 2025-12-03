@@ -503,36 +503,25 @@ def run_layer_stage(
                         )
 
                 if finalize_futures_snapshot:
-                    # Check if we should wait for layer completion before proceeding to next layer
-                    wait_for_completion = getattr(
-                        looper.gptq_model.quantize_config,
-                        'wait_for_layer_completion',
-                        False
-                    )
+                    if looper.gptq_model.quantize_config.wait_for_layer_completion:
+                        # Synchronous: wait for all finalization futures to complete before proceeding
+                        # Use thread pool's wait() to avoid deadlock issues with as_completed() in main thread
+                        DEVICE_THREAD_POOL.wait()
 
-                    if wait_for_completion:
-                        # Synchronous: wait for all finalization to complete before proceeding to next layer
-                        # This ensures all packing and writing tasks are done
-                        _drain_finalize_futures(
+                    # Drain finalize futures in background thread (for progress updates)
+                    # When wait_for_completion is True, this thread finishes quickly since futures are already complete
+                    # When False (default), this allows next layer to start while current layer finalizes
+                    threading.Thread(
+                        target=_drain_finalize_futures,
+                        args=(
                             [future for future, *_ in finalize_futures_snapshot],
                             finalize_pb,
                             finalize_count,
                             layer_index,
-                        )
-                    else:
-                        # Asynchronous (current/default behavior): drain in background thread
-                        # This allows next layer to start while current layer finalizes
-                        threading.Thread(
-                            target=_drain_finalize_futures,
-                            args=(
-                                [future for future, *_ in finalize_futures_snapshot],
-                                finalize_pb,
-                                finalize_count,
-                                layer_index,
-                            ),
-                            name="SubmoduleFinalizeWatcher",
-                            daemon=True,
-                        ).start()
+                        ),
+                        name="SubmoduleFinalizeWatcher",
+                        daemon=True,
+                    ).start()
                 else:
                     looper._emit_layer_complete(
                         layer_idx=layer_index,
