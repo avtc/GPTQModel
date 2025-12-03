@@ -88,12 +88,6 @@ def load_pack_block_extension(*, verbose: bool = False, force_recompile: bool = 
         else:
             build_dir = build_dir
 
-        if verbose:
-            log.info(f"Compiling pack_block extension from: {source_path}")
-            log.info(f"Build directory: {build_dir}")
-            log.info(f"Extra CFLAGS: {extra_cflags}")
-            log.info(f"Extra LDFLAGS: {extra_ldflags}")
-
         load(
             name="gptqmodel_pack_block_cpu",
             sources=[str(source_path)],
@@ -106,9 +100,7 @@ def load_pack_block_extension(*, verbose: bool = False, force_recompile: bool = 
         log.debug("pack_block_cpu extension loaded from %s", source_path)
         _PACK_BLOCK_EXTENSION = True
     except Exception as exc:  # pragma: no cover - environment-specific
-        import traceback
-        log.error("pack_block_cpu extension build failed: %s", exc)
-        log.error("Extension build traceback:\n%s", traceback.format_exc())
+        log.debug("pack_block_cpu extension build failed: %s", exc)
         _PACK_BLOCK_EXTENSION = None
     _PACK_BLOCK_EXTENSION_INITIALISED = True
     return _PACK_BLOCK_EXTENSION
