@@ -410,9 +410,10 @@ def run_layer_stage(
                     # ).draw()
 
                 for index, (process, module, module_label, target_dev, layer_idx) in enumerate(finalize_tasks, start=1):
-                    # Schedule finalize work on the device thread pool so CPU
-                    # bound tasks do not stall the main orchestration loop.
-                    future = DEVICE_THREAD_POOL.submit(
+                    # Schedule finalize work on the device thread pool using submit_serial
+                    # to avoid deadlock when multiple modules share the same parent and try
+                    # to acquire parent_module_lock simultaneously.
+                    future = DEVICE_THREAD_POOL.submit_serial(
                         target_dev,
                         _finalize_on_worker,
                         process,
