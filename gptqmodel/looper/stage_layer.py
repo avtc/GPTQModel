@@ -506,19 +506,27 @@ def run_layer_stage(
                     DEVICE_THREAD_POOL.wait()
 
                 if finalize_futures_snapshot:
-                    # Drain finalize futures in background thread (for progress updates)
-                    drain_thread = threading.Thread(
-                        target=_drain_finalize_futures,
-                        args=(
+                    if looper.gptq_model.quantize_config.wait_for_layer_completion:
+                        # Synchronous: call directly in main thread (no threading)
+                        _drain_finalize_futures(
                             [future for future, *_ in finalize_futures_snapshot],
                             finalize_pb,
                             finalize_count,
                             layer_index,
-                        ),
-                        name="SubmoduleFinalizeWatcher",
-                        daemon=True,
-                    )
-                    drain_thread.start()
+                        )
+                    else:
+                        # Asynchronous: run in background thread
+                        threading.Thread(
+                            target=_drain_finalize_futures,
+                            args=(
+                                [future for future, *_ in finalize_futures_snapshot],
+                                finalize_pb,
+                                finalize_count,
+                                layer_index,
+                            ),
+                            name="SubmoduleFinalizeWatcher",
+                            daemon=True,
+                        ).start()
                 else:
                     looper._emit_layer_complete(
                         layer_idx=layer_index,
