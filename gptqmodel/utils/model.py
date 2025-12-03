@@ -684,15 +684,20 @@ def pack_module(
     quantize_config: Optional[QuantizeConfig] = None,
     quant_result: Optional[Dict[str, Any]] = None,
 ):
+    log.info(f"[DEBUG] pack_module ENTRY: {name}")
     # Limit pack() thread usage to avoid auto-parallizataion regression
     # with ctx(tctl.threadpool_limits(limits=1), lock):
+    log.info(f"[DEBUG] pack_module getting layer and module: {name}")
     layer = layers[name]
     module = qModules[name]
+    log.info(f"[DEBUG] pack_module got layer type {type(layer)} and module type {type(module)}: {name}")
 
+    log.info(f"[DEBUG] pack_module checking device assertions: {name}")
     assert get_device(module) == CPU
     assert get_device(layer) == CPU
     assert get_device(q_scales) == CPU
     assert get_device(q_zeros) == CPU
+    log.info(f"[DEBUG] pack_module device assertions passed: {name}")
 
     # module = module.to(CPU)
     # layer = layer.to(CPU)
@@ -700,14 +705,20 @@ def pack_module(
     # q_zeros = q_zeros.to(CPU)
 
     if q_g_idx is not None:
+        log.info(f"[DEBUG] pack_module checking q_g_idx device: {name}")
         assert get_device(q_g_idx) == CPU
+        log.info(f"[DEBUG] pack_module q_g_idx device OK: {name}")
         #q_g_idx = q_g_idx.to(CPU)
+    else:
+        log.info(f"[DEBUG] pack_module q_g_idx is None: {name}")
 
+    log.info(f"[DEBUG] pack_module determining pack_impl: {name}")
     pack_impl = "original"
     target_device = None
     if quantize_config is not None:
         pack_impl = getattr(quantize_config, "pack_impl", "original") or "original"
         cfg_device = getattr(quantize_config, "device", None)
+        log.info(f"[DEBUG] pack_module quantize_config device: {cfg_device}, pack_impl: {pack_impl}")
         if isinstance(cfg_device, DEVICE):
             target_device = cfg_device.to_torch_device()
         elif isinstance(cfg_device, torch.device):
@@ -719,14 +730,20 @@ def pack_module(
                 log.warning(f"pack_module: unable to parse target device `{cfg_device}`; defaulting to CUDA auto-select.")
 
     packer_label = None
+    log.info(f"[DEBUG] pack_module about to update layers/qModules: {name}")
 
     if lock is not None:
+        log.info(f"[DEBUG] pack_module acquiring provided lock: {name}")
         with lock:
             layers[name] = layer
             qModules[name] = module
+        log.info(f"[DEBUG] pack_module released provided lock: {name}")
     else:
+        log.info(f"[DEBUG] pack_module no lock provided: {name}")
         layers[name] = layer
         qModules[name] = module
+
+    log.info(f"[DEBUG] pack_module layers/qModules updated: {name}")
 
     # TODO FIX ME..remove hard coded qqq pack
     if quant_linear_cls.QUANT_TYPE == "qqq":
@@ -753,7 +770,9 @@ def pack_module(
                 g_idx=q_g_idx,
             )
     else:
+        log.info(f"[DEBUG] pack_module entering main packing logic: {name}")
         effective_impl = (pack_impl or "original").lower()
+        log.info(f"[DEBUG] pack_module effective_impl: {effective_impl}, pack_impl: {pack_impl}")
 
         if effective_impl in {"cpu", "block", "pack_block"}:
             effective_impl = "block"
@@ -773,6 +792,8 @@ def pack_module(
             )
             effective_impl = "original"
 
+        log.info(f"[DEBUG] pack_module final effective_impl: {effective_impl}: {name}")
+
         label_map = {
             "gpu": "module.pack_gpu",
             "block": "module.pack_block",
@@ -780,13 +801,17 @@ def pack_module(
         }
 
         packer_label = label_map[effective_impl]
+        log.info(f"[DEBUG] pack_module packer_label: {packer_label}: {name}")
 
+        log.info(f"[DEBUG] pack_module about to enter log_time_block: {name}")
         with log_time_block(
             packer_label,
             logger=log,
             module_name=name,
         ):
+            log.info(f"[DEBUG] pack_module entered log_time_block: {name}")
             if effective_impl == "gpu":
+                log.info(f"[DEBUG] pack_module calling pack_gpu: {name}")
                 try:
                     module.pack_gpu(
                         linear=layer,
@@ -795,9 +820,13 @@ def pack_module(
                         g_idx=q_g_idx,
                         device=target_device,
                     )
+                    log.info(f"[DEBUG] pack_module pack_gpu completed: {name}")
                 except ValueError:
+                    log.info(f"[DEBUG] pack_module pack_gpu failed, falling back to pack_original: {name}")
                     module.pack_original(linear=layer, scales=q_scales, zeros=q_zeros, g_idx=q_g_idx)
+                    log.info(f"[DEBUG] pack_module fallback pack_original completed: {name}")
             elif effective_impl == "block":
+                log.info(f"[DEBUG] pack_module calling pack_block: {name}")
                 try:
                     module.pack_block(
                         linear=layer,
@@ -805,10 +834,15 @@ def pack_module(
                         zeros=q_zeros,
                         g_idx=q_g_idx,
                     )
+                    log.info(f"[DEBUG] pack_module pack_block completed: {name}")
                 except ValueError:
+                    log.info(f"[DEBUG] pack_module pack_block failed, falling back to pack_original: {name}")
                     module.pack_original(linear=layer, scales=q_scales, zeros=q_zeros, g_idx=q_g_idx)
+                    log.info(f"[DEBUG] pack_module fallback pack_original completed: {name}")
             else:
+                log.info(f"[DEBUG] pack_module calling pack_original directly: {name}")
                 module.pack_original(linear=layer, scales=q_scales, zeros=q_zeros, g_idx=q_g_idx)
+                log.info(f"[DEBUG] pack_module pack_original completed: {name}")
 
         if (
             quantize_config is not None
@@ -831,6 +865,7 @@ def pack_module(
         # qModules[name].to(layer_device)
         # log.info(f"Pack: moving module back to `{layer_device}` cost = {time.time()-start} seconds")
 
+    log.info(f"[DEBUG] pack_module about to return: {name} -> {packer_label}")
     return packer_label
 
 def pack_model(
