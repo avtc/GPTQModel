@@ -516,6 +516,7 @@ def run_subset_stage(
         # Launch processing for every module in the subset; tasks may run in
         # parallel as allowed by the device thread pool.
         tgt_dev = quant_target_devices.get(name, cur_layer_device)
+        logger.info(f"[DEBUG] Submitting {name} to device {tgt_dev}")
         futures.append(
             DEVICE_THREAD_POOL.submit(
                 tgt_dev,
@@ -530,12 +531,17 @@ def run_subset_stage(
             )
         )
 
-    for fut in futures:
+    logger.info(f"[DEBUG] Submitted {len(futures)} futures, waiting for results...")
+
+    for idx, fut in enumerate(futures):
         # Collect results in submission order so the final subset map preserves
         # deterministic iteration for downstream consumers.
+        logger.info(f"[DEBUG] Waiting for future {idx+1}/{len(futures)}")
         name, named_module = fut.result()
+        logger.info(f"[DEBUG] Future {idx+1} completed: {name}")
         processed_subset[name] = named_module
     torch_sync()
+
 
     emit_subset_event("quant_complete")
 
