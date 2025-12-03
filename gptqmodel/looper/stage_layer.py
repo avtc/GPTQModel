@@ -410,137 +410,19 @@ def run_layer_stage(
                     # ).draw()
 
                 for index, (process, module, module_label, target_dev, layer_idx) in enumerate(finalize_tasks, start=1):
-                    # Schedule finalize work on the device thread pool using submit_serial
-                    # to avoid deadlock when multiple modules share the same parent and try
-                    # to acquire parent_module_lock simultaneously.
-                    future = DEVICE_THREAD_POOL.submit_serial(
-                        target_dev,
-                        _finalize_on_worker,
-                        process,
-                        module,
-                        index,
-                        finalize_count,
-                        module_label,
-                        layer_idx,
-                    )
-                    finalize_futures.append((future, index, module_label, process, layer_idx))
+                    # Run finalize synchronously in the main thread instead of submitting to thread pool.
+                    # This avoids deadlock: finalize calls stream_sync() which waits for STREAM_DEVICE_POOL
+                    # futures. If finalize runs on DEVICE_THREAD_POOL (CPU), and STREAM_DEVICE_POOL also
+                    # uses CPU workers, we get circular dependency.
+                    log.info(f"[DEBUG] Running finalize task {index}/{finalize_count}: {module_label}")
+                    result = _finalize_on_worker(process, module, index, finalize_count, module_label, layer_idx)
+                    log.info(f"[DEBUG] Finalize task {index}/{finalize_count} completed: {module_label}")
 
-                finalize_futures_snapshot = list(finalize_futures)
+                # Finalize tasks now run synchronously, no futures to track
+                log.info("[DEBUG] All finalize tasks completed synchronously")
 
                 looper._emit_layer_complete(
                     layer_idx=layer_index,
-                    submodule_finalized=False,
+                    submodule_finalized=True,
                     raise_in_place=True,
                 )
-
-                if finalize_futures_snapshot:
-                    known_layers = sorted(
-                        {
-                            layer_idx
-                            for _, _, _, _, layer_idx in finalize_futures_snapshot
-                            if layer_idx is not None
-                        }
-                    )
-                    includes_unknown = any(
-                        layer_idx is None
-                        for _, _, _, _, layer_idx in finalize_futures_snapshot
-                    )
-
-                    layer_heading = "Layer ?"
-                    if known_layers:
-                        sample_layers = ", ".join(str(idx) for idx in known_layers[:3])
-                        if len(known_layers) > 3:
-                            sample_layers += ", …"
-                        suffix = ", ?" if includes_unknown else ""
-                        prefix = "Layer" if len(known_layers) == 1 else "Layers"
-                        layer_heading = f"{prefix} {sample_layers}{suffix}"
-                    elif includes_unknown:
-                        layer_heading = "Layer ?"
-
-                    finalize_pb.title(
-                        f"{layer_heading} Submodule finalize 0/{finalize_count}"
-                    ).subtitle("Waiting for completions...").draw()
-
-                def _drain_finalize_futures(
-                    futures,
-                    finalize_pb_local,
-                    finalize_count_local,
-                    layer_idx_for_callback,
-                ):
-                    completed_local = 0
-                    try:
-                        for future in as_completed(futures):
-                            # Drain futures as they complete to surface errors
-                            # quickly and keep the progress bar in sync.
-                            try:
-                                result = future.result()
-                            except BaseException as exc:
-                                log.exception("Submodule finalize task raised an exception")
-                                looper._request_loop_stop(exc)
-                                return
-
-                            if isinstance(result, finalize_progress_cls):
-                                module_label = result.module_label
-                                process_name = result.process_name
-                                layer_idx = result.layer_idx
-                            elif isinstance(result, tuple) and len(result) == 3:
-                                module_label, process_name, layer_idx = result
-                            else:
-                                module_label = None
-                                process_name = "<processor>"
-                                layer_idx = None
-
-                            layer_label = f"Layer {layer_idx}" if layer_idx is not None else "Layer ?"
-                            display_module = module_label or "<unnamed>"
-                            subtitle = f"{process_name}: {display_module}"
-
-                            completed_local += 1
-                            finalize_pb_local.next()
-                            finalize_pb_local.title(
-                                f"{layer_label} Finalize {completed_local}/{finalize_count_local}"
-                            ).subtitle(subtitle).draw()
-                    finally:
-                        finalize_pb_local.close()
-                        looper._emit_layer_complete(
-                            layer_idx=layer_idx_for_callback,
-                            submodule_finalized=True,
-                            raise_in_place=False,
-                        )
-
-                if looper.gptq_model.quantize_config.wait_for_layer_completion:
-                    # NOTE: Do NOT call DEVICE_THREAD_POOL.wait() here!
-                    # The finalize tasks are already submitted and will be drained by
-                    # _drain_finalize_futures() below. Calling wait() here creates a
-                    # circular dependency: wait() blocks until tasks complete, but those
-                    # are the finalize tasks we're about to drain.
-                    pass
-
-                if finalize_futures_snapshot:
-                    if looper.gptq_model.quantize_config.wait_for_layer_completion:
-                        # Synchronous: call directly in main thread (no threading)
-                        log.info(f"[DEBUG] Draining {len(finalize_futures_snapshot)} finalize futures synchronously...")
-                        _drain_finalize_futures(
-                            [future for future, *_ in finalize_futures_snapshot],
-                            finalize_pb,
-                            finalize_count,
-                            layer_index,
-                        )
-                    else:
-                        # Asynchronous: run in background thread
-                        threading.Thread(
-                            target=_drain_finalize_futures,
-                            args=(
-                                [future for future, *_ in finalize_futures_snapshot],
-                                finalize_pb,
-                                finalize_count,
-                                layer_index,
-                            ),
-                            name="SubmoduleFinalizeWatcher",
-                            daemon=True,
-                        ).start()
-                else:
-                    looper._emit_layer_complete(
-                        layer_idx=layer_index,
-                        submodule_finalized=True,
-                        raise_in_place=True,
-                    )

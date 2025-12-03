@@ -298,12 +298,18 @@ class GPTQProcessor(LoopProcessor):
 
     # submodule_finalized is called in reverse after all next sequential processes are called
     def submodule_finalize(self, module: NamedModule, model: BaseQModel, **kwargs):
+        module_label = getattr(module, "full_name", getattr(module, "name", ""))
+        log.info(f"[DEBUG] GPTQ submodule_finalize ENTRY: {module_label}")
+        
         # generate complete, safe to move to cpu
         # module.weight.data = move_to(module.state.pop("wq"), device=CPU) # large weights is slow to init on cpu
 
         # cleanup all memory or states vars persistently added by this processor
+        log.info(f"[DEBUG] GPTQ calling stream_sync: {module_label}")
         module.stream_sync()
+        log.info(f"[DEBUG] GPTQ acquiring processor lock: {module_label}")
         with (self.lock):
+            log.info(f"[DEBUG] GPTQ processor lock acquired: {module_label}")
             # if calculate_w_wq_diff is enabled (eora), we need to revert our original wq
             if self.calculate_w_wq_diff:
                 module.weight.data = module.state.pop("wq").to(CPU)
@@ -320,20 +326,22 @@ class GPTQProcessor(LoopProcessor):
         assert q_scales.device == CPU
         assert q_g_idx.device == CPU
 
+        log.info(f"[DEBUG] GPTQ finding modules: {module_label}")
         layers = find_modules(model.model)
-        module_label = getattr(module, "full_name", getattr(module, "name", ""))
         parent_key = getattr(module, "full_name", getattr(module, "name", None))
 
         # replace module with quantized module
         timer = getattr(model, "quant_region_timer", None)
 
         create_start = time.perf_counter() if timer is not None else None
+        log.info(f"[DEBUG] GPTQ acquiring parent_module_lock for: {parent_key}")
         with log_time_block(
             "create_quant_module",
             logger=log,
             module_name=module_label,
         ):
             with parent_module_lock(parent_key):
+                log.info(f"[DEBUG] GPTQ parent_module_lock acquired: {parent_key}")
                 create_quant_module(
                     name=module.full_name,
                     linear_cls=model.qlinear_kernel,
