@@ -307,20 +307,22 @@ class GPTQProcessor(LoopProcessor):
         # cleanup all memory or states vars persistently added by this processor
         log.info(f"[DEBUG] GPTQ calling stream_sync: {module_label}")
         module.stream_sync()
-        log.info(f"[DEBUG] GPTQ acquiring processor lock: {module_label}")
-        with (self.lock):
-            log.info(f"[DEBUG] GPTQ processor lock acquired: {module_label}")
-            # if calculate_w_wq_diff is enabled (eora), we need to revert our original wq
-            if self.calculate_w_wq_diff:
-                module.weight.data = module.state.pop("wq").to(CPU)
 
-            module.state.pop("w", None) #
-            module.state.pop("w_wq_diff", None)
+        # NOTE: processor lock NOT needed during finalization - tasks run sequentially
+        # and all accessed data is module-specific, not shared across modules
+        log.info(f"[DEBUG] GPTQ processing module state without processor lock: {module_label}")
 
-            # need to clone to due to steamed pinned memory and access on diff thread
-            q_zeros = module.state.pop("q_zeros").clone()
-            q_scales = module.state.pop("q_scales").clone()
-            q_g_idx = module.state.pop("q_g_idx").clone()
+        # if calculate_w_wq_diff is enabled (eora), we need to revert our original wq
+        if self.calculate_w_wq_diff:
+            module.weight.data = module.state.pop("wq").to(CPU)
+
+        module.state.pop("w", None) #
+        module.state.pop("w_wq_diff", None)
+
+        # need to clone to due to steamed pinned memory and access on diff thread
+        q_zeros = module.state.pop("q_zeros").clone()
+        q_scales = module.state.pop("q_scales").clone()
+        q_g_idx = module.state.pop("q_g_idx").clone()
 
         assert q_zeros.device == CPU
         assert q_scales.device == CPU
@@ -336,8 +338,22 @@ class GPTQProcessor(LoopProcessor):
         create_start = time.perf_counter() if timer is not None else None
         log.info(f"[DEBUG] GPTQ acquiring parent_module_lock for: {parent_key}")
 
-        # Establish consistent lock ordering: parent_module_lock first, then processor lock
-        # This prevents deadlock by ensuring all threads acquire locks in the same order
+        # Copy all data we need from processor state before acquiring parent lock
+        # This prevents holding processor lock while calling create_quant_module
+        module_full_name = module.full_name
+        linear_cls = model.qlinear_kernel
+        bits = self.qcfg.bits
+        desc_act = self.qcfg.desc_act
+        dynamic = self.qcfg.dynamic
+        group_size = self.qcfg.group_size
+        sym = self.qcfg.sym
+        device = self.qcfg.device
+        lm_head_name = model.lm_head
+        pack_dtype = self.qcfg.pack_dtype
+        register_buffers = False
+
+        # parent_module_lock is ESSENTIAL to prevent race conditions during recurse_setattr
+        # Multiple threads may be modifying the same parent module simultaneously
         with parent_module_lock(parent_key):
             log.info(f"[DEBUG] GPTQ parent_module_lock acquired: {parent_key}")
             with log_time_block(
@@ -346,19 +362,19 @@ class GPTQProcessor(LoopProcessor):
                 module_name=module_label,
             ):
                 create_quant_module(
-                    name=module.full_name,
-                    linear_cls=model.qlinear_kernel,
-                    bits=self.qcfg.bits,
-                    desc_act=self.qcfg.desc_act,
-                    dynamic=self.qcfg.dynamic,
-                    group_size=self.qcfg.group_size,
+                    name=module_full_name,
+                    linear_cls=linear_cls,
+                    bits=bits,
+                    desc_act=desc_act,
+                    dynamic=dynamic,
+                    group_size=group_size,
                     module=model.model,
                     submodule=module,
-                    sym=self.qcfg.sym,
-                    device=self.qcfg.device,
-                    lm_head_name=model.lm_head,
-                    pack_dtype=self.qcfg.pack_dtype,
-                    register_buffers=False,
+                    sym=sym,
+                    device=device,
+                    lm_head_name=lm_head_name,
+                    pack_dtype=pack_dtype,
+                    register_buffers=register_buffers,
                 )
         if timer is not None and create_start is not None:
             timer.record(
