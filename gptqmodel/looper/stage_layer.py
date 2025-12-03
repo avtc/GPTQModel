@@ -502,6 +502,9 @@ def run_layer_stage(
                             raise_in_place=False,
                         )
 
+                if looper.gptq_model.quantize_config.wait_for_layer_completion:
+                    DEVICE_THREAD_POOL.wait()
+
                 if finalize_futures_snapshot:
                     # Drain finalize futures in background thread (for progress updates)
                     drain_thread = threading.Thread(
@@ -516,10 +519,6 @@ def run_layer_stage(
                         daemon=True,
                     )
                     drain_thread.start()
-                    if looper.gptq_model.quantize_config.wait_for_layer_completion:
-                        # Synchronous: wait for the drain thread to complete before proceeding
-                        # This ensures all finalization (packing, writing) is done before next layer
-                        drain_thread.join()
                 else:
                     looper._emit_layer_complete(
                         layer_idx=layer_index,
