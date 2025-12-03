@@ -506,6 +506,10 @@ def run_layer_stage(
 
                 if looper.gptq_model.quantize_config.wait_for_layer_completion:
                     log.info("[DEBUG] Calling DEVICE_THREAD_POOL.wait() before finalization...")
+                    # Log inflight counts for all devices
+                    for device_key in DEVICE_THREAD_POOL._inflight.keys():
+                        count = DEVICE_THREAD_POOL._inflight.get(device_key, 0)
+                        log.info(f"[DEBUG] Device {device_key} has {count} tasks in-flight")
                     DEVICE_THREAD_POOL.wait()
                     log.info("[DEBUG] DEVICE_THREAD_POOL.wait() completed")
 
