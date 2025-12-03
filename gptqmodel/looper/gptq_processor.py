@@ -335,13 +335,16 @@ class GPTQProcessor(LoopProcessor):
 
         create_start = time.perf_counter() if timer is not None else None
         log.info(f"[DEBUG] GPTQ acquiring parent_module_lock for: {parent_key}")
-        with log_time_block(
-            "create_quant_module",
-            logger=log,
-            module_name=module_label,
-        ):
-            with parent_module_lock(parent_key):
-                log.info(f"[DEBUG] GPTQ parent_module_lock acquired: {parent_key}")
+
+        # Establish consistent lock ordering: parent_module_lock first, then processor lock
+        # This prevents deadlock by ensuring all threads acquire locks in the same order
+        with parent_module_lock(parent_key):
+            log.info(f"[DEBUG] GPTQ parent_module_lock acquired: {parent_key}")
+            with log_time_block(
+                "create_quant_module",
+                logger=log,
+                module_name=module_label,
+            ):
                 create_quant_module(
                     name=module.full_name,
                     linear_cls=model.qlinear_kernel,
@@ -371,12 +374,15 @@ class GPTQProcessor(LoopProcessor):
             if name == module.full_name
         }
         pack_start = time.perf_counter() if timer is not None else None
-        with log_time_block(
-            "pack",
-            logger=log,
-            module_name=module_label,
-        ):
-            with parent_module_lock(parent_key):
+
+        # Establish consistent lock ordering: parent_module_lock first, then processor lock
+        # This prevents deadlock by ensuring all threads acquire locks in the same order
+        with parent_module_lock(parent_key):
+            with log_time_block(
+                "pack",
+                logger=log,
+                module_name=module_label,
+            ):
                 packer_label = pack_module(
                     name=module.full_name,
                     qModules=qModules,
