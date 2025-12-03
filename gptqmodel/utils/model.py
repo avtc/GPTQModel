@@ -164,7 +164,8 @@ def recurse_setattr(module, name, value):
         setattr(module, name, value)
     else:
         name, rest = name.split(".", 1)
-        recurse_setattr(getattr(module, name), rest, value)
+        parent_module = getattr(module, name)
+        recurse_setattr(parent_module, rest, value)
 
 
 def move_to(obj: torch.Tensor | nn.Module, device: torch.device, dtype: torch.dtype = None):
@@ -319,9 +320,14 @@ def create_quant_module(
 ):
     log.info(f"[DEBUG] create_quant_module ENTRY: {name}")
     # unwrap named module
+    log.info(f"[DEBUG] create_quant_module unwrapping module: {name}")
     if isinstance(submodule, NamedModule):
         # print(f"offloading named module: {module.full_name}")
+        log.info(f"[DEBUG] create_quant_module is NamedModule: {name}")
         submodule = submodule.module
+        log.info(f"[DEBUG] create_quant_module unwrapped NamedModule: {name}")
+    else:
+        log.info(f"[DEBUG] create_quant_module is not NamedModule: {name}, type: {type(submodule)}")
 
     # submodule may be BaseQuantLinear, and the next QuantLinear is selected because of in_features/out_features
     # mismatch and other reasons.
@@ -417,7 +423,11 @@ def create_quant_module(
     log.info(f"[DEBUG] create_quant_module created new_layer: {name}")
     new_layer.device = ori_layer_device
     log.info(f"[DEBUG] create_quant_module calling recurse_setattr: {name}")
-    recurse_setattr(module, name, new_layer.to(ori_layer_device))
+    log.info(f"[DEBUG] create_quant_module about to move new_layer to device: {name}")
+    moved_layer = new_layer.to(ori_layer_device)
+    log.info(f"[DEBUG] create_quant_module moved new_layer to device: {name}")
+    recurse_setattr(module, name, moved_layer)
+    log.info(f"[DEBUG] create_quant_module recurse_setattr completed: {name}")
     log.info(f"[DEBUG] create_quant_module COMPLETED: {name}")
 
 def create_quant_layer(

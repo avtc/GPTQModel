@@ -376,29 +376,45 @@ class GPTQProcessor(LoopProcessor):
                     pack_dtype=pack_dtype,
                     register_buffers=register_buffers,
                 )
+        log.info(f"[DEBUG] create_quant_module function returned: {module_label}")
+
         if timer is not None and create_start is not None:
+            log.info(f"[DEBUG] Recording timer for submodule_finalize_create: {module_label}")
             timer.record(
                 "submodule_finalize_create",
                 time.perf_counter() - create_start,
                 source=module_label,
             )
+            log.info(f"[DEBUG] Timer recorded for submodule_finalize_create: {module_label}")
+        else:
+            log.info(f"[DEBUG] No timer to record for submodule_finalize_create: {module_label}")
+
+        log.info(f"[DEBUG] About to exit parent_module_lock context: {module_label}")
+
+        log.info(f"[DEBUG] Starting pack module setup: {module_label}")
 
         # pack module
+        log.info(f"[DEBUG] Finding quantized modules: {module_label}")
         qModules = {
             name: submodule
             for name, submodule in find_modules(model.model, [model.qlinear_kernel]).items()
             if name == module.full_name
         }
+        log.info(f"[DEBUG] Found {len(qModules)} quantized modules: {module_label}")
+
         pack_start = time.perf_counter() if timer is not None else None
+        log.info(f"[DEBUG] About to acquire parent_module_lock for pack: {module_label}")
 
         # Establish consistent lock ordering: parent_module_lock first, then processor lock
         # This prevents deadlock by ensuring all threads acquire locks in the same order
         with parent_module_lock(parent_key):
+            log.info(f"[DEBUG] Acquired parent_module_lock for pack: {module_label}")
             with log_time_block(
                 "pack",
                 logger=log,
                 module_name=module_label,
             ):
+                log.info(f"[DEBUG] Calling pack_module: {module_label}")
                 packer_label = pack_module(
                     name=module.full_name,
                     qModules=qModules,
@@ -410,19 +426,30 @@ class GPTQProcessor(LoopProcessor):
                     lock=self.lock,
                     quantize_config=self.qcfg,
                 )
+                log.info(f"[DEBUG] pack_module returned: {module_label} -> {packer_label}")
+            log.info(f"[DEBUG] Exiting parent_module_lock for pack: {module_label}")
+        log.info(f"[DEBUG] About to record pack timer: {module_label}")
         if timer is not None and pack_start is not None:
             timer.record(
                 "submodule_finalize_pack",
                 time.perf_counter() - pack_start,
                 source=f"{module_label} [{packer_label or 'module.pack_original'}]",
             )
+            log.info(f"[DEBUG] Pack timer recorded: {module_label}")
+        else:
+            log.info(f"[DEBUG] No pack timer to record: {module_label}")
 
         # TODO: store module quant results in module, not global processor result
+        log.info(f"[DEBUG] About to call result_pop with processor lock: {module_label}")
         with self.lock:
+            log.info(f"[DEBUG] Acquired processor lock for result_pop: {module_label}")
             self.result_pop(module.full_name)
+            log.info(f"[DEBUG] Released processor lock after result_pop: {module_label}")
 
+        log.info(f"[DEBUG] About to delete tensors and unregister weight: {module_label}")
         del q_scales, q_zeros, q_g_idx
         module.unregister_parameter("weight")
+        log.info(f"[DEBUG] Completed submodule_finalize: {module_label}")
 
     def finalize(self, model: BaseQModel, **kwargs):
         # print("finalize")
