@@ -314,6 +314,7 @@ def run_layer_stage(
                 pb.title(layer_title).subtitle("").draw()
 
             if p_index == len(looper.processors) - 1:
+                log.info("[DEBUG] Starting finalization for last processor")
                 torch_sync()
 
                 # Gather finalize tasks (can offload to disk); run them via the pool
@@ -342,6 +343,7 @@ def run_layer_stage(
                         finalize_tasks.append((reverse_p, module, module_label, target_dev, layer_idx))
 
                 finalize_count = len(finalize_tasks)
+                log.info(f"[DEBUG] Collected {finalize_count} finalize tasks")
                 finalize_futures = []
                 finalize_pb = log.pb(range(finalize_count)).manual().set(show_left_steps=False)
 
@@ -503,11 +505,14 @@ def run_layer_stage(
                         )
 
                 if looper.gptq_model.quantize_config.wait_for_layer_completion:
+                    log.info("[DEBUG] Calling DEVICE_THREAD_POOL.wait() before finalization...")
                     DEVICE_THREAD_POOL.wait()
+                    log.info("[DEBUG] DEVICE_THREAD_POOL.wait() completed")
 
                 if finalize_futures_snapshot:
                     if looper.gptq_model.quantize_config.wait_for_layer_completion:
                         # Synchronous: call directly in main thread (no threading)
+                        log.info(f"[DEBUG] Draining {len(finalize_futures_snapshot)} finalize futures synchronously...")
                         _drain_finalize_futures(
                             [future for future, *_ in finalize_futures_snapshot],
                             finalize_pb,
