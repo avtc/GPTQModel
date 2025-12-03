@@ -317,6 +317,7 @@ def create_quant_module(
     register_buffers: bool = True,
     adapter: Optional[Adapter] = None,
 ):
+    log.info(f"[DEBUG] create_quant_module ENTRY: {name}")
     # unwrap named module
     if isinstance(submodule, NamedModule):
         # print(f"offloading named module: {module.full_name}")
@@ -355,6 +356,7 @@ def create_quant_module(
     else:
         raise NotImplementedError(f"Unsupported module {submodule}")
 
+    log.info(f"[DEBUG] create_quant_module got features: {name} in={in_features} out={out_features}")
     bias = submodule.bias is not None
 
     # need copies as dynamic config may override these in for loop
@@ -412,8 +414,11 @@ def create_quant_module(
         register_buffers=register_buffers,
         adapter=adapter,
     )
+    log.info(f"[DEBUG] create_quant_module created new_layer: {name}")
     new_layer.device = ori_layer_device
+    log.info(f"[DEBUG] create_quant_module calling recurse_setattr: {name}")
     recurse_setattr(module, name, new_layer.to(ori_layer_device))
+    log.info(f"[DEBUG] create_quant_module COMPLETED: {name}")
 
 def create_quant_layer(
         linear_cls: Type[BaseQuantLinear],
