@@ -503,15 +503,8 @@ def run_layer_stage(
                         )
 
                 if finalize_futures_snapshot:
-                    if looper.gptq_model.quantize_config.wait_for_layer_completion:
-                        # Synchronous: wait for all finalization futures to complete before proceeding
-                        # Use thread pool's wait() to avoid deadlock issues with as_completed() in main thread
-                        DEVICE_THREAD_POOL.wait()
-
                     # Drain finalize futures in background thread (for progress updates)
-                    # When wait_for_completion is True, this thread finishes quickly since futures are already complete
-                    # When False (default), this allows next layer to start while current layer finalizes
-                    threading.Thread(
+                    drain_thread = threading.Thread(
                         target=_drain_finalize_futures,
                         args=(
                             [future for future, *_ in finalize_futures_snapshot],
@@ -521,7 +514,12 @@ def run_layer_stage(
                         ),
                         name="SubmoduleFinalizeWatcher",
                         daemon=True,
-                    ).start()
+                    )
+                    drain_thread.start()
+                    if looper.gptq_model.quantize_config.wait_for_layer_completion:
+                        # Synchronous: wait for the drain thread to complete before proceeding
+                        # This ensures all finalization (packing, writing) is done before next layer
+                        drain_thread.join()
                 else:
                     looper._emit_layer_complete(
                         layer_idx=layer_index,
