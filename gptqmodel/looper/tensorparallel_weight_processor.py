@@ -69,15 +69,20 @@ class TensorParallelWeightProcessor(LoopProcessor):
         subset_index: Optional[int] = None,
         subset_total: Optional[int] = None,
     ):
+        module_name = getattr(module, "full_name", getattr(module, "name", repr(module)))
+        log.info(f"[DEBUG] tp-pre-pad processing: {module_name}")
+        
         target = module.module if isinstance(module, NamedModule) else module
         weight = getattr(target, "weight", None)
         if weight is None:
+            log.info(f"[DEBUG] tp-pre-pad skipping {module_name} (no weight)")
             return
 
         pad_info = self._compute_padding(target, module)
 
         if pad_info["pad_cols"] == 0:
             module.state.pop("tp_pad_info", None)
+            log.info(f"[DEBUG] tp-pre-pad completed {module_name} (no padding needed)")
             return
 
         module.state["tp_pad_info"] = pad_info
@@ -89,6 +94,7 @@ class TensorParallelWeightProcessor(LoopProcessor):
             pad_info["target_multiple"],
             pad_info["pad_cols"],
         )
+        log.info(f"[DEBUG] tp-pre-pad completed {module_name} (padding applied)")
 
     def verify_calibration_dataset(self, processor_index: int) -> bool:
         # Reuse the shared calibration cache; no bespoke dataset handling needed.
