@@ -350,6 +350,7 @@ def run_layer_stage(
                 @torch.inference_mode()
                 def _finalize_on_worker(process, module, idx, total, module_label, layer_idx):
                     resolved_label = module_label or getattr(module, "full_name", getattr(module, "name", ""))
+                    log.info(f"[DEBUG] Finalize task {idx}/{total} STARTED: {resolved_label}")
                     start = time.perf_counter() if region_timer is not None else None
                     try:
                         with log_time_block(
@@ -400,6 +401,7 @@ def run_layer_stage(
                                 time.perf_counter() - start,
                                 source=resolved_label,
                             )
+                        log.info(f"[DEBUG] Finalize task {idx}/{total} COMPLETED: {resolved_label}")
                     process_name = process.name() if process is not None else "<processor>"
                     return finalize_progress_cls(module_label, process_name, layer_idx)
 
