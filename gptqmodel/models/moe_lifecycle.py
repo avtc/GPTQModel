@@ -38,18 +38,28 @@ def _get_module_by_relative_path(parent: nn.Module, relative_path: str) -> Optio
     parts = relative_path.split('.')
     current = parent
     
-    for part in parts:
+    log.info(f"[MoE PATH DEBUG] Looking up path={relative_path} in {type(parent).__name__}")
+    
+    for i, part in enumerate(parts):
+        path_so_far = '.'.join(parts[:i+1])
         if hasattr(current, part):
             current = getattr(current, part)
+            log.info(f"[MoE PATH DEBUG] Found '{part}' via getattr -> {type(current).__name__}")
         elif hasattr(current, '__getitem__') and part.isdigit():
             # Handle indexed access for nn.ModuleList or similar
             try:
                 current = current[int(part)]
-            except (IndexError, KeyError):
+                log.info(f"[MoE PATH DEBUG] Found '{part}' via indexing -> {type(current).__name__}")
+            except (IndexError, KeyError) as e:
+                log.info(f"[MoE PATH DEBUG] Failed indexing '{part}': {e}")
                 return None
         else:
+            # List available attributes for debugging
+            attrs = [a for a in dir(current) if not a.startswith('_')][:20]
+            log.info(f"[MoE PATH DEBUG] Failed at '{part}' ({path_so_far}), current={type(current).__name__}, attrs={attrs}")
             return None
     
+    log.info(f"[MoE PATH DEBUG] SUCCESS: Found {type(current).__name__}")
     return current
 
 
@@ -348,32 +358,30 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
             Get the callable module for a given subset key.
             
             When replica_module is provided, resolves the module from the replica
-            using the relative path (stripping the layer prefix). This ensures
-            forward passes happen on the correct device for multi-GPU execution.
+            using the key as a relative path. This ensures forward passes happen 
+            on the correct device for multi-GPU execution.
             
             Falls back to subset[key] when replica is not provided or lookup fails.
             """
             # Debug trace logs
             from ..utils.device import get_device
             replica_device = get_device(replica_module) if replica_module is not None else None
-            log.info(f"[MoE DEBUG] get_callable_module: key={key}, layer_prefix={layer_prefix}, "
+            log.info(f"[MoE DEBUG] get_callable_module: key={key}, "
                      f"replica_module={type(replica_module).__name__ if replica_module else None}, "
                      f"replica_device={replica_device}")
             
-            if replica_module is not None and layer_prefix and key.startswith(layer_prefix + '.'):
-                # Extract relative path within the layer (e.g., "mlp.experts.0.gate_proj")
-                relative_path = key[len(layer_prefix) + 1:]
-                log.info(f"[MoE DEBUG] Trying relative_path={relative_path}")
-                replica_submodule = _get_module_by_relative_path(replica_module, relative_path)
+            # The key is already a relative path (e.g., "mlp.experts.0.gate_proj")
+            # Use it directly to look up the module in the replica
+            if replica_module is not None:
+                log.info(f"[MoE DEBUG] Trying to find key={key} in replica")
+                replica_submodule = _get_module_by_relative_path(replica_module, key)
                 if replica_submodule is not None:
                     submodule_device = get_device(replica_submodule)
                     log.info(f"[MoE DEBUG] Found replica_submodule: {type(replica_submodule).__name__}, device={submodule_device}")
                     return replica_submodule
                 else:
-                    log.info(f"[MoE DEBUG] replica_submodule is None for path={relative_path}")
-            else:
-                log.info(f"[MoE DEBUG] Skipping replica lookup: replica_module={replica_module is not None}, "
-                         f"layer_prefix={layer_prefix}, key_starts={key.startswith(layer_prefix + '.') if layer_prefix else 'N/A'}")
+                    log.info(f"[MoE DEBUG] replica_submodule is None for key={key}")
+            
             # Fallback to using subset (original behavior for single-GPU)
             subset_module = subset.get(key)
             if subset_module is not None:
