@@ -38,28 +38,28 @@ def _get_module_by_relative_path(parent: nn.Module, relative_path: str) -> Optio
     parts = relative_path.split('.')
     current = parent
     
-    log.info(f"[MoE PATH DEBUG] Looking up path={relative_path} in {type(parent).__name__}")
+    #log.info(f"[MoE PATH] Looking up path={relative_path} in {type(parent).__name__}")
     
     for i, part in enumerate(parts):
         path_so_far = '.'.join(parts[:i+1])
         if hasattr(current, part):
             current = getattr(current, part)
-            log.info(f"[MoE PATH DEBUG] Found '{part}' via getattr -> {type(current).__name__}")
+            #log.info(f"[MoE PATH] Found '{part}' via getattr -> {type(current).__name__}")
         elif hasattr(current, '__getitem__') and part.isdigit():
             # Handle indexed access for nn.ModuleList or similar
             try:
                 current = current[int(part)]
-                log.info(f"[MoE PATH DEBUG] Found '{part}' via indexing -> {type(current).__name__}")
+                #log.info(f"[MoE PATH] Found '{part}' via indexing -> {type(current).__name__}")
             except (IndexError, KeyError) as e:
-                log.info(f"[MoE PATH DEBUG] Failed indexing '{part}': {e}")
+                raise ValueError(f"[MoE PATH] Failed indexing '{part}': {e}")
                 return None
         else:
             # List available attributes for debugging
             attrs = [a for a in dir(current) if not a.startswith('_')][:20]
-            log.info(f"[MoE PATH DEBUG] Failed at '{part}' ({path_so_far}), current={type(current).__name__}, attrs={attrs}")
+            raise ValueError(f"[MoE PATH] Failed at '{part}' ({path_so_far}), current={type(current).__name__}, attrs={attrs}")
             return None
     
-    log.info(f"[MoE PATH DEBUG] SUCCESS: Found {type(current).__name__}")
+    #log.info(f"[MoE PATH] SUCCESS: Found {type(current).__name__}")
     return current
 
 
@@ -377,13 +377,10 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
                         
                     return replica_submodule
                 else:
-                    log.info(f"[MoE DEBUG] replica_submodule is None for key={key}")
+                    raise ValueError(f"[MoE DEBUG] replica_submodule is None for key={key}")
             
             # Fallback to using subset (original behavior for single-GPU)
             subset_module = subset.get(key)
-            if subset_module is not None:
-                subset_device = get_device(subset_module)
-                log.info(f"[MoE DEBUG] Fallback to subset: {type(subset_module).__name__}, device={subset_device}")
             return subset_module
         
         # Get experts modules and shared expert attribute name
