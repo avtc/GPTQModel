@@ -1058,23 +1058,18 @@ class ModuleLooper():
             segment_start = 0
             num_devices = len(devices)
 
-            for index, device in enumerate(devices):
-                # Split the outstanding batches across devices so that each accelerator
-                # receives a contiguous slice.
-                remaining_batches = max(total_batches - segment_start, 0)
-                remaining_devices = max(num_devices - index, 1)
-                segment_length = remaining_batches // remaining_devices
-                remainder = remaining_batches % remaining_devices
-                if remainder > 0:
-                    segment_length += 1
+            # Round-robin distribution (interleaved assignment)
+            # When calibration data is sorted in descending order by length,
+            # round-robin assignment creates near-optimal token balance across GPUs.
+            # This replaces the previous contiguous segment approach which could
+            # create severe imbalance with variable-length samples.
+            for device in devices:
+                device_segments[device] = []
 
-                if segment_length <= 0:
-                    device_segments[device] = []
-                    continue
-
-                segment_end = min(segment_start + segment_length, total_batches)
-                device_segments[device] = list(range(segment_start, segment_end))
-                segment_start = segment_end
+            for batch_idx in range(total_batches):
+                device_idx = batch_idx % num_devices
+                device = devices[device_idx]
+                device_segments[device].append(batch_idx)
 
             max_segment_length = 0
             for indices in device_segments.values():
