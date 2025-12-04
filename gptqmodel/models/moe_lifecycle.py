@@ -21,6 +21,38 @@ from ..utils.logger import setup_logger
 log = setup_logger()
 
 
+def _get_module_by_relative_path(parent: nn.Module, relative_path: str) -> Optional[nn.Module]:
+    """
+    Get a submodule from a parent module by relative path.
+    
+    Args:
+        parent: The parent module (e.g., a layer replica)
+        relative_path: Dot-separated path to the submodule (e.g., 'mlp.experts.0.gate_proj')
+    
+    Returns:
+        The submodule if found, None otherwise
+    """
+    if not relative_path:
+        return parent
+    
+    parts = relative_path.split('.')
+    current = parent
+    
+    for part in parts:
+        if hasattr(current, part):
+            current = getattr(current, part)
+        elif hasattr(current, '__getitem__') and part.isdigit():
+            # Handle indexed access for nn.ModuleList or similar
+            try:
+                current = current[int(part)]
+            except (IndexError, KeyError):
+                return None
+        else:
+            return None
+    
+    return current
+
+
 class MoELifecycleHooks:
     """
     Base class for model-specific MoE lifecycle hooks.
@@ -261,6 +293,7 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
         model_class: type,
         module_looper: Any,  # Required for TLS-based hooks pausing
         moe_block_prefix: Optional[str] = None,
+        replica_module: Optional[nn.Module] = None,
         **kwargs
     ) -> torch.Tensor:
         """
@@ -273,6 +306,10 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
             subset: Dict[str, NamedModule] containing modules currently being calibrated
             original_forward: Original forward function to call for final output
             model_class: The model class (to access module_tree)
+            replica_module: Optional replica of the layer module. When provided, modules
+                           are looked up from the replica instead of using subset directly.
+                           This is needed for multi-GPU parallel execution where the replica
+                           is on a different device than the original modules in subset.
             **kwargs: Additional arguments (attention_mask, etc.)
         
         This implementation:
@@ -295,6 +332,35 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
         expert_count = 0
         stop_forward_raised = False
         proj_names = [self.gate_proj_name, self.up_proj_name, self.down_proj_name]
+        
+        # Extract layer prefix from moe_block_prefix (e.g., "model.layers.5.mlp" -> "model.layers.5")
+        # This is used to compute relative paths for resolving modules in replicas
+        layer_prefix = None
+        if moe_block_prefix:
+            # Find the last component that's not part of the MoE block path
+            # The moe_block_prefix typically looks like "model.layers.X.mlp"
+            parts = moe_block_prefix.rsplit('.', 1)
+            if len(parts) > 1:
+                layer_prefix = parts[0]  # e.g., "model.layers.5"
+        
+        def get_callable_module(key: str):
+            """
+            Get the callable module for a given subset key.
+            
+            When replica_module is provided, resolves the module from the replica
+            using the relative path (stripping the layer prefix). This ensures
+            forward passes happen on the correct device for multi-GPU execution.
+            
+            Falls back to subset[key] when replica is not provided or lookup fails.
+            """
+            if replica_module is not None and layer_prefix and key.startswith(layer_prefix + '.'):
+                # Extract relative path within the layer (e.g., "mlp.experts.0.gate_proj")
+                relative_path = key[len(layer_prefix) + 1:]
+                replica_submodule = _get_module_by_relative_path(replica_module, relative_path)
+                if replica_submodule is not None:
+                    return replica_submodule
+            # Fallback to using subset (original behavior for single-GPU)
+            return subset.get(key)
         
         # Get experts modules and shared expert attribute name
         experts_module = self.get_experts_module(moe_block, model_class)
@@ -379,18 +445,18 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
                             intermediate = F.silu(gate_out) * up_out
                         del gate_out, up_out
                         
-                        # Call down_proj via wrapper with hooks enabled for activation collection
-                        subset[down_key](intermediate)
+                        # Call down_proj via wrapper (or replica module) with hooks enabled for activation collection
+                        get_callable_module(down_key)(intermediate)
                         del intermediate
                         expert_count += 1
                     else:
-                        # For gate_proj/up_proj in subset, just call them directly via wrappers
+                        # For gate_proj/up_proj in subset, just call them directly via wrappers (or replica modules)
                         called_any = False
                         if gate_key in subset:
-                            subset[gate_key](hidden_states_2d)
+                            get_callable_module(gate_key)(hidden_states_2d)
                             called_any = True
                         if up_key in subset:
-                            subset[up_key](hidden_states_2d)
+                            get_callable_module(up_key)(hidden_states_2d)
                             called_any = True
                         if called_any:
                             expert_count += 1

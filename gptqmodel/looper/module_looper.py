@@ -194,6 +194,7 @@ class ModuleLooper():
                             model_class=self.module_looper.gptq_model.__class__,
                             module_looper=self.module_looper,  # Pass for TLS-based hooks pausing
                             moe_block_prefix=moe_block_prefix,
+                            replica_module=self.module,  # Pass replica for device-correct module resolution
                             **kwargs
                         )
                     
