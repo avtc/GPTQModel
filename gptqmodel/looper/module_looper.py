@@ -1002,14 +1002,29 @@ class ModuleLooper():
 
         # Ensure any async replication/memcpy ops are complete before threads start fanning out.
         torch_sync()
-        
+
+        # Optimization: Clone modules for additional devices only (excluding device[0] to avoid redundant replication)
+        replica_devices = devices[1:] if len(devices) > 1 else []
+        additional_replicas = {}
+
         # Clone modules FIRST, then apply MoE lifecycle hooks to all replicas
         try:
-            module_replicas = clone_module_for_devices(
-                module,
-                devices,
-                progress_callback=progress_cb,
-            )
+            module_replicas = {}
+
+            # Add original module as replica for device[0] to maintain unified interface
+            if devices:
+                module_replicas[devices[0]] = module
+
+            # Clone to additional devices only
+            if replica_devices:
+                additional_replicas = clone_module_for_devices(
+                    module,
+                    replica_devices,
+                    progress_callback=progress_cb,
+                )
+                module_replicas.update(additional_replicas)
+                # Promptly release additional_replicas reference to free memory
+                additional_replicas.clear()
         finally:
             if replica_pb is not None:
                 replica_pb.close()
@@ -1125,8 +1140,15 @@ class ModuleLooper():
             moe_contexts.clear()
         
         # ensure replicas release promptly and free GPU memory
+        # Note: device[0] is the original module, so we don't delete it to preserve the original module
+        if devices:
+            original_device = devices[0]
+        else:
+            original_device = None
+
         for dev in list(module_replicas.keys()):
-            del module_replicas[dev]
+            if original_device is not None and dev != original_device:
+                del module_replicas[dev]
             
         if not need_outputs:
             return []
