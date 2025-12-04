@@ -354,7 +354,7 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
             Falls back to subset[key] when replica is not provided or lookup fails.
             """
             # Debug trace logs
-            from ..utils.torch import get_device
+            from ..utils.device import get_device
             replica_device = get_device(replica_module) if replica_module is not None else None
             log.info(f"[MoE DEBUG] get_callable_module: key={key}, layer_prefix={layer_prefix}, "
                      f"replica_module={type(replica_module).__name__ if replica_module else None}, "
