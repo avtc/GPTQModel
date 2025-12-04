@@ -353,14 +353,33 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
             
             Falls back to subset[key] when replica is not provided or lookup fails.
             """
+            # Debug trace logs
+            from ..utils.torch import get_device
+            replica_device = get_device(replica_module) if replica_module is not None else None
+            log.info(f"[MoE DEBUG] get_callable_module: key={key}, layer_prefix={layer_prefix}, "
+                     f"replica_module={type(replica_module).__name__ if replica_module else None}, "
+                     f"replica_device={replica_device}")
+            
             if replica_module is not None and layer_prefix and key.startswith(layer_prefix + '.'):
                 # Extract relative path within the layer (e.g., "mlp.experts.0.gate_proj")
                 relative_path = key[len(layer_prefix) + 1:]
+                log.info(f"[MoE DEBUG] Trying relative_path={relative_path}")
                 replica_submodule = _get_module_by_relative_path(replica_module, relative_path)
                 if replica_submodule is not None:
+                    submodule_device = get_device(replica_submodule)
+                    log.info(f"[MoE DEBUG] Found replica_submodule: {type(replica_submodule).__name__}, device={submodule_device}")
                     return replica_submodule
+                else:
+                    log.info(f"[MoE DEBUG] replica_submodule is None for path={relative_path}")
+            else:
+                log.info(f"[MoE DEBUG] Skipping replica lookup: replica_module={replica_module is not None}, "
+                         f"layer_prefix={layer_prefix}, key_starts={key.startswith(layer_prefix + '.') if layer_prefix else 'N/A'}")
             # Fallback to using subset (original behavior for single-GPU)
-            return subset.get(key)
+            subset_module = subset.get(key)
+            if subset_module is not None:
+                subset_device = get_device(subset_module)
+                log.info(f"[MoE DEBUG] Fallback to subset: {type(subset_module).__name__}, device={subset_device}")
+            return subset_module
         
         # Get experts modules and shared expert attribute name
         experts_module = self.get_experts_module(moe_block, model_class)
