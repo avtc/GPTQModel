@@ -81,6 +81,11 @@ class METHOD(str, Enum):
 class VRAMStrategy(str, Enum):
     EXCLUSIVE = "exclusive"
     BALANCED = "balanced"
+    # Run forward on all devices except device 0 (which holds inputs/outputs/modules)
+    # Uses thread-per-GPU model for better VRAM management
+    PARALLEL_EXCLUDE_0 = "parallel_exclude_0"
+    # Run forward on all devices except device 0, using existing parallel implementation
+    EXCLUSIVE_EXCLUDE_0 = "exclusive_exclude_0"
 
 
 QUANT_METHOD_FORMAT_MAPPING = {
