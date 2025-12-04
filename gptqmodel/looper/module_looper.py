@@ -1348,6 +1348,10 @@ class ModuleLooper():
             """Process all assigned batches sequentially on this GPU."""
             replica = module_replicas[device]
             
+            replica_device = get_device_new(replica, recursive=True, assert_mode=True, expected=device)
+            log.info(f"[GPU_WORKER DEBUG] worker device={device}, replica type={type(replica).__name__}, "
+                     f"replica_device={replica_device}, num_batches={len(batch_indices)}")
+            
             # test if needed
             # Ensure module tensors are properly homed to the target device
             # (matches forward_batch_worker behavior)
