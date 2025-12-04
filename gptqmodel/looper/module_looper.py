@@ -112,10 +112,7 @@ class ModuleLooper():
         if not quant_devices:
             quant_devices = [CPU]
 
-        self._quant_devices = quant_devices
-        self._quant_device_rr = 0
-        self._module_device_map: Dict[str, torch.device] = {}
-        self._quant_device_lock = threading.Lock()
+        # Parse VRAM strategy BEFORE setting up quant devices so we can exclude device 0 if needed
         vram_strategy = getattr(self.gptq_model.quantize_config, "vram_strategy", VRAMStrategy.EXCLUSIVE)
         if isinstance(vram_strategy, str):
             try:
@@ -133,6 +130,26 @@ class ModuleLooper():
             )
             vram_strategy = VRAMStrategy.EXCLUSIVE
         self._vram_strategy = vram_strategy
+        
+        # For EXCLUDE_0 strategies, exclude device 0 from quantization device pool
+        # Device 0 holds inputs/outputs/modules, so quantization should happen on other devices
+        if self._vram_strategy in (VRAMStrategy.EXCLUSIVE_EXCLUDE_0, VRAMStrategy.PARALLEL_EXCLUDE_0):
+            quant_devices_filtered = [d for d in quant_devices if d.index != 0]
+            if len(quant_devices_filtered) >= 1:
+                quant_devices = quant_devices_filtered
+                log.info(
+                    f"{self._vram_strategy.value}: Quantization will use devices {[str(d) for d in quant_devices]} (excluding device 0)"
+                )
+            else:
+                log.warn(
+                    f"{self._vram_strategy.value}: No devices available after excluding device 0. "
+                    "Using all devices including device 0 for quantization."
+                )
+
+        self._quant_devices = quant_devices
+        self._quant_device_rr = 0
+        self._module_device_map: Dict[str, torch.device] = {}
+        self._quant_device_lock = threading.Lock()
         self._moe_subset_threshold = 16
         self._subset_callback = getattr(self.gptq_model, "subset_callback", None)
         
