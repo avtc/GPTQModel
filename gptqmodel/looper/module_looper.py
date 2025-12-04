@@ -44,6 +44,7 @@ from ..utils.device import get_device, get_device_new
 from ..utils.disk import estimate_disk_io_speed
 from ..utils.logger import setup_logger, log_time_block
 from ..utils.looper_helpers import (
+    clear_non_picklable_state,
     clone_module_for_devices,
     device_ctx,
     forward_batch_worker,
