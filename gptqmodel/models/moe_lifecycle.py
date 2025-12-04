@@ -366,7 +366,8 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
             # Debug trace logs
             from ..utils.device import get_device
             replica_device = get_device(replica_module) if replica_module is not None else None
-            log.info(f"[MoE DEBUG] get_callable_module: key={key}, "
+            target_device = hidden_states.device  # The device where inputs are
+            log.info(f"[MoE DEBUG] get_callable_module: key={key}, target_device={target_device}, "
                      f"replica_module={type(replica_module).__name__ if replica_module else None}, "
                      f"replica_device={replica_device}")
             
@@ -378,6 +379,12 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
                 if replica_submodule is not None:
                     submodule_device = get_device(replica_submodule)
                     log.info(f"[MoE DEBUG] Found replica_submodule: {type(replica_submodule).__name__}, device={submodule_device}")
+                    
+                    # Move submodule to target device if needed
+                    if submodule_device != target_device:
+                        log.info(f"[MoE DEBUG] Moving submodule from {submodule_device} to {target_device}")
+                        replica_submodule = replica_submodule.to(target_device)
+                        
                     return replica_submodule
                 else:
                     log.info(f"[MoE DEBUG] replica_submodule is None for key={key}")

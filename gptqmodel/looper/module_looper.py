@@ -1306,6 +1306,9 @@ class ModuleLooper():
                     f"{stage_label} rows 0/{total_rows}"
                 ).draw()
 
+        # Sync after cloning
+        torch_sync()
+
         prev_kv = shared_kv_cache_dict.get(layer_index - 1) if reuse_kv else None
        
         # For PARALLEL_EXCLUDE_0: exclude device 0 from forward execution
@@ -1362,6 +1365,9 @@ class ModuleLooper():
             # (matches forward_batch_worker behavior)
             rehome_module_to_device(replica, device, move_parameters=True, move_buffers=True)
             
+            # test if needed
+            #torch_sync()  # Avoid CUDA launch failures
+
             replica_device = get_device(replica)
             log.info(f"[GPU_WORKER DEBUG] after rehome, worker device={device}, replica type={type(replica).__name__}, "
                      f"replica_device={replica_device}, num_batches={len(batch_indices)}")
@@ -1370,9 +1376,6 @@ class ModuleLooper():
             if params:
                 first_param_device = params[0].device
                 log.info(f"[GPU_WORKER DEBUG] after rehome, replica first param device={first_param_device}")
-
-            # test if needed
-            #torch_sync()  # Avoid CUDA launch failures
             
             # Create and manage MoE lifecycle context within this thread
             if self._should_use_moe_lifecycle(module, processor):
