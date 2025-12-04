@@ -1305,54 +1305,60 @@ class ModuleLooper():
                     f"{stage_label} rows 0/{total_rows}"
                 ).draw()
 
-        # Apply MoE lifecycle hooks to ALL replicas
-        moe_contexts = []
-        try:
-            if self._should_use_moe_lifecycle(module, processor):
-                for device, replica in module_replicas.items():
-                    ctx = self.MoELifecycleContext(self, replica, processor, self._current_subset)
-                    ctx.__enter__()
-                    moe_contexts.append(ctx)
-
-            prev_kv = shared_kv_cache_dict.get(layer_index - 1) if reuse_kv else None
-            
-            # For PARALLEL_EXCLUDE_0: exclude device 0 from forward execution
-            # Device 0 holds inputs/outputs/modules, so we only run forward on other devices
-            # Module was already cloned to all devices above
-            if self._vram_strategy == VRAMStrategy.PARALLEL_EXCLUDE_0:
-                forward_devices = [d for d in devices if d.index != 0]
-                if len(forward_devices) < 1:
-                    log.warn(
-                        "PARALLEL_EXCLUDE_0: No devices available after excluding device 0. "
-                        "Using all devices including device 0."
-                    )
-                    forward_devices = devices
-            else:
+        prev_kv = shared_kv_cache_dict.get(layer_index - 1) if reuse_kv else None
+       
+        # For PARALLEL_EXCLUDE_0: exclude device 0 from forward execution
+        # Device 0 holds inputs/outputs/modules, so we only run forward on other devices
+        # Module was already cloned to all devices above
+        if self._vram_strategy == VRAMStrategy.PARALLEL_EXCLUDE_0:
+            forward_devices = [d for d in devices if d.index != 0]
+            if len(forward_devices) < 1:
+                log.warn(
+                    "PARALLEL_EXCLUDE_0: No devices available after excluding device 0. "
+                    "Using all devices including device 0."
+                )
                 forward_devices = devices
+        else:
+            forward_devices = devices
+        
+        num_devices = len(forward_devices)
+
+        # Pre-partition batch indices using round-robin
+        # Inputs are sorted by token count descending, so round-robin
+        # achieves near-optimal token balance across GPUs
+        device_batch_indices: Dict[torch.device, List[int]] = {dev: [] for dev in forward_devices}
+        for batch_idx in range(total_batches):
+            device = forward_devices[batch_idx % num_devices]
+            device_batch_indices[device].append(batch_idx)
+
+        # Thread-safe storage for results and KV cache
+        results_lock = threading.Lock()
+        results: Dict[int, Any] = {}
+        kv_cache_set = [False]  # Use list as mutable container for closure
+
+        # Progress tracking (thread-safe)
+        progress_lock = threading.Lock()
+        processed_rows = [0]
+
+        def gpu_worker(device: torch.device, batch_indices: List[int]) -> None:
+            """Process all assigned batches sequentially on this GPU."""
+            replica = module_replicas[device]
+
+            # test if needed
+            # Ensure module tensors are properly homed to the target device
+            # (matches forward_batch_worker behavior)
+            # rehome_module_to_device(replica, device, move_parameters=True, move_buffers=True)
             
-            num_devices = len(forward_devices)
-
-            # Pre-partition batch indices using round-robin
-            # Inputs are sorted by token count descending, so round-robin 
-            # achieves near-optimal token balance across GPUs
-            device_batch_indices: Dict[torch.device, List[int]] = {dev: [] for dev in forward_devices}
-            for batch_idx in range(total_batches):
-                device = forward_devices[batch_idx % num_devices]
-                device_batch_indices[device].append(batch_idx)
-
-            # Thread-safe storage for results and KV cache
-            results_lock = threading.Lock()
-            results: Dict[int, Any] = {}
-            kv_cache_set = [False]  # Use list as mutable container for closure
-
-            # Progress tracking (thread-safe)
-            progress_lock = threading.Lock()
-            processed_rows = [0]
-
-            def gpu_worker(device: torch.device, batch_indices: List[int]) -> None:
-                """Process all assigned batches sequentially on this GPU."""
-                replica = module_replicas[device]
-                
+            # test if needed
+            #torch_sync()  # Avoid CUDA launch failures
+            
+            # Create and manage MoE lifecycle context within this thread
+            if self._should_use_moe_lifecycle(module, processor):
+                moe_context = self.MoELifecycleContext(self, replica, processor, self._current_subset)
+            else:
+                moe_context = nullcontext()
+            
+            with moe_context:
                 for batch_idx in batch_indices:
                     # Move inputs to device
                     inputs = [move_to(inp, device=device) for inp in layer_inputs[batch_idx]]
@@ -1445,32 +1451,23 @@ class ModuleLooper():
                     if module_output is not None and not need_outputs:
                         del module_output
 
-            # Launch threads - one per GPU
-            threads: List[threading.Thread] = []
-            for device in forward_devices:
-                batch_indices = device_batch_indices[device]
-                if batch_indices:
-                    t = threading.Thread(
-                        target=gpu_worker,
-                        args=(device, batch_indices),
-                        name=f"gpu_worker_{device}",
-                    )
-                    threads.append(t)
-                    t.start()
-            
-            # Wait for all threads to complete
-            for t in threads:
-                t.join()
-
-        finally:
-            # Clean up MoE lifecycle hooks from all replicas
-            for ctx in moe_contexts:
-                try:
-                    ctx.__exit__(None, None, None)
-                except Exception:
-                    pass
-            moe_contexts.clear()
+        # Launch threads - one per GPU
+        threads: List[threading.Thread] = []
+        for device in forward_devices:
+            batch_indices = device_batch_indices[device]
+            if batch_indices:
+                t = threading.Thread(
+                    target=gpu_worker,
+                    args=(device, batch_indices),
+                    name=f"gpu_worker_{device}",
+                )
+                threads.append(t)
+                t.start()
         
+        # Wait for all threads to complete
+        for t in threads:
+            t.join()
+
         # Release replicas promptly
         for dev in list(module_replicas.keys()):
             del module_replicas[dev]
