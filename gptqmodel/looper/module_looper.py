@@ -1013,6 +1013,11 @@ class ModuleLooper():
 
             # Add original module as replica for device[0] to maintain unified interface
             if devices:
+                # Prepare original module with same operations that clones receive
+                module.eval()
+                rehome_module_to_device(module, devices[0], move_parameters=True, move_buffers=True)
+                clear_non_picklable_state(module)
+                setattr(module, "_gptqmodule_device_hint", devices[0])
                 module_replicas[devices[0]] = module
 
             # Clone to additional devices only
