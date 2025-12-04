@@ -1023,9 +1023,12 @@ class ModuleLooper():
 
             # Clone to additional devices only
             if replica_devices:
+                # Pass the original base device (devices[0]) for staging operations,
+                # even though we're only cloning to devices[1:]
                 additional_replicas = clone_module_for_devices(
                     module,
                     replica_devices,
+                    base_device=devices[0],
                     progress_callback=progress_cb,
                 )
                 module_replicas.update(additional_replicas)

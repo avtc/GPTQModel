@@ -224,9 +224,24 @@ def clone_module_for_devices(
     module: torch.nn.Module,
     devices: List[torch.device],
     *,
+    base_device: torch.device,
     clear_state_fn=clear_non_picklable_state,
     progress_callback: Optional[Callable[[int, int, torch.device, str], None]] = None,
 ) -> Dict[torch.device, torch.nn.Module]:
+    """Clone a module to multiple devices.
+    
+    Args:
+        module: The module to clone
+        devices: List of target devices for cloning
+        base_device: Base device for staging operations. This should be the primary device
+                    where the module currently resides. When cloning to a subset of devices
+                    (e.g., devices[1:]), pass the original base device (devices[0]) here.
+        clear_state_fn: Function to clear non-picklable state
+        progress_callback: Optional callback for progress updates
+        
+    Returns:
+        Dictionary mapping devices to cloned modules
+    """
     clones: Dict[torch.device, torch.nn.Module] = {}
     if not devices:
         return clones
@@ -265,7 +280,6 @@ def clone_module_for_devices(
         else:
             log.info(f"ModuleLooper: clone {module_label} via {method} in {total_duration:.2f}ms")
 
-    base_device = devices[0]
     device_type = base_device.type
     homogeneous_type = all(dev.type == device_type for dev in devices)
 
