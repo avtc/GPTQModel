@@ -1348,35 +1348,14 @@ class ModuleLooper():
             """Process all assigned batches sequentially on this GPU."""
             replica = module_replicas[device]
             
-            # Debug logging
-            from ..utils.device import get_device
-            replica_device = get_device(replica)
-            log.info(f"[GPU_WORKER DEBUG] worker device={device}, replica type={type(replica).__name__}, "
-                     f"replica_device={replica_device}, num_batches={len(batch_indices)}")
-            
-            # Check if replica has parameters and where they are
-            params = list(replica.parameters())
-            if params:
-                first_param_device = params[0].device
-                log.info(f"[GPU_WORKER DEBUG] replica first param device={first_param_device}")
-
             # test if needed
             # Ensure module tensors are properly homed to the target device
             # (matches forward_batch_worker behavior)
-            rehome_module_to_device(replica, device, move_parameters=True, move_buffers=True)
+            #rehome_module_to_device(replica, device, move_parameters=True, move_buffers=True)
             
             # test if needed
             #torch_sync()  # Avoid CUDA launch failures
 
-            replica_device = get_device(replica)
-            log.info(f"[GPU_WORKER DEBUG] after rehome, worker device={device}, replica type={type(replica).__name__}, "
-                     f"replica_device={replica_device}, num_batches={len(batch_indices)}")
-
-            params = list(replica.parameters())
-            if params:
-                first_param_device = params[0].device
-                log.info(f"[GPU_WORKER DEBUG] after rehome, replica first param device={first_param_device}")
-            
             # Create and manage MoE lifecycle context within this thread
             if self._should_use_moe_lifecycle(module, processor):
                 moe_context = self.MoELifecycleContext(self, replica, processor, self._current_subset)

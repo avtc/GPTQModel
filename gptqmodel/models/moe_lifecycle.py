@@ -343,16 +343,6 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
         stop_forward_raised = False
         proj_names = [self.gate_proj_name, self.up_proj_name, self.down_proj_name]
         
-        # Extract layer prefix from moe_block_prefix (e.g., "model.layers.5.mlp" -> "model.layers.5")
-        # This is used to compute relative paths for resolving modules in replicas
-        layer_prefix = None
-        if moe_block_prefix:
-            # Find the last component that's not part of the MoE block path
-            # The moe_block_prefix typically looks like "model.layers.X.mlp"
-            parts = moe_block_prefix.rsplit('.', 1)
-            if len(parts) > 1:
-                layer_prefix = parts[0]  # e.g., "model.layers.5"
-        
         def get_callable_module(key: str):
             """
             Get the callable module for a given subset key.
@@ -365,24 +355,24 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
             """
             # Debug trace logs
             from ..utils.device import get_device
-            replica_device = get_device(replica_module) if replica_module is not None else None
+            #replica_device = get_device(replica_module) if replica_module is not None else None
             target_device = hidden_states.device  # The device where inputs are
-            log.info(f"[MoE DEBUG] get_callable_module: key={key}, target_device={target_device}, "
-                     f"replica_module={type(replica_module).__name__ if replica_module else None}, "
-                     f"replica_device={replica_device}")
+            # log.info(f"[MoE DEBUG] get_callable_module: key={key}, target_device={target_device}, "
+            #          f"replica_module={type(replica_module).__name__ if replica_module else None}, "
+            #          f"replica_device={replica_device}")
             
             # The key is already a relative path (e.g., "mlp.experts.0.gate_proj")
             # Use it directly to look up the module in the replica
             if replica_module is not None:
-                log.info(f"[MoE DEBUG] Trying to find key={key} in replica")
+                #log.info(f"[MoE DEBUG] Trying to find key={key} in replica")
                 replica_submodule = _get_module_by_relative_path(replica_module, key)
                 if replica_submodule is not None:
                     submodule_device = get_device(replica_submodule)
-                    log.info(f"[MoE DEBUG] Found replica_submodule: {type(replica_submodule).__name__}, device={submodule_device}")
+                    #log.info(f"[MoE DEBUG] Found replica_submodule: {type(replica_submodule).__name__}, device={submodule_device}")
                     
                     # Move submodule to target device if needed
                     if submodule_device != target_device:
-                        log.info(f"[MoE DEBUG] Moving submodule from {submodule_device} to {target_device}")
+                        #log.info(f"[MoE DEBUG] Moving submodule from {submodule_device} to {target_device}")
                         replica_submodule = replica_submodule.to(target_device)
                         
                     return replica_submodule
