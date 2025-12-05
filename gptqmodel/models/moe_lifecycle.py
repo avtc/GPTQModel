@@ -368,12 +368,13 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
                 replica_submodule = _get_module_by_relative_path(replica_module, key)
                 if replica_submodule is not None:
                     submodule_device = get_device(replica_submodule)
-                    log.info(f"[MoE DEBUG] Found replica_submodule: {type(replica_submodule).__name__}, device={submodule_device}")
+                    #log.info(f"[MoE DEBUG] Found replica_submodule: {type(replica_submodule).__name__}, device={submodule_device}")
                     
-                    # Move submodule to target device if needed
-                    if submodule_device != target_device:
-                        log.info(f"[MoE DEBUG] Moving submodule from {submodule_device} to {target_device}")
-                        replica_submodule = replica_submodule.to(target_device)
+                    if submodule_device.type != target_device.type or (submodule_device.index != target_device.index):
+                        raise ValueError(
+                            f"[MoE DEBUG] Submodule {key} is on {submodule_device} but target is {target_device}. "
+                            f"This may indicate a problem with rehome_module_to_device."
+                        )
                         
                     return replica_submodule
                 else:
