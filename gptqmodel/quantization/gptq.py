@@ -351,8 +351,8 @@ class GPTQ:
                 if self.H is None:
                     h_device = self._select_hessian_target_device(requested=None, inp_device=dev)
                     self.H = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=h_device)
-                    if DEBUG_ON:
-                        log.debug(f"[GPTQ DEBUG] Initialized main Hessian on {h_device} for module {self.name} on device {dev}")
+                    #if DEBUG_ON:
+                    log.debug(f"[GPTQ DEBUG] Initialized main Hessian on {h_device} for module {self.name} on device {dev}")
 
                 self.H.add_(xtx.to(device=self.H.device))
                 del xtx
@@ -362,6 +362,7 @@ class GPTQ:
                 existing = self._device_hessian_partials.get(dev)
                 if existing is None:
                     self._device_hessian_partials[dev] = xtx
+                    log.debug(f"[GPTQ DEBUG] Initialized main Hessian on {h_device} for module {self.name} on device {dev} (repl)")
                 else:
                     existing.add_(xtx)
                     del xtx
@@ -601,6 +602,9 @@ class GPTQ:
 
         # For 'replicated' strategy, use hint or fall back to first partial device or CPU
         if strategy == "replicated":
+            #if DEBUG_ON:
+            log.debug(f"[GPTQ DEBUG] Hessian accumulator replicated {self.name}")
+
             hint = getattr(self, "_final_hessian_device_hint", None)
             if hint is not None:
                 return torch.device(hint)
@@ -631,6 +635,8 @@ class GPTQ:
                 return _HESSIAN_RR_DEVICES
 
         if strategy == "module_based":
+            #if DEBUG_ON:
+            log.debug(f"[GPTQ DEBUG] Hessian accumulator module_based {self.name}")
             return inp_device
 
         # Handle "balanced" strategy - select device with lowest VRAM usage
@@ -641,7 +647,7 @@ class GPTQ:
                 return lowest_mem_device
             # Fall back to round-robin if VRAM detection failed
             if DEBUG_ON:
-                log.debug("[GPTQ DEBUG] Hessian accumulator balanced: VRAM detection unavailable, falling back to round-robin")
+                log.debug(f"[GPTQ DEBUG] Hessian accumulator balanced: VRAM detection unavailable, falling back to round-robin, {self.name}")
             strategy = "round_robin"
 
         # Handle "round_robin" strategy
@@ -652,6 +658,7 @@ class GPTQ:
                     device_index = _HESSIAN_ROUND_ROBIN_INDEX % len(target_devices)
                     _HESSIAN_ROUND_ROBIN_INDEX += 1
                 target_device = target_devices[device_index]
+                log.debug(f"[GPTQ DEBUG] Hessian accumulator round_robin {self.name}")
                 return target_device
 
             log.warn("[GPTQ] Hessian accumulator round-robin: no suitable devices found, falling back to CPU.")
@@ -659,6 +666,7 @@ class GPTQ:
 
         # Direct device string (e.g., 'cpu', 'cuda:0', 'xpu:0')
         try:
+            log.debug(f"[GPTQ DEBUG] Hessian accumulator device string {self.name} {strategy}")
             return torch.device(strategy)
         except Exception:
             log.warn(f"[GPTQ] Invalid hessian_accumulator_strategy '{strategy}', falling back to CPU.")

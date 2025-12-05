@@ -926,6 +926,12 @@ class ModuleLooper():
                     finally:
                         self._set_processor_mask(processor, None)
 
+                # Release intermediate tensors promptly after they are no longer needed
+                del layer_input
+                del attn_tensor
+                del keep_mask
+                del additional_inputs
+
                 if (
                     reuse_kv
                     and module_output is not None
@@ -939,6 +945,10 @@ class ModuleLooper():
                     primary = module_output[0] if isinstance(module_output, tuple) else module_output
                     primary = move_to(primary, device=cur_layer_device)
                     outputs.append([primary])
+
+                # Release module_output promptly after extracting what we need
+                if module_output is not None:
+                    del module_output
 
                 rows_for_batch = batch_row_counts[batch_idx] if batch_idx < len(batch_row_counts) else 0
                 if rows_for_batch <= 0:

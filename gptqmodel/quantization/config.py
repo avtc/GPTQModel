@@ -80,10 +80,10 @@ class METHOD(str, Enum):
 
 class VRAMStrategy(str, Enum):
     EXCLUSIVE = "exclusive"
-    BALANCED = "balanced"
+    BALANCED = "balanced" # non-moe run with exclusive strategy
     # Uses thread-per-GPU model for better VRAM management
+    BALANCED2 = "balanced2" # non-moe run with parallel strategy
     PARALLEL = "parallel"
-
 
 class HessianAccumulatorStrategy(str, Enum):
     REPLICATED = "replicated"
@@ -455,7 +455,7 @@ class QuantizeConfig():
 
         # Resolve 'auto' hessian_accumulator_strategy based on VRAM_STRATEGY
         if self.hessian_accumulator_strategy == "auto":
-            if self.vram_strategy == VRAMStrategy.BALANCED:
+            if self.vram_strategy == VRAMStrategy.BALANCED or self.vram_strategy == VRAMStrategy.BALANCED2:
                 self.hessian_accumulator_strategy = "module_based"
             elif self.vram_strategy == VRAMStrategy.EXCLUSIVE:
                 self.hessian_accumulator_strategy = "replicated"
