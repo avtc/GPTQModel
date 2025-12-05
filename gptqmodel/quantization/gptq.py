@@ -88,8 +88,11 @@ def _lease_workspace(
             cols,
         )
         if not reused:
+            log.info(f"[GPTQ DEBUG]: Allocating new workspace for device {device} with size ({max(required_rows, 1)}, {cols}) and dtype {dtype}")
             rows = max(required_rows, 1)
             workspace = torch.empty((rows, cols), dtype=dtype, device=device)
+        else:
+            log.info(f"[GPTQ DEBUG: Reusing workspace for device {device}")
     try:
         yield workspace, reused
     finally:
@@ -304,6 +307,7 @@ class GPTQ:
             self._device_sample_counts[dev] = self._device_sample_counts.get(dev, 0) + batch_token_size
             self.nsamples += batch_token_size
             self._hessian_dirty = True
+            log.info(f"[GPTQ DEBUG] add_batch for module {self.name} on device {dev}. xtx shape: {xtx.shape}, partials: {len(self._device_hessian_partials)}")
 
     def preferred_staging_dtype(self, input_dtype: torch.dtype, device: torch.device) -> torch.dtype:
         device = torch.device(device)
@@ -592,6 +596,7 @@ class GPTQ:
             self.nsamples = total_samples
             self._hessian_dirty = False
             self._final_hessian_device_hint = result_accum.device
+            log.info(f"[GPTQ DEBUG] Clearing {len(self._device_hessian_partials)} partial hessians for module {self.name}")
             self._device_hessian_partials.clear()
             self._device_sample_counts.clear()
             del result_accum
@@ -1132,8 +1137,14 @@ class GPTQ:
         self._borrow_workspace_last_chunk_rows = None
 
     def free(self):
+        log.info(f"[GPTQ DEBUG] Freeing resources for module {self.name}")
         if hasattr(self, "H"):
             del self.H
+        if hasattr(self, "_device_hessian_partials"):
+            log.info(f"[GPTQ DEBUG] Clearing {len(self._device_hessian_partials)} partial hessians during free for module {self.name}")
+            self._device_hessian_partials.clear()
+        if hasattr(self, "_device_sample_counts"):
+            self._device_sample_counts.clear()
         del self.quantizer
         if hasattr(self, "module_copy"):
             del self.module_copy
