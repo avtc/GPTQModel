@@ -21,7 +21,6 @@ from torch.nn.modules.conv import _ConvNd
 
 from ..looper.named_module import NamedModule
 from ..quantization import QuantizeConfig
-from .config import HessianAccumulatorStrategy
 from ..utils.device import get_device
 from ..utils.logger import setup_logger
 from ..utils.torch import torch_sync
@@ -94,11 +93,8 @@ def _lease_workspace(
             cols,
         )
         if not reused:
-            log.info(f"[GPTQ DEBUG]: Allocating new workspace for device {device} with size ({max(required_rows, 1)}, {cols}) and dtype {dtype}")
             rows = max(required_rows, 1)
             workspace = torch.empty((rows, cols), dtype=dtype, device=device)
-        else:
-            log.info(f"[GPTQ DEBUG: Reusing workspace for device {device}")
     try:
         yield workspace, reused
     finally:
@@ -278,8 +274,7 @@ class GPTQ:
         
         Returns True for 'replica' strategy, False for all others (single accumulator).
         """
-        strategy = self.qcfg.hessian_accumulator_strategy
-        return strategy == HessianAccumulatorStrategy.REPLICA or strategy == 'replica'
+        return self.qcfg.hessian_accumulator_strategy == 'replica'
 
     @staticmethod
     def validate_module(module):
@@ -352,20 +347,13 @@ class GPTQ:
                 if self.H is None:
                     h_device = self._select_hessian_target_device(None)
                     self.H = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=h_device)
-                    log.info(f"[GPTQ DEBUG] Initialized main Hessian on {h_device} for module {self.name}")
-
-                log.info(
-                    f"[GPTQ DEBUG] add_batch for module {self.name} on device {dev}. "
-                    f"xtx shape: {xtx.shape}. Accumulating on {self.H.device}."
-                )
+                    log.info(f"[GPTQ DEBUG] Initialized main Hessian on {h_device} for module {self.name} on device {dev}")
 
                 self.H.add_(xtx.to(device=self.H.device))
                 del xtx
 
                 self.nsamples += batch_token_size
             else:
-                log.info(f"[GPTQ DEBUG] add_batch for module {self.name} on device {dev}. xtx shape: {xtx.shape}, partials: {len(self._device_hessian_partials)}")
-
                 existing = self._device_hessian_partials.get(dev)
                 if existing is None:
                     self._device_hessian_partials[dev] = xtx
@@ -603,7 +591,7 @@ class GPTQ:
         strategy = self.qcfg.hessian_accumulator_strategy
 
         # For 'replica' strategy, use hint or fall back to first partial device or CPU
-        if strategy == HessianAccumulatorStrategy.REPLICA or strategy == 'replica':
+        if strategy == 'replica':
             hint = getattr(self, "_final_hessian_device_hint", None)
             if hint is not None:
                 return torch.device(hint)
@@ -634,25 +622,23 @@ class GPTQ:
                 return _HESSIAN_RR_DEVICES
 
         # Handle 'balanced' strategy - select device with lowest VRAM usage
-        if strategy == HessianAccumulatorStrategy.BALANCED or strategy == 'balanced':
+        if strategy == 'balanced':
             target_devices = _get_available_devices()
             lowest_mem_device = _select_lowest_memory_device(target_devices)
             if lowest_mem_device is not None:
-                log.info(f"[GPTQ DEBUG] Hessian accumulator balanced: selected device {lowest_mem_device} (lowest VRAM usage)")
                 return lowest_mem_device
             # Fall back to round-robin if VRAM detection failed
             log.info("[GPTQ DEBUG] Hessian accumulator balanced: VRAM detection unavailable, falling back to round-robin")
-            strategy = HessianAccumulatorStrategy.ROUND_ROBIN
+            strategy = 'round_robin'
 
         # Handle 'round_robin' strategy
-        if strategy == HessianAccumulatorStrategy.ROUND_ROBIN or strategy == 'round_robin':
+        if strategy == 'round_robin':
             target_devices = _get_available_devices()
             if target_devices:
                 with _HESSIAN_ROUND_ROBIN_LOCK:
                     device_index = _HESSIAN_ROUND_ROBIN_INDEX % len(target_devices)
                     _HESSIAN_ROUND_ROBIN_INDEX += 1
                 target_device = target_devices[device_index]
-                log.info(f"[GPTQ DEBUG] Hessian accumulator round-robin: selected device {target_device}")
                 return target_device
 
             log.warn("[GPTQ] Hessian accumulator round-robin: no suitable devices found, falling back to CPU.")
@@ -681,7 +667,6 @@ class GPTQ:
                 if not self._hessian_finalized and self.nsamples > 0:
                     self.H.mul_(2.0 / float(self.nsamples))
                     self._hessian_finalized = True
-                    log.info(f"[GPTQ DEBUG] Finalized Hessian for module {self.name} with {self.nsamples} samples.")
 
                 self._final_hessian_device_hint = device
             else:
@@ -743,7 +728,6 @@ class GPTQ:
                 self.nsamples = total_samples
                 self._hessian_dirty = False
                 self._final_hessian_device_hint = result_accum.device
-                log.info(f"[GPTQ DEBUG] Clearing {len(self._device_hessian_partials)} partial hessians for module {self.name}")
                 self._device_hessian_partials.clear()
                 self._device_sample_counts.clear()
                 del result_accum
@@ -1291,13 +1275,11 @@ class GPTQ:
         self._borrow_workspace_last_chunk_rows = None
 
     def free(self):
-        log.info(f"[GPTQ DEBUG] Freeing resources for module {self.name}")
         if hasattr(self, "H"):
             del self.H
 
         if self._uses_replica_strategy():
             if hasattr(self, "_device_hessian_partials"):
-                log.info(f"[GPTQ DEBUG] Clearing {len(self._device_hessian_partials)} partial hessians during free for module {self.name}")
                 self._device_hessian_partials.clear()
             if hasattr(self, "_device_sample_counts"):
                 self._device_sample_counts.clear()
