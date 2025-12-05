@@ -53,6 +53,7 @@ from ..utils.looper_helpers import (
 )
 from ..utils.model import find_modules, get_module, get_module_by_name_prefix, move_to, nested_move_to
 from ..utils.offload import offload_to_disk
+from ..utils.memory import log_vram_usage
 from ..utils.torch import (CPU, META, timed_gc_collect, torch_sync, tf32_high_precision_guard)
 from .. import DEVICE_THREAD_POOL
 from .awq_processor import AWQProcessor
@@ -1404,10 +1405,17 @@ class ModuleLooper():
                         self._set_processor_mask(processor, None)
                         processor._set_current_batch_index(None)
                     
+                    # Release input-related tensors promptly after they are used
+                    del inputs
+                    del attn_tensor
+                    del additional_inputs
+                    del keep_mask
+
                     # Store results (thread-safe)
                     if need_outputs and module_output is not None:
                         with results_lock:
-                            results[batch_idx] = module_output
+                            # Move output to main device to free up worker VRAM
+                            results[batch_idx] = nested_move_to(module_output, device=cur_layer_device)
                     
                     # Handle KV cache
                     if (
@@ -1440,10 +1448,6 @@ class ModuleLooper():
                             ).draw()
                     
                     # Release tensors promptly
-                    del inputs
-                    del attn_tensor
-                    del additional_inputs
-                    del keep_mask
                     if module_output is not None and not need_outputs:
                         del module_output
 
@@ -1481,7 +1485,6 @@ class ModuleLooper():
                 primary = module_output[0]
             else:
                 primary = module_output
-            primary = move_to(primary, device=cur_layer_device)
             ordered_outputs.append([primary])
 
         return ordered_outputs

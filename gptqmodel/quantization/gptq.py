@@ -426,7 +426,7 @@ class GPTQ:
             source = matrix[start:start + rows_this]
             with self.borrow_materialized_chunk_fp32(source, rows_this) as materialized:
                 materialized32 = materialized
-                xtx_accum.add_(torch.matmul(materialized32.T, materialized32))
+                xtx_accum.addmm_(materialized32.T, materialized32)
 
         torch_sync(device=xtx_accum.device)
         return xtx_accum
