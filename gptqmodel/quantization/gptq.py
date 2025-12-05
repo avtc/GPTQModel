@@ -296,6 +296,8 @@ class GPTQ:
 
         with self.lock:
             self.fwd_counter += 1
+            
+            log.info(f"[GPTQ DEBUG] add_batch for module {self.name} on device {dev}. xtx shape: {xtx.shape}, partials: {len(self._device_hessian_partials)}")
 
             existing = self._device_hessian_partials.get(dev)
             if existing is None:
@@ -307,7 +309,6 @@ class GPTQ:
             self._device_sample_counts[dev] = self._device_sample_counts.get(dev, 0) + batch_token_size
             self.nsamples += batch_token_size
             self._hessian_dirty = True
-            log.info(f"[GPTQ DEBUG] add_batch for module {self.name} on device {dev}. xtx shape: {xtx.shape}, partials: {len(self._device_hessian_partials)}")
 
     def preferred_staging_dtype(self, input_dtype: torch.dtype, device: torch.device) -> torch.dtype:
         device = torch.device(device)
