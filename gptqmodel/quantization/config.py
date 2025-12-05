@@ -463,8 +463,10 @@ class QuantizeConfig():
 
         # Resolve 'auto' hessian_accumulator_strategy based on VRAM_STRATEGY
         if self.hessian_accumulator_strategy == "auto":
-            if self.vram_strategy == VRAMStrategy.BALANCED or self.vram_strategy == VRAMStrategy.BALANCED2:
+            if self.vram_strategy == VRAMStrategy.BALANCED:
                 self.hessian_accumulator_strategy = "moe_module_based"
+            elif self.vram_strategy == VRAMStrategy.BALANCED2:
+                self.hessian_accumulator_strategy = "module_based"
             elif self.vram_strategy == VRAMStrategy.EXCLUSIVE:
                 self.hessian_accumulator_strategy = "replicated"
             elif self.vram_strategy == VRAMStrategy.PARALLEL:

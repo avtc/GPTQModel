@@ -208,7 +208,7 @@ def run_subset_stage(
                         for module_name in expert_groups[group_key]:
                             forward_device_map[module_name] = target_device
 
-        subset_forward_serial = looper._vram_strategy == VRAMStrategy.BALANCED or looper._vram_strategy == VRAMStrategy.BALANCED2
+        subset_forward_serial = looper._vram_strategy == VRAMStrategy.BALANCED
         if subset_forward_serial:
             active_group_count = len(moe_group_keys_all)
             if active_group_count == 0:
@@ -218,6 +218,8 @@ def run_subset_stage(
     else:
         for named_module in subset.values():
             setattr(named_module, "moe_enabled", False)
+
+    subset_forward_serial = subset_forward_serial or looper._vram_strategy == VRAMStrategy.BALANCED2
 
     handle = []
 
