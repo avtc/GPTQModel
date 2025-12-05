@@ -559,8 +559,8 @@ class GPTQ:
         if requested is not None:
             return torch.device(requested)
 
-        if self.qcfg.single_hessian_accumulator and self.qcfg.hessian_accumulator_device != "auto":
-            return torch.device(self.qcfg.hessian_accumulator_device)
+        if self.qcfg.single_hessian_accumulator and self.qcfg.single_hessian_accumulator_device != "auto":
+            return torch.device(self.qcfg.single_hessian_accumulator_device)
 
         hint = getattr(self, "_final_hessian_device_hint", None)
         if hint is not None:
