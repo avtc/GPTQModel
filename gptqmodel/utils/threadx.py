@@ -74,7 +74,6 @@ def _coerce_device(d: DeviceLike) -> torch.device:
 
 @contextlib.contextmanager
 def _device_ctx(dev: torch.device):
-    log.info(f"Entering _device_ctx with dev={dev} (type: {type(dev)})")
     """
     Set the caller thread's *current* device while running a task so handles/streams
     line up correctly. For CUDA/XPU we set the per-thread current device; CPU/MPS
@@ -96,23 +95,32 @@ def _device_ctx(dev: torch.device):
                 log.error(f"_device_ctx: PyTorch version incompatibility - {e}")
                 log.error(f"_device_ctx: device={dev}, target={target}, target_type={type(target)}")
                 log.error(f"_device_ctx: Falling back to direct device setting without context manager")
+                
+                # Capture previous device to restore later
+                prev_device = torch.cuda.current_device() if torch.cuda.is_available() else None
+                
                 # Fallback: set device directly without context manager
-                if isinstance(target, int):
-                    torch.cuda.set_device(target)
-                elif isinstance(target, str):
-                    # For string "cuda", get current device or set to 0
-                    if target == "cuda":
-                        if torch.cuda.is_available():
-                            torch.cuda.set_device(0)
-                    else:
-                        # Try to extract device index from string
-                        try:
-                            idx = int(target.split(":")[1]) if ":" in target else 0
-                            torch.cuda.set_device(idx)
-                        except (ValueError, IndexError):
+                try:
+                    if isinstance(target, int):
+                        torch.cuda.set_device(target)
+                    elif isinstance(target, str):
+                        # For string "cuda", get current device or set to 0
+                        if target == "cuda":
                             if torch.cuda.is_available():
                                 torch.cuda.set_device(0)
-                yield
+                        else:
+                            # Try to extract device index from string
+                            try:
+                                idx = int(target.split(":")[1]) if ":" in target else 0
+                                torch.cuda.set_device(idx)
+                            except (ValueError, IndexError):
+                                if torch.cuda.is_available():
+                                    torch.cuda.set_device(0)
+                    yield
+                finally:
+                    # Restore previous device
+                    if prev_device is not None:
+                        torch.cuda.set_device(prev_device)
             else:
                 raise
     elif dev.type == "xpu" and hasattr(torch, "xpu"):
@@ -128,21 +136,29 @@ def _device_ctx(dev: torch.device):
             if "prev_idx" in str(e):
                 log.error(f"_device_ctx: PyTorch version incompatibility - {e}")
                 log.error(f"_device_ctx: Falling back to direct device setting without context manager")
+                
+                # Capture previous device
+                prev_device = torch.xpu.current_device() if hasattr(torch.xpu, 'current_device') else None
+
                 # Fallback for XPU
-                if isinstance(target, int):
-                    torch.xpu.set_device(target)
-                elif isinstance(target, str):
-                    if target == "xpu":
-                        if hasattr(torch.xpu, 'is_available') and torch.xpu.is_available():
-                            torch.xpu.set_device(0)
-                    else:
-                        try:
-                            idx = int(target.split(":")[1]) if ":" in target else 0
-                            torch.xpu.set_device(idx)
-                        except (ValueError, IndexError):
+                try:
+                    if isinstance(target, int):
+                        torch.xpu.set_device(target)
+                    elif isinstance(target, str):
+                        if target == "xpu":
                             if hasattr(torch.xpu, 'is_available') and torch.xpu.is_available():
                                 torch.xpu.set_device(0)
-                yield
+                        else:
+                            try:
+                                idx = int(target.split(":")[1]) if ":" in target else 0
+                                torch.xpu.set_device(idx)
+                            except (ValueError, IndexError):
+                                if hasattr(torch.xpu, 'is_available') and torch.xpu.is_available():
+                                    torch.xpu.set_device(0)
+                    yield
+                finally:
+                    if prev_device is not None and hasattr(torch.xpu, 'set_device'):
+                        torch.xpu.set_device(prev_device)
             else:
                 raise
     else:
