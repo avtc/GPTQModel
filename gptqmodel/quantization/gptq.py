@@ -600,6 +600,10 @@ class GPTQ:
             is_moe = self.moe_checker(self.name) if self.moe_checker else False
             strategy = "balanced" if is_moe else "replicated"
 
+        if strategy == "moe_module_based":
+            is_moe = self.moe_checker(self.name) if self.moe_checker else False
+            strategy = "module_based" if is_moe else "replicated"
+
         # For 'replicated' strategy, use hint or fall back to first partial device or CPU
         if strategy == "replicated":
             #if DEBUG_ON:
