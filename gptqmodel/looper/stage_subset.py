@@ -195,7 +195,7 @@ def run_subset_stage(
                 assignable_group_keys: List[str] = []
                 for group_key, module_names in expert_groups.items():
                     suffixes = {name.rsplit(".", 1)[-1] for name in module_names}
-                    if {"gate_proj", "up_proj", "w3", "w1"}.issubset(suffixes):
+                    if {"gate_proj", "up_proj"}.issubset(suffixes) or {"w1", "w3"}.issubset(suffixes):
                         assignable_group_keys.append(group_key)
 
                 if assignable_group_keys:
