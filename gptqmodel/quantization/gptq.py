@@ -239,8 +239,6 @@ class GPTQ:
         self.fwd_counter = 0
 
         self.fail_safe = False
-        
-        self.moe_checker: Optional[Callable[[str], bool]] = None
 
         self.H: Optional[torch.Tensor] = None
 
@@ -284,6 +282,11 @@ class GPTQ:
     def validate_module(module):
         assert isinstance(module, (nn.Linear, nn.Conv1d, nn.Conv2d,
                                    transformers.Conv1D)), f"We supports only linear and convolutional layers. actual = `{module}`"
+
+    @staticmethod
+    def _is_expert(name: str) -> bool:
+        """Check if module name indicates it's an expert module in a MoE model."""
+        return ".experts." in name
 
     # def has_hessian_issues(self) -> bool:
     #     return any([self.issue_zero_samples, self.issue_nan_hessian, self.issue_non_invertible])
@@ -597,12 +600,10 @@ class GPTQ:
         strategy = self.qcfg.hessian_accumulator_strategy
 
         if strategy == "moe_balanced":
-            is_moe = self.moe_checker(self.name) if self.moe_checker else False
-            strategy = "balanced" if is_moe else "replicated"
+            strategy = "balanced" if self._is_expert(self.name) else "replicated"
 
         if strategy == "moe_module_based":
-            is_moe = self.moe_checker(self.name) if self.moe_checker else False
-            strategy = "module_based" if is_moe else "replicated"
+            strategy = "module_based" if self._is_expert(self.name) else "replicated"
 
         # For 'replicated' strategy, use hint or fall back to first partial device or CPU
         if strategy == "replicated":
