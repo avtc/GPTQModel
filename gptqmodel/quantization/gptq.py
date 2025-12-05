@@ -204,11 +204,14 @@ class GPTQ:
 
         self.H: Optional[torch.Tensor] = None
 
-        # Store per-device Hessian contributions so multi-GPU calibration can
-        # keep local accumulators and merge only once when quantization begins.
-        self._device_hessian_partials: Dict[torch.device, torch.Tensor] = {}
-        self._device_sample_counts: Dict[torch.device, int] = {}
-        self._hessian_dirty: bool = False
+        if not self.qcfg.single_hessian_accumulator:
+            # Store per-device Hessian contributions so multi-GPU calibration can
+            # keep local accumulators and merge only once when quantization begins.
+            self._device_hessian_partials: Dict[torch.device, torch.Tensor] = {}
+            self._device_sample_counts: Dict[torch.device, int] = {}
+            self._hessian_dirty: bool = False
+        else:
+            self._hessian_finalized: bool = False
 
         self._borrow_workspace_stats = {
             "requests": 0,
@@ -296,19 +299,35 @@ class GPTQ:
 
         with self.lock:
             self.fwd_counter += 1
-            
-            log.info(f"[GPTQ DEBUG] add_batch for module {self.name} on device {dev}. xtx shape: {xtx.shape}, partials: {len(self._device_hessian_partials)}")
 
-            existing = self._device_hessian_partials.get(dev)
-            if existing is None:
-                self._device_hessian_partials[dev] = xtx
-            else:
-                existing.add_(xtx)
+            if self.qcfg.single_hessian_accumulator:
+                if self.H is None:
+                    h_device = self._select_hessian_target_device(None)
+                    self.H = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=h_device)
+                    log.info(f"[GPTQ DEBUG] Initialized main Hessian on {h_device} for module {self.name}")
+
+                log.info(
+                    f"[GPTQ DEBUG] add_batch for module {self.name} on device {dev}. "
+                    f"xtx shape: {xtx.shape}. Accumulating on {self.H.device}."
+                )
+
+                self.H.add_(xtx.to(device=self.H.device))
                 del xtx
 
-            self._device_sample_counts[dev] = self._device_sample_counts.get(dev, 0) + batch_token_size
-            self.nsamples += batch_token_size
-            self._hessian_dirty = True
+                self.nsamples += batch_token_size
+            else:
+                log.info(f"[GPTQ DEBUG] add_batch for module {self.name} on device {dev}. xtx shape: {xtx.shape}, partials: {len(self._device_hessian_partials)}")
+
+                existing = self._device_hessian_partials.get(dev)
+                if existing is None:
+                    self._device_hessian_partials[dev] = xtx
+                else:
+                    existing.add_(xtx)
+                    del xtx
+
+                self._device_sample_counts[dev] = self._device_sample_counts.get(dev, 0) + batch_token_size
+                self.nsamples += batch_token_size
+                self._hessian_dirty = True
 
     def preferred_staging_dtype(self, input_dtype: torch.dtype, device: torch.device) -> torch.dtype:
         device = torch.device(device)
@@ -525,6 +544,9 @@ class GPTQ:
         if requested is not None:
             return torch.device(requested)
 
+        if self.qcfg.single_hessian_accumulator and self.qcfg.hessian_accumulator_device != "auto":
+            return torch.device(self.qcfg.hessian_accumulator_device)
+
         hint = getattr(self, "_final_hessian_device_hint", None)
         if hint is not None:
             return torch.device(hint)
@@ -539,68 +561,84 @@ class GPTQ:
         device = self._select_hessian_target_device(target_device)
 
         with self.lock:
-            if not self._hessian_dirty and self.H is not None:
+            if self.qcfg.single_hessian_accumulator:
+                if self.H is None:
+                    self.H = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=device)
+                    self.nsamples = 0
+                    return
+
                 if self.H.device != device:
                     self.H = self.H.to(device=device)
-                return
 
-            total_samples = sum(self._device_sample_counts.values())
+                if not self._hessian_finalized and self.nsamples > 0:
+                    self.H.mul_(2.0 / float(self.nsamples))
+                    self._hessian_finalized = True
+                    log.info(f"[GPTQ DEBUG] Finalized Hessian for module {self.name} with {self.nsamples} samples.")
 
-            # Reuse the existing tensor when possible to avoid an extra allocation.
-            reuse_buffer = (
-                self.H is not None
-                and self.H.shape == (self.columns, self.columns)
-                and self.H.device == device
-            )
-
-            result_accum: torch.Tensor
-            if reuse_buffer and self.H.dtype == torch.float32:
-                result_accum = self.H
-                result_accum.zero_()
+                self._final_hessian_device_hint = device
             else:
-                result_accum = torch.zeros(
-                    (self.columns, self.columns),
-                    dtype=torch.float32,
-                    device=device,
+                if not self._hessian_dirty and self.H is not None:
+                    if self.H.device != device:
+                        self.H = self.H.to(device=device)
+                    return
+
+                total_samples = sum(self._device_sample_counts.values())
+
+                # Reuse the existing tensor when possible to avoid an extra allocation.
+                reuse_buffer = (
+                    self.H is not None
+                    and self.H.shape == (self.columns, self.columns)
+                    and self.H.device == device
                 )
 
-            if total_samples == 0:
-                self.H = result_accum
-                self.nsamples = 0
-                self._hessian_dirty = False
-                self._final_hessian_device_hint = device
-                self._device_hessian_partials.clear()
-                self._device_sample_counts.clear()
-                return
+                result_accum: torch.Tensor
+                if reuse_buffer and self.H.dtype == torch.float32:
+                    result_accum = self.H
+                    result_accum.zero_()
+                else:
+                    result_accum = torch.zeros(
+                        (self.columns, self.columns),
+                        dtype=torch.float32,
+                        device=device,
+                    )
 
-            for partial_device, partial in self._device_hessian_partials.items():
-                if partial.device != result_accum.device or partial.dtype != torch.float32:
+                if total_samples == 0:
+                    self.H = result_accum
+                    self.nsamples = 0
+                    self._hessian_dirty = False
+                    self._final_hessian_device_hint = device
+                    self._device_hessian_partials.clear()
+                    self._device_sample_counts.clear()
+                    return
+
+                for partial_device, partial in self._device_hessian_partials.items():
+                    if partial.device != result_accum.device or partial.dtype != torch.float32:
                     # TODO FIXME multi-3090 using P2P is revaling an issue where result_accum and/or partial is not ready for consolidation on the main thread
                     # when parials are calculated on the individual
-                    try:
-                        result_accum.add_(partial.to(device=result_accum.device, dtype=torch.float32))
-                    except:
-                        log.warn(f"Quantization: Module `{self.name}` -> Retry partial.to 1/2 in 0.25s")
-                        time.sleep(0.25)
                         try:
                             result_accum.add_(partial.to(device=result_accum.device, dtype=torch.float32))
                         except:
-                            log.warn(f"Quantization: Module `{self.name}` -> Retry partial.to 2/2 in 0.75s")
-                            time.sleep(0.75)
-                            result_accum.add_(partial.to(device=result_accum.device, dtype=torch.float32))
-                else:
-                    result_accum.add_(partial)
+                            log.warn(f"Quantization: Module `{self.name}` -> Retry partial.to 1/2 in 0.25s")
+                            time.sleep(0.25)
+                            try:
+                                result_accum.add_(partial.to(device=result_accum.device, dtype=torch.float32))
+                            except:
+                                log.warn(f"Quantization: Module `{self.name}` -> Retry partial.to 2/2 in 0.75s")
+                                time.sleep(0.75)
+                                result_accum.add_(partial.to(device=result_accum.device, dtype=torch.float32))
+                    else:
+                        result_accum.add_(partial)
 
-            result_accum.mul_(2.0 / float(total_samples))
+                result_accum.mul_(2.0 / float(total_samples))
 
-            self.H = result_accum
-            self.nsamples = total_samples
-            self._hessian_dirty = False
-            self._final_hessian_device_hint = result_accum.device
-            log.info(f"[GPTQ DEBUG] Clearing {len(self._device_hessian_partials)} partial hessians for module {self.name}")
-            self._device_hessian_partials.clear()
-            self._device_sample_counts.clear()
-            del result_accum
+                self.H = result_accum
+                self.nsamples = total_samples
+                self._hessian_dirty = False
+                self._final_hessian_device_hint = result_accum.device
+                log.info(f"[GPTQ DEBUG] Clearing {len(self._device_hessian_partials)} partial hessians for module {self.name}")
+                self._device_hessian_partials.clear()
+                self._device_sample_counts.clear()
+                del result_accum
 
     def finalize_hessian(self, target_device: Optional[torch.device] = None) -> torch.Tensor:
         self.materialize_global_hessian(target_device=target_device)
@@ -1141,11 +1179,14 @@ class GPTQ:
         log.info(f"[GPTQ DEBUG] Freeing resources for module {self.name}")
         if hasattr(self, "H"):
             del self.H
-        if hasattr(self, "_device_hessian_partials"):
-            log.info(f"[GPTQ DEBUG] Clearing {len(self._device_hessian_partials)} partial hessians during free for module {self.name}")
-            self._device_hessian_partials.clear()
-        if hasattr(self, "_device_sample_counts"):
-            self._device_sample_counts.clear()
+
+        if not self.qcfg.single_hessian_accumulator:
+            if hasattr(self, "_device_hessian_partials"):
+                log.info(f"[GPTQ DEBUG] Clearing {len(self._device_hessian_partials)} partial hessians during free for module {self.name}")
+                self._device_hessian_partials.clear()
+            if hasattr(self, "_device_sample_counts"):
+                self._device_sample_counts.clear()
+
         del self.quantizer
         if hasattr(self, "module_copy"):
             del self.module_copy
