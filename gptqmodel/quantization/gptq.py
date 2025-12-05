@@ -11,7 +11,7 @@ import os
 import sys
 import threading
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -24,6 +24,7 @@ from ..quantization import QuantizeConfig
 from ..utils.device import get_device
 from ..utils.logger import setup_logger
 from ..utils.torch import torch_sync
+from ..utils.looper_helpers import normalize_device_like, select_forward_devices
 from .gar import compose_final_perm, compute_global_perm, compute_local_perms, invert_perm
 from .quantizer import HF_OPTIMUM, Quantizer
 
@@ -31,6 +32,10 @@ from .quantizer import HF_OPTIMUM, Quantizer
 log = setup_logger()
 
 lock = threading.Lock()
+
+_HESSIAN_ROUND_ROBIN_LOCK = threading.Lock()
+_HESSIAN_ROUND_ROBIN_INDEX = 0
+_HESSIAN_RR_DEVICES: Optional[List[torch.device]] = None
 
 # Shared workspaces are cached globally per device so that concurrent GPTQ
 # instances reuse temporary buffers instead of repeatedly allocating large
@@ -446,9 +451,6 @@ class GPTQ:
 
         xtx_accum = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=matrix.device)
 
-        if matrix.device.type == 'cuda':
-            log.info(f"[DEBUG XTX] {self.name} Before Hessian accumulation loop. Memory allocated: {torch.cuda.memory_allocated(matrix.device) / 1024**2:.2f}MB")
-
         for start in range(0, rows, chunk_size):
             rows_this = min(chunk_size, rows - start)
             source = matrix[start:start + rows_this]
@@ -458,13 +460,6 @@ class GPTQ:
             
             del source
             del materialized32
-
-            if matrix.device.type == 'cuda':
-                torch_sync(device=matrix.device)
-                log.info(f"[DEBUG XTX] {self.name} End of loop iteration {start // chunk_size if chunk_size > 0 else 0}. Memory allocated: {torch.cuda.memory_allocated(matrix.device) / 1024**2:.2f}MB")
-
-        if matrix.device.type == 'cuda':
-            log.info(f"[DEBUG XTX] {self.name} After Hessian accumulation loop. Memory allocated: {torch.cuda.memory_allocated(matrix.device) / 1024**2:.2f}MB")
 
         torch_sync(device=xtx_accum.device)
         return xtx_accum
@@ -556,8 +551,39 @@ class GPTQ:
         return batch_token_size, xtx, canonical_device
 
     def _select_hessian_target_device(self, requested: Optional[torch.device]) -> torch.device:
+        global _HESSIAN_ROUND_ROBIN_INDEX, _HESSIAN_RR_DEVICES
+
         if requested is not None:
             return torch.device(requested)
+
+        if self.qcfg.single_hessian_accumulator and self.qcfg.single_hessian_accumulator_device == "auto":
+            target_devices = []
+            if _HESSIAN_RR_DEVICES is not None:
+                target_devices = _HESSIAN_RR_DEVICES
+            else:
+                with _HESSIAN_ROUND_ROBIN_LOCK:
+                    if _HESSIAN_RR_DEVICES is None:
+                        quant_device_hint = getattr(self.qcfg, "device", None)
+                        normalized_quant_device = normalize_device_like(quant_device_hint)
+                        
+                        available_devices = select_forward_devices(normalized_quant_device) if normalized_quant_device else [torch.device("cpu")]
+                        
+                        # Use all available devices, not just CUDA, but exclude 'meta'
+                        _HESSIAN_RR_DEVICES = [d for d in available_devices if d.type != "meta"]
+                        if not _HESSIAN_RR_DEVICES:
+                            _HESSIAN_RR_DEVICES = [torch.device("cpu")]
+                    target_devices = _HESSIAN_RR_DEVICES
+
+            if target_devices:
+                with _HESSIAN_ROUND_ROBIN_LOCK:
+                    device_index = _HESSIAN_ROUND_ROBIN_INDEX % len(target_devices)
+                    _HESSIAN_ROUND_ROBIN_INDEX += 1
+                target_device = target_devices[device_index]
+                log.info(f"[GPTQ] Hessian accumulator round-robin: selected device {target_device}")
+                return target_device
+
+            log.warn("[GPTQ] Hessian accumulator round-robin: no suitable devices found, falling back to CPU.")
+            return torch.device("cpu")
 
         if self.qcfg.single_hessian_accumulator and self.qcfg.single_hessian_accumulator_device != "auto":
             return torch.device(self.qcfg.single_hessian_accumulator_device)
@@ -1102,9 +1128,6 @@ class GPTQ:
         Q = Q.to(device=self.module.weight.data.device, non_blocking=False)
 
         duration = time.time() - start
-
-        # [DEBUG XTX] temporary
-        self.log_workspace_stats(context="quantize", reset=False)
 
         return Q, scale, zero, g_idx, duration, avg_loss, damp, self.nsamples
 

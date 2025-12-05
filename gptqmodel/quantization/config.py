@@ -264,7 +264,7 @@ class QuantizeConfig():
     hessian_chunk_bytes: Optional[int] = field(default=None, metadata={"help": "Memory budget (in bytes) for Hessian chunk staging"})
     hessian_use_bfloat16_staging: bool = field(default=False, metadata={"help": "Stage Hessian chunks in bfloat16 when supported"})
     single_hessian_accumulator: bool = field(default=False, metadata={"help": "Use a single accumulator for Hessians to save VRAM in MoE models"})
-    single_hessian_accumulator_device: str = field(default="auto", metadata={"help": "Device to store the single Hessian accumulator ('auto', 'cpu', 'cuda:0', etc.)"})
+    single_hessian_accumulator_device: str = field(default="auto", metadata={"help": "Device to store the single Hessian accumulator ('auto', 'cpu', 'cuda:0', etc.). 'auto' will round-robin over quant devices"})
 
     # VRAM allocation strategy for MoE-heavy subsets
     vram_strategy: VRAMStrategy = field(default=VRAMStrategy.EXCLUSIVE)
