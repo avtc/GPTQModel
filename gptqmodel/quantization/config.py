@@ -89,9 +89,11 @@ class VRAMStrategy(str, Enum):
 
 
 class HessianAccumulatorStrategy(str, Enum):
-    REPLICA = "replica"
+    REPLICATED = "replicated"
     ROUND_ROBIN = "round_robin"
     BALANCED = "balanced"
+    MOE_BALANCED = "moe_balanced"
+    MODULE_BASED = "module_based"
 
 
 QUANT_METHOD_FORMAT_MAPPING = {
@@ -270,8 +272,8 @@ class QuantizeConfig():
     hessian_chunk_bytes: Optional[int] = field(default=None, metadata={"help": "Memory budget (in bytes) for Hessian chunk staging"})
     hessian_use_bfloat16_staging: bool = field(default=False, metadata={"help": "Stage Hessian chunks in bfloat16 when supported"})
     hessian_accumulator_strategy: str = field(
-        default=HessianAccumulatorStrategy.REPLICA,
-        metadata={"help": "Strategy for Hessian accumulation. 'replica' (default): separate accumulator per-device. 'round_robin': single accumulator, round-robin across devices. 'balanced': single accumulator on device with most free VRAM. Can also be a device name ('cpu', 'cuda:0')."}
+        default=HessianAccumulatorStrategy.REPLICATED,
+        metadata={"help": "Strategy for Hessian accumulation. 'replicated' (default): separate accumulator per-device. 'round_robin': single accumulator, round-robin across devices. 'balanced': single accumulator on device with most free VRAM. 'moe_balanced': uses 'balanced' for MoE modules, input tensor device for others. Can also be a device name ('cpu', 'cuda:0')."}
     )
 
     # VRAM allocation strategy for MoE-heavy subsets

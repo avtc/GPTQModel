@@ -11,7 +11,7 @@ import os
 import sys
 import threading
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from gptqmodel.utils.env import env_flag
 import numpy as np
@@ -239,10 +239,12 @@ class GPTQ:
         self.fwd_counter = 0
 
         self.fail_safe = False
+        
+        self.moe_checker: Optional[Callable[[str], bool]] = None
 
         self.H: Optional[torch.Tensor] = None
 
-        if self._uses_replica_strategy():
+        if self._uses_replicated_strategy():
             # Store per-device Hessian contributions so multi-GPU calibration can
             # keep local accumulators and merge only once when quantization begins.
             self._device_hessian_partials: Dict[torch.device, torch.Tensor] = {}
@@ -271,12 +273,12 @@ class GPTQ:
         self._borrow_workspace_stage_dtype: Optional[torch.dtype] = None
         self._borrow_workspace_last_chunk_rows: Optional[int] = None
 
-    def _uses_replica_strategy(self) -> bool:
-        """Check if using 'replica' strategy (per-device Hessian partials).
+    def _uses_replicated_strategy(self) -> bool:
+        """Check if using 'replicated' strategy (per-device Hessian partials).
         
-        Returns True for 'replica' strategy, False for all others (single accumulator).
+        Returns True for 'replicated' strategy, False for all others (single accumulator).
         """
-        return self.qcfg.hessian_accumulator_strategy == 'replica'
+        return self.qcfg.hessian_accumulator_strategy == "replicated"
 
     @staticmethod
     def validate_module(module):
@@ -345,9 +347,9 @@ class GPTQ:
         with self.lock:
             self.fwd_counter += 1
 
-            if not self._uses_replica_strategy():
+            if not self._uses_replicated_strategy():
                 if self.H is None:
-                    h_device = self._select_hessian_target_device(None)
+                    h_device = self._select_hessian_target_device(requested=None, inp_device=dev)
                     self.H = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=h_device)
                     if DEBUG_ON:
                         log.debug(f"[GPTQ DEBUG] Initialized main Hessian on {h_device} for module {self.name} on device {dev}")
@@ -584,7 +586,7 @@ class GPTQ:
         self._snapshot_borrow_workspace_stats(context="process_batch")
         return batch_token_size, xtx, canonical_device
 
-    def _select_hessian_target_device(self, requested: Optional[torch.device]) -> torch.device:
+    def _select_hessian_target_device(self, requested: Optional[torch.device], inp_device: Optional[torch.device] = None) -> torch.device:
         """Select target device for Hessian accumulator based on strategy."""
         global _HESSIAN_ROUND_ROBIN_INDEX, _HESSIAN_RR_DEVICES
 
@@ -593,8 +595,12 @@ class GPTQ:
 
         strategy = self.qcfg.hessian_accumulator_strategy
 
-        # For 'replica' strategy, use hint or fall back to first partial device or CPU
-        if strategy == 'replica':
+        if strategy == "moe_balanced":
+            is_moe = self.moe_checker(self.name) if self.moe_checker else False
+            strategy = "balanced" if is_moe else "module_based"
+
+        # For 'replicated' strategy, use hint or fall back to first partial device or CPU
+        if strategy == "replicated":
             hint = getattr(self, "_final_hessian_device_hint", None)
             if hint is not None:
                 return torch.device(hint)
@@ -624,8 +630,11 @@ class GPTQ:
                         _HESSIAN_RR_DEVICES = [torch.device("cpu")]
                 return _HESSIAN_RR_DEVICES
 
-        # Handle 'balanced' strategy - select device with lowest VRAM usage
-        if strategy == 'balanced':
+        if strategy == "module_based":
+            return inp_device
+
+        # Handle "balanced" strategy - select device with lowest VRAM usage
+        if strategy == "balanced":
             target_devices = _get_available_devices()
             lowest_mem_device = _select_lowest_memory_device(target_devices)
             if lowest_mem_device is not None:
@@ -633,10 +642,10 @@ class GPTQ:
             # Fall back to round-robin if VRAM detection failed
             if DEBUG_ON:
                 log.debug("[GPTQ DEBUG] Hessian accumulator balanced: VRAM detection unavailable, falling back to round-robin")
-            strategy = 'round_robin'
+            strategy = "round_robin"
 
-        # Handle 'round_robin' strategy
-        if strategy == 'round_robin':
+        # Handle "round_robin" strategy
+        if strategy == "round_robin":
             target_devices = _get_available_devices()
             if target_devices:
                 with _HESSIAN_ROUND_ROBIN_LOCK:
@@ -659,7 +668,7 @@ class GPTQ:
         device = self._select_hessian_target_device(target_device)
 
         with self.lock:
-            if not self._uses_replica_strategy():
+            if not self._uses_replicated_strategy():
                 if self.H is None:
                     self.H = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=device)
                     self.nsamples = 0
@@ -739,7 +748,7 @@ class GPTQ:
     def finalize_hessian(self, target_device: Optional[torch.device] = None) -> torch.Tensor:
         self.materialize_global_hessian(target_device=target_device)
         if self.H is None:
-            self.H = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=self._select_hessian_target_device(target_device))
+            self.H = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=self._select_hessian_target_device(requested=target_device, inp_device=None))
         return self.H
 
     # FIXME, optimum needs fasterquant, we need to remove it
@@ -1282,7 +1291,7 @@ class GPTQ:
         if hasattr(self, "H"):
             del self.H
 
-        if self._uses_replica_strategy():
+        if self._uses_replicated_strategy():
             if hasattr(self, "_device_hessian_partials"):
                 self._device_hessian_partials.clear()
             if hasattr(self, "_device_sample_counts"):
