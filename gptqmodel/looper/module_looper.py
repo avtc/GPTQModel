@@ -1348,14 +1348,6 @@ class ModuleLooper():
             """Process all assigned batches sequentially on this GPU."""
             replica = module_replicas[device]
             
-            # test if needed
-            # Ensure module tensors are properly homed to the target device
-            # (matches forward_batch_worker behavior)
-            #rehome_module_to_device(replica, device, move_parameters=True, move_buffers=True)
-            
-            # test if needed
-            #torch_sync()  # Avoid CUDA launch failures
-
             # Create and manage MoE lifecycle context within this thread
             if self._should_use_moe_lifecycle(module, processor):
                 moe_context = self.MoELifecycleContext(self, replica, processor, self._current_subset)

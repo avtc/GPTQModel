@@ -410,9 +410,9 @@ def forward_batch_worker(
 ):
     processor._set_current_batch_index(batch_index)
     module_device = getattr(module, "_gptqmodule_device_hint", None) or get_device(module)
-    rehome_module_to_device(module, module_device, move_parameters=True, move_buffers=True)
-
-    torch_sync() # try to avoid torch.AcceleratorError: CUDA error: unspecified launch failure
+    
+    # test if needed
+    # torch_sync()  # try to avoid torch.AcceleratorError: CUDA error: unspecified launch failure
     inputs = [move_to(inp, device=module_device) for inp in layer_input]
 
     attn_tensor = None
@@ -459,4 +459,13 @@ def forward_batch_worker(
         kv_next = module_output[-1]
 
     result_output = module_output if need_output else None
+
+    # Promptly release VRAM to reduce peak memory usage.
+    del inputs
+    del attn_tensor
+    del additional_inputs
+    del keep_mask
+    if not need_output and module_output is not None:
+        del module_output
+
     return batch_index, result_output, kv_next
