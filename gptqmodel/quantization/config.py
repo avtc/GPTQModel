@@ -88,6 +88,12 @@ class VRAMStrategy(str, Enum):
     EXCLUSIVE_EXCLUDE_0 = "exclusive_exclude_0"
 
 
+class HessianAccumulatorStrategy(str, Enum):
+    REPLICA = "replica"
+    ROUND_ROBIN = "round_robin"
+    BALANCED = "balanced"
+
+
 QUANT_METHOD_FORMAT_MAPPING = {
     METHOD.GPTQ: {
         FORMAT.GPTQ,
@@ -263,8 +269,10 @@ class QuantizeConfig():
     hessian_chunk_size: Optional[int] = field(default=None, metadata={"help": "Maximum rows per Hessian chunk"})
     hessian_chunk_bytes: Optional[int] = field(default=None, metadata={"help": "Memory budget (in bytes) for Hessian chunk staging"})
     hessian_use_bfloat16_staging: bool = field(default=False, metadata={"help": "Stage Hessian chunks in bfloat16 when supported"})
-    single_hessian_accumulator: bool = field(default=False, metadata={"help": "Use a single accumulator for Hessians to save VRAM in MoE models"})
-    single_hessian_accumulator_device: str = field(default="auto", metadata={"help": "Device to store the single Hessian accumulator ('auto', 'cpu', 'cuda:0', etc.). 'auto' will round-robin over quant devices"})
+    hessian_accumulator_strategy: str = field(
+        default=HessianAccumulatorStrategy.REPLICA,
+        metadata={"help": "Strategy for Hessian accumulation. 'replica' (default): separate accumulator per-device. 'round_robin': single accumulator, round-robin across devices. 'balanced': single accumulator on device with most free VRAM. Can also be a device name ('cpu', 'cuda:0')."}
+    )
 
     # VRAM allocation strategy for MoE-heavy subsets
     vram_strategy: VRAMStrategy = field(default=VRAMStrategy.EXCLUSIVE)
@@ -429,6 +437,16 @@ class QuantizeConfig():
             raise ValueError(
                 f"QuantizeConfig: `vram_strategy` must be one of {[v.value for v in VRAMStrategy]}."
             )
+
+        if isinstance(self.hessian_accumulator_strategy, str):
+            strategy = self.hessian_accumulator_strategy.lower()
+            try:
+                HessianAccumulatorStrategy(strategy)
+                self.hessian_accumulator_strategy = strategy
+            except ValueError:
+                log.info(f"QuantizeConfig: `hessian_accumulator_strategy` interpreted as device '{self.hessian_accumulator_strategy}'.")
+        else:
+            raise ValueError(f"QuantizeConfig: `hessian_accumulator_strategy` must be a string.")
 
     def extension_set(self, key: str, value: Any):
         if self.adapter is None:
@@ -671,6 +689,7 @@ class QuantizeConfig():
             META_FIELD: self.meta,
             # DO NOT EXPORT Adapter to config/json since adapter can be swapped out/in
             # ADAPTER_FIELD: self.adapter.to_dict() if self.adapter else None,
+            "hessian_accumulator_strategy": self.hessian_accumulator_strategy,
         }
 
         if getattr(self, "pack_impl", "original") != "original":

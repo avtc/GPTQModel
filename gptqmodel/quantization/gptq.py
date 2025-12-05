@@ -21,6 +21,7 @@ from torch.nn.modules.conv import _ConvNd
 
 from ..looper.named_module import NamedModule
 from ..quantization import QuantizeConfig
+from .config import HessianAccumulatorStrategy
 from ..utils.device import get_device
 from ..utils.logger import setup_logger
 from ..utils.torch import torch_sync
@@ -128,6 +129,40 @@ def _device_supports_bfloat16(device: torch.device) -> bool:
     return support
 
 
+def _get_device_memory_allocated(device: torch.device) -> Optional[int]:
+    """Get memory allocated on a device. Returns None if not supported."""
+    dev = torch.device(device)
+    try:
+        if dev.type == 'cuda':
+            return torch.cuda.memory_allocated(dev)
+        elif dev.type == 'xpu':
+            return torch.xpu.memory_allocated(dev)
+    except Exception:
+        pass
+    return None
+
+
+def _select_lowest_memory_device(devices: List[torch.device]) -> Optional[torch.device]:
+    """Select device with lowest current memory usage. Returns None if detection fails."""
+    if not devices:
+        return None
+    
+    # Filter to devices that support memory query (CUDA, XPU)
+    queryable_devices = [d for d in devices if torch.device(d).type in ('cuda', 'xpu')]
+    if not queryable_devices:
+        return None  # signal fallback to round-robin
+    
+    best_device = None
+    lowest_usage = float('inf')
+    for device in queryable_devices:
+        allocated = _get_device_memory_allocated(device)
+        if allocated is not None and allocated < lowest_usage:
+            lowest_usage = allocated
+            best_device = device
+    
+    return best_device  # None signals fallback to round-robin
+
+
 def get_number_of_rows_and_cols(layer: nn.Module):
     # return layer.weight.shape[0], np.prod(layer.weight.shape[1:])
     if isinstance(layer, NamedModule):
@@ -209,7 +244,7 @@ class GPTQ:
 
         self.H: Optional[torch.Tensor] = None
 
-        if not self.qcfg.single_hessian_accumulator:
+        if self._uses_replica_strategy():
             # Store per-device Hessian contributions so multi-GPU calibration can
             # keep local accumulators and merge only once when quantization begins.
             self._device_hessian_partials: Dict[torch.device, torch.Tensor] = {}
@@ -237,6 +272,14 @@ class GPTQ:
         self._borrow_workspace_last_summary: Optional[Dict[str, object]] = None
         self._borrow_workspace_stage_dtype: Optional[torch.dtype] = None
         self._borrow_workspace_last_chunk_rows: Optional[int] = None
+
+    def _uses_replica_strategy(self) -> bool:
+        """Check if using 'replica' strategy (per-device Hessian partials).
+        
+        Returns True for 'replica' strategy, False for all others (single accumulator).
+        """
+        strategy = self.qcfg.hessian_accumulator_strategy
+        return strategy == HessianAccumulatorStrategy.REPLICA or strategy == 'replica'
 
     @staticmethod
     def validate_module(module):
@@ -305,7 +348,7 @@ class GPTQ:
         with self.lock:
             self.fwd_counter += 1
 
-            if self.qcfg.single_hessian_accumulator:
+            if not self._uses_replica_strategy():
                 if self.H is None:
                     h_device = self._select_hessian_target_device(None)
                     self.H = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=h_device)
@@ -551,58 +594,82 @@ class GPTQ:
         return batch_token_size, xtx, canonical_device
 
     def _select_hessian_target_device(self, requested: Optional[torch.device]) -> torch.device:
+        """Select target device for Hessian accumulator based on strategy."""
         global _HESSIAN_ROUND_ROBIN_INDEX, _HESSIAN_RR_DEVICES
 
         if requested is not None:
             return torch.device(requested)
 
-        if self.qcfg.single_hessian_accumulator and self.qcfg.single_hessian_accumulator_device == "auto":
-            target_devices = []
-            if _HESSIAN_RR_DEVICES is not None:
-                target_devices = _HESSIAN_RR_DEVICES
-            else:
-                with _HESSIAN_ROUND_ROBIN_LOCK:
-                    if _HESSIAN_RR_DEVICES is None:
-                        quant_device_hint = getattr(self.qcfg, "device", None)
-                        normalized_quant_device = normalize_device_like(quant_device_hint)
-                        
-                        available_devices = select_forward_devices(normalized_quant_device) if normalized_quant_device else [torch.device("cpu")]
-                        
-                        # Use all available devices, not just CUDA, but exclude 'meta'
-                        _HESSIAN_RR_DEVICES = [d for d in available_devices if d.type != "meta"]
-                        if not _HESSIAN_RR_DEVICES:
-                            _HESSIAN_RR_DEVICES = [torch.device("cpu")]
-                    target_devices = _HESSIAN_RR_DEVICES
+        strategy = self.qcfg.hessian_accumulator_strategy
 
+        # For 'replica' strategy, use hint or fall back to first partial device or CPU
+        if strategy == HessianAccumulatorStrategy.REPLICA or strategy == 'replica':
+            hint = getattr(self, "_final_hessian_device_hint", None)
+            if hint is not None:
+                return torch.device(hint)
+
+            if hasattr(self, '_device_hessian_partials') and self._device_hessian_partials:
+                partial_device = next(iter(self._device_hessian_partials.keys()))
+                return torch.device(partial_device)
+
+            return torch.device("cpu")
+
+        # Get available devices for round-robin and balanced strategies
+        def _get_available_devices() -> List[torch.device]:
+            global _HESSIAN_RR_DEVICES
+            if _HESSIAN_RR_DEVICES is not None:
+                return _HESSIAN_RR_DEVICES
+            
+            with _HESSIAN_ROUND_ROBIN_LOCK:
+                if _HESSIAN_RR_DEVICES is None:
+                    quant_device_hint = getattr(self.qcfg, "device", None)
+                    normalized_quant_device = normalize_device_like(quant_device_hint)
+                    
+                    available_devices = select_forward_devices(normalized_quant_device) if normalized_quant_device else [torch.device("cpu")]
+                    
+                    # Use all available devices, not just CUDA, but exclude 'meta'
+                    _HESSIAN_RR_DEVICES = [d for d in available_devices if d.type != "meta"]
+                    if not _HESSIAN_RR_DEVICES:
+                        _HESSIAN_RR_DEVICES = [torch.device("cpu")]
+                return _HESSIAN_RR_DEVICES
+
+        # Handle 'balanced' strategy - select device with lowest VRAM usage
+        if strategy == HessianAccumulatorStrategy.BALANCED or strategy == 'balanced':
+            target_devices = _get_available_devices()
+            lowest_mem_device = _select_lowest_memory_device(target_devices)
+            if lowest_mem_device is not None:
+                log.info(f"[GPTQ DEBUG] Hessian accumulator balanced: selected device {lowest_mem_device} (lowest VRAM usage)")
+                return lowest_mem_device
+            # Fall back to round-robin if VRAM detection failed
+            log.info("[GPTQ DEBUG] Hessian accumulator balanced: VRAM detection unavailable, falling back to round-robin")
+            strategy = HessianAccumulatorStrategy.ROUND_ROBIN
+
+        # Handle 'round_robin' strategy
+        if strategy == HessianAccumulatorStrategy.ROUND_ROBIN or strategy == 'round_robin':
+            target_devices = _get_available_devices()
             if target_devices:
                 with _HESSIAN_ROUND_ROBIN_LOCK:
                     device_index = _HESSIAN_ROUND_ROBIN_INDEX % len(target_devices)
                     _HESSIAN_ROUND_ROBIN_INDEX += 1
                 target_device = target_devices[device_index]
-                log.info(f"[GPTQ] Hessian accumulator round-robin: selected device {target_device}")
+                log.info(f"[GPTQ DEBUG] Hessian accumulator round-robin: selected device {target_device}")
                 return target_device
 
             log.warn("[GPTQ] Hessian accumulator round-robin: no suitable devices found, falling back to CPU.")
             return torch.device("cpu")
 
-        if self.qcfg.single_hessian_accumulator and self.qcfg.single_hessian_accumulator_device != "auto":
-            return torch.device(self.qcfg.single_hessian_accumulator_device)
-
-        hint = getattr(self, "_final_hessian_device_hint", None)
-        if hint is not None:
-            return torch.device(hint)
-
-        if self._device_hessian_partials:
-            partial_device = next(iter(self._device_hessian_partials.keys()))
-            return torch.device(partial_device)
-
-        return torch.device("cpu")
+        # Direct device string (e.g., 'cpu', 'cuda:0', 'xpu:0')
+        try:
+            return torch.device(strategy)
+        except Exception:
+            log.warn(f"[GPTQ] Invalid hessian_accumulator_strategy '{strategy}', falling back to CPU.")
+            return torch.device("cpu")
 
     def materialize_global_hessian(self, target_device: Optional[torch.device] = None) -> None:
         device = self._select_hessian_target_device(target_device)
 
         with self.lock:
-            if self.qcfg.single_hessian_accumulator:
+            if not self._uses_replica_strategy():
                 if self.H is None:
                     self.H = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=device)
                     self.nsamples = 0
@@ -1228,7 +1295,7 @@ class GPTQ:
         if hasattr(self, "H"):
             del self.H
 
-        if not self.qcfg.single_hessian_accumulator:
+        if self._uses_replica_strategy():
             if hasattr(self, "_device_hessian_partials"):
                 log.info(f"[GPTQ DEBUG] Clearing {len(self._device_hessian_partials)} partial hessians during free for module {self.name}")
                 self._device_hessian_partials.clear()
