@@ -440,10 +440,14 @@ class GPTQ:
         if chunk_size is None:
             mat32 = matrix.to(dtype=torch.float32)
             xtx = torch.matmul(mat32.T, mat32)
+            del mat32
             torch_sync(device=xtx.device)
             return xtx
 
         xtx_accum = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=matrix.device)
+
+        if matrix.device.type == 'cuda':
+            log.info(f"[DEBUG XTX] {self.name} Before Hessian accumulation loop. Memory allocated: {torch.cuda.memory_allocated(matrix.device) / 1024**2:.2f}MB")
 
         for start in range(0, rows, chunk_size):
             rows_this = min(chunk_size, rows - start)
@@ -451,6 +455,16 @@ class GPTQ:
             with self.borrow_materialized_chunk_fp32(source, rows_this) as materialized:
                 materialized32 = materialized
                 xtx_accum.addmm_(materialized32.T, materialized32)
+            
+            del source
+            del materialized32
+
+            if matrix.device.type == 'cuda':
+                torch_sync(device=matrix.device)
+                log.info(f"[DEBUG XTX] {self.name} End of loop iteration {start // chunk_size if chunk_size > 0 else 0}. Memory allocated: {torch.cuda.memory_allocated(matrix.device) / 1024**2:.2f}MB")
+
+        if matrix.device.type == 'cuda':
+            log.info(f"[DEBUG XTX] {self.name} After Hessian accumulation loop. Memory allocated: {torch.cuda.memory_allocated(matrix.device) / 1024**2:.2f}MB")
 
         torch_sync(device=xtx_accum.device)
         return xtx_accum
@@ -503,6 +517,7 @@ class GPTQ:
         if self._tp_pad_cols:
             pad = reshaped_inp.new_zeros((reshaped_inp.shape[0], self._tp_pad_cols))
             reshaped_inp = torch.cat((reshaped_inp, pad), dim=1)
+            del pad
         canonical_device = torch.device(inp_device)
 
         batch_token_size = reshaped_inp.shape[0]
@@ -1001,6 +1016,10 @@ class GPTQ:
                     Losses[:, i1:i2] = Losses1 / 2
                     W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
 
+                del W1, Q1, Err1, Losses1
+                if Hinv is not None:
+                    del Hinv1
+
         # TODO: why is there a torch_sync here? There are no streaming ops here?
         # torch_sync(device=self.module.target_device)
 
@@ -1028,6 +1047,7 @@ class GPTQ:
 
         del Losses
         del self.H
+        del W
 
         group_size = self.qcfg.group_size if self.qcfg.group_size != -1 else self.columns
 
@@ -1041,6 +1061,7 @@ class GPTQ:
         if self.qcfg.desc_act:
             Q = Q[:, invperm]
             g_idx = g_idx[invperm]
+            del perm, invperm
 
         elif self.qcfg.act_group_aware:
             inv_final = invert_perm(final_perm)
@@ -1051,6 +1072,7 @@ class GPTQ:
             scale = temp_scale
             temp_zero = [zero[i] for i in inv_global_perm_list]
             zero = temp_zero
+            del final_perm, inv_final, global_perm, inv_global_perm, local_perms
 
         if self._tp_pad_cols:
             valid_cols = self._original_columns
@@ -1080,6 +1102,9 @@ class GPTQ:
         Q = Q.to(device=self.module.weight.data.device, non_blocking=False)
 
         duration = time.time() - start
+
+        # [DEBUG XTX] temporary
+        self.log_workspace_stats(context="quantize", reset=False)
 
         return Q, scale, zero, g_idx, duration, avg_loss, damp, self.nsamples
 
