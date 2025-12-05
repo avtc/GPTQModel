@@ -16,7 +16,9 @@ import torch
 import torch.nn as nn
 
 from ..nn_modules.hooked_linear import StopForward
+from ..utils.device import get_device
 from ..utils.logger import setup_logger
+from ..utils.model import move_to
 
 log = setup_logger()
 
@@ -346,23 +348,11 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
             
             Falls back to subset[key] when replica is not provided or lookup fails.
             """
-            # Debug trace logs
-            from ..utils.device import get_device
-            target_device = hidden_states.device  # The device where inputs are
-            
             # The key is already a relative path (e.g., "mlp.experts.0.gate_proj")
             # Use it directly to look up the module in the replica
             if replica_module is not None:
                 replica_submodule = _get_module_by_relative_path(replica_module, key)
                 if replica_submodule is not None:
-                    submodule_device = get_device(replica_submodule)
-                    
-                    if submodule_device.type != target_device.type or (submodule_device.index != target_device.index):
-                        raise ValueError(
-                            f"[MoE DEBUG] Submodule {key} is on {submodule_device} but target is {target_device}. "
-                            f"This may indicate a problem with rehome_module_to_device."
-                        )
-                        
                     return replica_submodule
                 else:
                     raise ValueError(f"[MoE DEBUG] replica_submodule is None for key={key}")
@@ -408,7 +398,9 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
             try:
                 # Get the shared expert module and call its forward
                 shared_expert_module = getattr(moe_block, shared_expert_attr_name)
-                shared_expert_module(hidden_states)
+                # Ensure input is on correct device
+                shared_expert_device = get_device(shared_expert_module)
+                shared_expert_module(move_to(hidden_states, shared_expert_device))
                 expert_count += 1
             except StopForward:
                 stop_forward_raised = True
@@ -431,6 +423,18 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
                 if gate_key not in subset and up_key not in subset and down_key not in subset:
                     continue
                 
+                # Determine device for this expert
+                # Use gate_proj as reference since it's typically present
+                expert_device = None
+                gate_module_ref = getattr(expert, self.gate_proj_name, None)
+                if gate_module_ref is not None:
+                    expert_device = get_device(gate_module_ref)
+                else:
+                    expert_device = get_device(expert)
+                
+                # Move input to expert device
+                expert_input = move_to(hidden_states_2d, expert_device)
+                
                 try:
                     # Strategy: If down_proj is in subset, compute intermediate on-the-fly
                     # Note: When down is in subset, gate/up are NOT in subset (separate subset groups)
@@ -444,8 +448,10 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
                         up_module = getattr(expert, self.up_proj_name)
                         
                         # Compute intermediate (no hooks fire since modules are unwrapped)
-                        gate_out = gate_module(hidden_states_2d)
-                        up_out = up_module(hidden_states_2d)
+                        # Ensure modules are called with input on correct device
+                        # gate_module/up_module are submodules of expert, so they are on expert_device
+                        gate_out = gate_module(expert_input)
+                        up_out = up_module(expert_input)
                         
                         # Compute intermediate using expert's activation function
                         if hasattr(expert, 'act_fn'):
@@ -455,6 +461,8 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
                         del gate_out, up_out
                         
                         # Call down_proj via wrapper (or replica module) with hooks enabled for activation collection
+                        # Module returned by get_callable_module IS on expert_device (if replica is correct)
+                        # Intermediate is on expert_device
                         get_callable_module(down_key)(intermediate)
                         del intermediate
                         expert_count += 1
@@ -462,16 +470,19 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
                         # For gate_proj/up_proj in subset, just call them directly via wrappers (or replica modules)
                         called_any = False
                         if gate_key in subset:
-                            get_callable_module(gate_key)(hidden_states_2d)
+                            get_callable_module(gate_key)(expert_input)
                             called_any = True
                         if up_key in subset:
-                            get_callable_module(up_key)(hidden_states_2d)
+                            get_callable_module(up_key)(expert_input)
                             called_any = True
                         if called_any:
                             expert_count += 1
                 
                 except StopForward:
                     stop_forward_raised = True
+                finally:
+                    # Promptly release tensor copy to free VRAM
+                    del expert_input
         
         if stop_forward_raised:
             # Re-raise StopForward if it was caught
