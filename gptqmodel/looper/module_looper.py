@@ -1410,25 +1410,28 @@ class ModuleLooper():
                     del additional_inputs
                     del keep_mask
 
-                    # Store results (thread-safe)
-                    if need_outputs and module_output is not None:
-                        with results_lock:
-                            # Move output to main device to free up worker VRAM
-                            results[batch_idx] = nested_move_to(module_output, device=cur_layer_device)
-                    
-                    # Handle KV cache
-                    if (
-                        reuse_kv
-                        and module_output is not None
-                        and isinstance(module_output, tuple)
-                        and len(module_output) > 0
-                    ):
-                        with results_lock:
-                            if not kv_cache_set[0] and shared_kv_cache_dict.get(layer_index) is None:
-                                shared_kv_cache_dict[layer_index] = nested_move_to(
-                                    module_output[-1], device=cur_layer_device
-                                )
-                                kv_cache_set[0] = True
+                    if module_output is not None:
+                        # Store results (thread-safe)
+                        if need_outputs:
+                            with results_lock:
+                                # Move output to main device to free up worker VRAM
+                                results[batch_idx] = nested_move_to(module_output, device=cur_layer_device)
+                        
+                        # Handle KV cache
+                        if (
+                            reuse_kv
+                            and isinstance(module_output, tuple)
+                            and len(module_output) > 0
+                        ):
+                            with results_lock:
+                                if not kv_cache_set[0] and shared_kv_cache_dict.get(layer_index) is None:
+                                    shared_kv_cache_dict[layer_index] = nested_move_to(
+                                        module_output[-1], device=cur_layer_device
+                                    )
+                                    kv_cache_set[0] = True
+
+                        # Explicitly delete the output tensor from the worker GPU
+                        del module_output
                     
                     # Update progress (thread-safe)
                     rows_for_batch = batch_row_counts[batch_idx] if batch_idx < len(batch_row_counts) else 0
@@ -1447,8 +1450,6 @@ class ModuleLooper():
                             ).draw()
                     
                     # Release tensors promptly
-                    if module_output is not None and not need_outputs:
-                        del module_output
 
         # Launch threads - one per GPU
         threads: List[threading.Thread] = []

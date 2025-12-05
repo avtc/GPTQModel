@@ -465,7 +465,7 @@ def forward_batch_worker(
     del attn_tensor
     del additional_inputs
     del keep_mask
-    if not need_output and module_output is not None:
+    if module_output is not None:
         del module_output
 
     return batch_index, result_output, kv_next
