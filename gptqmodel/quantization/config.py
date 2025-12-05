@@ -81,11 +81,8 @@ class METHOD(str, Enum):
 class VRAMStrategy(str, Enum):
     EXCLUSIVE = "exclusive"
     BALANCED = "balanced"
-    # Run forward on all devices except device 0 (which holds inputs/outputs/modules)
     # Uses thread-per-GPU model for better VRAM management
-    PARALLEL_EXCLUDE_0 = "parallel_exclude_0"
-    # Run forward on all devices except device 0, using existing parallel implementation
-    EXCLUSIVE_EXCLUDE_0 = "exclusive_exclude_0"
+    PARALLEL = "parallel"
 
 
 class HessianAccumulatorStrategy(str, Enum):
@@ -272,8 +269,8 @@ class QuantizeConfig():
     hessian_chunk_bytes: Optional[int] = field(default=None, metadata={"help": "Memory budget (in bytes) for Hessian chunk staging"})
     hessian_use_bfloat16_staging: bool = field(default=False, metadata={"help": "Stage Hessian chunks in bfloat16 when supported"})
     hessian_accumulator_strategy: str = field(
-        default=HessianAccumulatorStrategy.REPLICATED,
-        metadata={"help": "Strategy for Hessian accumulation. 'replicated' (default): separate accumulator per-device. 'round_robin': single accumulator, round-robin across devices. 'balanced': single accumulator on device with most free VRAM. 'moe_balanced': uses 'balanced' for MoE modules, input tensor device for others. Can also be a device name ('cpu', 'cuda:0')."}
+        default="auto",
+        metadata={"help": "Strategy for Hessian accumulation. 'auto' (default): automatically selects strategy based on VRAM_STRATEGY. 'replicated': separate accumulator per-device. 'round_robin': single accumulator, round-robin across devices. 'balanced': single accumulator on device with most free VRAM. 'moe_balanced': uses 'balanced' for MoE modules, input tensor device for others. 'module_based': uses input tensor device. Can also be a device name ('cpu', 'cuda:0')."}
     )
 
     # VRAM allocation strategy for MoE-heavy subsets
@@ -291,6 +288,12 @@ class QuantizeConfig():
     wait_for_layer_completion: bool = field(
         default=False,
         metadata={"help": "Wait for all layer finalization tasks (packing, writing) to complete before proceeding to next layer"}
+    )
+
+    # Control whether to exclude device 0 from forward pass and quantization
+    exclude_device_0: bool = field(
+        default=False,
+        metadata={"help": "Exclude device 0 from forward pass and quantization to reserve memory for model weights/IO"}
     )
 
 
@@ -449,6 +452,18 @@ class QuantizeConfig():
                 log.info(f"QuantizeConfig: `hessian_accumulator_strategy` interpreted as device '{self.hessian_accumulator_strategy}'.")
         else:
             raise ValueError(f"QuantizeConfig: `hessian_accumulator_strategy` must be a string.")
+
+        # Resolve 'auto' hessian_accumulator_strategy based on VRAM_STRATEGY
+        if self.hessian_accumulator_strategy == "auto":
+            if self.vram_strategy == VRAMStrategy.BALANCED:
+                self.hessian_accumulator_strategy = "module_based"
+            elif self.vram_strategy == VRAMStrategy.EXCLUSIVE:
+                self.hessian_accumulator_strategy = "replicated"
+            elif self.vram_strategy == VRAMStrategy.PARALLEL:
+                self.hessian_accumulator_strategy = "replicated"  # Similar to exclusive
+            else:
+                # Fallback to replicated for any other strategies
+                self.hessian_accumulator_strategy = "replicated"
 
     def extension_set(self, key: str, value: Any):
         if self.adapter is None:
@@ -691,7 +706,6 @@ class QuantizeConfig():
             META_FIELD: self.meta,
             # DO NOT EXPORT Adapter to config/json since adapter can be swapped out/in
             # ADAPTER_FIELD: self.adapter.to_dict() if self.adapter else None,
-            "hessian_accumulator_strategy": self.hessian_accumulator_strategy,
         }
 
         if getattr(self, "pack_impl", "original") != "original":

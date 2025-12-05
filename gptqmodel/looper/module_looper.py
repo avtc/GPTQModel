@@ -119,9 +119,10 @@ class ModuleLooper():
                 vram_strategy = VRAMStrategy(vram_strategy.lower())
             except ValueError:
                 vram_strategy = VRAMStrategy.EXCLUSIVE
-        supported_strategies = getattr(self.gptq_model, "supported_vram_strategies", [VRAMStrategy.EXCLUSIVE, VRAMStrategy.BALANCED, VRAMStrategy.PARALLEL_EXCLUDE_0, VRAMStrategy.EXCLUSIVE_EXCLUDE_0])
+        supported_strategies = getattr(self.gptq_model, "supported_vram_strategies", [VRAMStrategy.EXCLUSIVE, VRAMStrategy.BALANCED, VRAMStrategy.PARALLEL])
         if isinstance(supported_strategies, VRAMStrategy):
             supported_strategies = [supported_strategies]
+
         if vram_strategy not in supported_strategies:
             log.debug(
                 "ModuleLooper: Model %s does not support VRAM strategy %s; falling back to exclusive.",
@@ -130,16 +131,16 @@ class ModuleLooper():
             )
             vram_strategy = VRAMStrategy.EXCLUSIVE
         self._vram_strategy = vram_strategy
-        
-        # For EXCLUDE_0 strategies, exclude device 0 from quantization device pool
+
+        # For exclude_device_0=True, exclude device 0 from quantization device pool
         # Device 0 holds inputs/outputs/modules, so quantization should happen on other devices
-        if self._vram_strategy in (VRAMStrategy.EXCLUSIVE_EXCLUDE_0, VRAMStrategy.PARALLEL_EXCLUDE_0):
+        if self.gptq_model.quantize_config.exclude_device_0:
             quant_devices_filtered = [d for d in quant_devices if d.index != 0]
             if len(quant_devices_filtered) >= 1:
                 quant_devices = quant_devices_filtered
             else:
                 log.warn(
-                    f"{self._vram_strategy.value}: No devices available after excluding device 0. "
+                    f"exclude_device_0=True: No devices available after excluding device 0. "
                     "Using all devices including device 0 for quantization."
                 )
 
@@ -788,8 +789,8 @@ class ModuleLooper():
                 preserve_module_devices=preserve_module_devices,
             )
 
-        # Use PARALLEL_EXCLUDE_0 strategy: new thread-per-GPU implementation
-        if self._vram_strategy == VRAMStrategy.PARALLEL_EXCLUDE_0:
+        # For PARALLEL strategy, use the new thread-per-GPU implementation
+        if self._vram_strategy == VRAMStrategy.PARALLEL:
             return self._run_forward_batches_parallel_2(
                 module=module,
                 processor=processor,
@@ -811,7 +812,7 @@ class ModuleLooper():
                 progress_total_rows=progress_total_rows,
             )
 
-        # All other strategies (EXCLUSIVE, BALANCED, EXCLUSIVE_EXCLUDE_0) use existing parallel
+        # All other strategies (EXCLUSIVE, BALANCED) use existing parallel
         return self._run_forward_batches_parallel(
             module=module,
             processor=processor,
@@ -1073,14 +1074,12 @@ class ModuleLooper():
 
             processed_rows = 0
             
-            # For EXCLUSIVE_EXCLUDE_0: exclude device 0 from forward execution
-            # Device 0 holds inputs/outputs/modules, so we only run forward on other devices
-            # Module was already cloned to all devices above
-            if self._vram_strategy == VRAMStrategy.EXCLUSIVE_EXCLUDE_0:
+            # Check if device 0 should be excluded from forward execution
+            if self.gptq_model.quantize_config.exclude_device_0:
                 forward_devices = [d for d in devices if d.index != 0]
                 if len(forward_devices) < 1:
                     log.warn(
-                        "EXCLUSIVE_EXCLUDE_0: No devices available after excluding device 0. "
+                        f"exclude_device_0=True: No devices available after excluding device 0. "
                         "Using all devices including device 0."
                     )
                     forward_devices = devices
@@ -1308,14 +1307,12 @@ class ModuleLooper():
 
         prev_kv = shared_kv_cache_dict.get(layer_index - 1) if reuse_kv else None
        
-        # For PARALLEL_EXCLUDE_0: exclude device 0 from forward execution
-        # Device 0 holds inputs/outputs/modules, so we only run forward on other devices
-        # Module was already cloned to all devices above
-        if self._vram_strategy == VRAMStrategy.PARALLEL_EXCLUDE_0:
+        # Check if device 0 should be excluded from forward execution
+        if self.gptq_model.quantize_config.exclude_device_0:
             forward_devices = [d for d in devices if d.index != 0]
             if len(forward_devices) < 1:
                 log.warn(
-                    "PARALLEL_EXCLUDE_0: No devices available after excluding device 0. "
+                    f"exclude_device_0=True: No devices available after excluding device 0. "
                     "Using all devices including device 0."
                 )
                 forward_devices = devices
