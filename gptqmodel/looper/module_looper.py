@@ -137,9 +137,6 @@ class ModuleLooper():
             quant_devices_filtered = [d for d in quant_devices if d.index != 0]
             if len(quant_devices_filtered) >= 1:
                 quant_devices = quant_devices_filtered
-                log.info(
-                    f"{self._vram_strategy.value}: Quantization will use devices {[str(d) for d in quant_devices]} (excluding device 0)"
-                )
             else:
                 log.warn(
                     f"{self._vram_strategy.value}: No devices available after excluding device 0. "

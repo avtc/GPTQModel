@@ -38,28 +38,21 @@ def _get_module_by_relative_path(parent: nn.Module, relative_path: str) -> Optio
     parts = relative_path.split('.')
     current = parent
     
-    #log.info(f"[MoE PATH] Looking up path={relative_path} in {type(parent).__name__}")
-    
     for i, part in enumerate(parts):
         path_so_far = '.'.join(parts[:i+1])
         if hasattr(current, part):
             current = getattr(current, part)
-            #log.info(f"[MoE PATH] Found '{part}' via getattr -> {type(current).__name__}")
         elif hasattr(current, '__getitem__') and part.isdigit():
             # Handle indexed access for nn.ModuleList or similar
             try:
                 current = current[int(part)]
-                #log.info(f"[MoE PATH] Found '{part}' via indexing -> {type(current).__name__}")
             except (IndexError, KeyError) as e:
                 raise ValueError(f"[MoE PATH] Failed indexing '{part}': {e}")
-                return None
         else:
             # List available attributes for debugging
             attrs = [a for a in dir(current) if not a.startswith('_')][:20]
             raise ValueError(f"[MoE PATH] Failed at '{part}' ({path_so_far}), current={type(current).__name__}, attrs={attrs}")
-            return None
     
-    #log.info(f"[MoE PATH] SUCCESS: Found {type(current).__name__}")
     return current
 
 
@@ -355,20 +348,14 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
             """
             # Debug trace logs
             from ..utils.device import get_device
-            #replica_device = get_device(replica_module) if replica_module is not None else None
             target_device = hidden_states.device  # The device where inputs are
-            # log.info(f"[MoE DEBUG] get_callable_module: key={key}, target_device={target_device}, "
-            #          f"replica_module={type(replica_module).__name__ if replica_module else None}, "
-            #          f"replica_device={replica_device}")
             
             # The key is already a relative path (e.g., "mlp.experts.0.gate_proj")
             # Use it directly to look up the module in the replica
             if replica_module is not None:
-                #log.info(f"[MoE DEBUG] Trying to find key={key} in replica")
                 replica_submodule = _get_module_by_relative_path(replica_module, key)
                 if replica_submodule is not None:
                     submodule_device = get_device(replica_submodule)
-                    #log.info(f"[MoE DEBUG] Found replica_submodule: {type(replica_submodule).__name__}, device={submodule_device}")
                     
                     if submodule_device.type != target_device.type or (submodule_device.index != target_device.index):
                         raise ValueError(

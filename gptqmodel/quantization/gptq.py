@@ -13,6 +13,7 @@ import threading
 import time
 from typing import Dict, List, Optional, Tuple
 
+from gptqmodel.utils.env import env_flag
 import numpy as np
 import torch
 import torch.nn as nn
@@ -28,6 +29,7 @@ from ..utils.looper_helpers import normalize_device_like, select_forward_devices
 from .gar import compose_final_perm, compute_global_perm, compute_local_perms, invert_perm
 from .quantizer import HF_OPTIMUM, Quantizer
 
+DEBUG_ON = env_flag("DEBUG")
 
 log = setup_logger()
 
@@ -347,7 +349,8 @@ class GPTQ:
                 if self.H is None:
                     h_device = self._select_hessian_target_device(None)
                     self.H = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=h_device)
-                    log.info(f"[GPTQ DEBUG] Initialized main Hessian on {h_device} for module {self.name} on device {dev}")
+                    if DEBUG_ON:
+                        log.debug(f"[GPTQ DEBUG] Initialized main Hessian on {h_device} for module {self.name} on device {dev}")
 
                 self.H.add_(xtx.to(device=self.H.device))
                 del xtx
@@ -628,7 +631,8 @@ class GPTQ:
             if lowest_mem_device is not None:
                 return lowest_mem_device
             # Fall back to round-robin if VRAM detection failed
-            log.info("[GPTQ DEBUG] Hessian accumulator balanced: VRAM detection unavailable, falling back to round-robin")
+            if DEBUG_ON:
+                log.debug("[GPTQ DEBUG] Hessian accumulator balanced: VRAM detection unavailable, falling back to round-robin")
             strategy = 'round_robin'
 
         # Handle 'round_robin' strategy
