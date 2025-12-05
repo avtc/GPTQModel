@@ -388,7 +388,7 @@ class ExpertProjectionMoELifecycleHooks(MoELifecycleHooks):
                     break
         
         # Check if any expert projections are in subset
-        # With VRAMStrategy.BALANCED, only part of expert projections might be loaded,
+        # only part of expert projections might be loaded,
         # so we need to check all subset keys instead of just the first expert
         has_expert_projs = False
         if experts_module is not None and hasattr(experts_module, '__iter__') and len(experts_module) > 0 and experts_attr_name and moe_block_prefix:
