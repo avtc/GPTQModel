@@ -353,11 +353,11 @@ class GPTQ:
             if not self._uses_replicated_strategy():
                 if self.H is None:
                     h_device = self._select_hessian_target_device(requested=None, inp_device=dev)
-                    self.H = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=h_device)
+                    self.H = xtx.to(device=h_device, dtype=torch.float32)
                     #if DEBUG_ON:
                     log.debug(f"[GPTQ DEBUG] Initialized main Hessian on {h_device} for module {self.name} on device {dev}")
-
-                self.H.add_(xtx.to(device=self.H.device))
+                else:
+                    self.H.add_(xtx.to(device=self.H.device))
                 del xtx
 
                 self.nsamples += batch_token_size
