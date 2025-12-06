@@ -365,7 +365,7 @@ class GPTQ:
                 existing = self._device_hessian_partials.get(dev)
                 if existing is None:
                     self._device_hessian_partials[dev] = xtx
-                    log.debug(f"[GPTQ DEBUG] Initialized main Hessian on {dev} for module {self.name} on device {dev} (repl)")
+                    log.debug(f"[GPTQ DEBUG] Initialized repl Hessian on {dev} for module {self.name} on device {dev}")
                 else:
                     existing.add_(xtx)
                     del xtx
