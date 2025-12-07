@@ -282,12 +282,17 @@ class QuantizeConfig():
         metadata={"help": "Forward entire calibration dataset to all MoE experts (not just routed experts)"}
     )
 
+    # MoE quantization: process experts in batches to reduce VRAM pressure
+    moe_bypass_router_experts_batch_size: Optional[int] = field(
+        default=None,
+        metadata={"help": "Number of experts to process in a single batch during MoE quantization"}
+    )
+
     # Works faster than data parallel with some configurations 
     force_subset_forward_serial: bool = field(
         default=False,
         metadata={"help": "Force serial forward pass for subsets instead of data parallel"}
     )
-
 
     def __post_init__(self):
         fields_info = fields(self)
