@@ -35,7 +35,6 @@ class SubsetForwardContext:
     subset_forward_serial: bool
     subset_total: int
     subset_index: int
-    disable_moe_hooks: bool = False
 
 
 @dataclass
@@ -765,7 +764,6 @@ def run_subset_stage(
         subset_forward_serial=subset_forward_serial,
         subset_total=subset_total,
         subset_index=subset_index,
-        disable_moe_hooks=batching_enabled and processor.require_fwd,
     )
 
     return SubsetStageResult(
