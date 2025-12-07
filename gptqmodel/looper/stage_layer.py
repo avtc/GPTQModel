@@ -244,7 +244,7 @@ def run_layer_stage(
 
                 try:
                     # Set current subset for MoE lifecycle hooks
-                    if subset_context and getattr(subset_context, "disable_moe_hooks", False):
+                    if subset_context and subset_context.disable_moe_hooks:
                         looper._current_subset = None
                     else:
                         looper._current_subset = subset_for_overrides

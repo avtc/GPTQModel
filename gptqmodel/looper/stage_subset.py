@@ -218,10 +218,10 @@ def _run_single_subset_pass(
             )
         if forward_pb is not None:
             forward_pb.close()
+    
+    returned_outputs = None
     if need_outputs:
         processor.receive_layer_inputs(forward_outputs)
-        # Note: we are NOT returning layer_inputs from here because in batched mode we don't want partial updates to affect flow yet?
-        # Actually layer_inputs are updated in processor.inputs_cache.layer_inputs
         if return_outputs:
              returned_outputs = processor.inputs_cache.layer_inputs
         del forward_outputs
