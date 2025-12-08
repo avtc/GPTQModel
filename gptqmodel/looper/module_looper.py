@@ -1351,8 +1351,13 @@ class ModuleLooper():
             torch_empty_cache()
             total_size_before, layers_before = get_vram(self.gptq_model.model)
             log.info(f"[VRAM-DEBUG] Before base module offload. Total size: {total_size_before}")
+            base_module_prefix = getattr(self.gptq_model, "base_modules_name_prefix", None)
             for layer, size in layers_before:
-                if self.gptq_model.model.base_modules_name_prefix in layer or "embed_tokens" in layer:
+                is_base_module = "embed_tokens" in layer
+                if base_module_prefix and base_module_prefix in layer:
+                    is_base_module = True
+                
+                if is_base_module:
                     log.info(f"[VRAM-DEBUG]  - Layer: {layer}, Size: {size}")
 
             log.info("Offloading base modules to disk...")
@@ -1366,8 +1371,13 @@ class ModuleLooper():
             torch_empty_cache()
             total_size_after, layers_after = get_vram(self.gptq_model.model)
             log.info(f"[VRAM-DEBUG] After base module offload. Total size: {total_size_after}")
+            base_module_prefix = getattr(self.gptq_model, "base_modules_name_prefix", None)
             for layer, size in layers_after:
-                if self.gptq_model.model.base_modules_name_prefix in layer or "embed_tokens" in layer:
+                is_base_module = "embed_tokens" in layer
+                if base_module_prefix and base_module_prefix in layer:
+                    is_base_module = True
+
+                if is_base_module:
                     log.info(f"[VRAM-DEBUG]  - Layer: {layer}, Size: {size}")
 
         if region_timer is not None:
