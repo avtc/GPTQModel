@@ -1349,14 +1349,20 @@ class ModuleLooper():
         if self.gptq_model.quantize_config.offload_to_disk:
             # VRAM DEBUG: Check memory before offloading base modules
             log.info("[VRAM-DEBUG] Before base module offload:")
-            vram_before = get_vram_per_device(self.gptq_model.model, detailed=True)
+            vram_before = get_vram_per_device(self.gptq_model.model, detailed=True, include_cpu=False)
             for device, size in vram_before.items():
                 if device.startswith('cuda'):
-                    log.info(f"[VRAM-DEBUG]  - Device: {device}, Used: {size}")
+                    log.info(f"[VRAM-DEBUG]  - Main model Device: {device}, Used: {size}")
                     # Show detailed breakdown for CUDA devices
                     if '_detailed_breakdown' in vram_before:
                         for module_info in vram_before['_detailed_breakdown'].get(device, []):
                             log.info(f"[VRAM-DEBUG]    - Module: {module_info['name']}, Shape: {module_info['shape']}, Size: {module_info['size_human']}")
+            
+            # Check turtle model VRAM usage
+            if hasattr(self.gptq_model, 'turtle_model') and self.gptq_model.turtle_model is not None:
+                turtle_vram_before = get_vram_per_device(self.gptq_model.turtle_model, detailed=False, include_cpu=False)
+                for device, size in turtle_vram_before.items():
+                    log.info(f"[VRAM-DEBUG]  - Turtle model Device: {device}, Used: {size}")
 
             log.info("Offload base modules")
             offload_to_disk(
@@ -1367,21 +1373,27 @@ class ModuleLooper():
 
             # VRAM DEBUG: Check memory after offloading base modules
             log.info("[VRAM-DEBUG] After base module offload:")
-            vram_after = get_vram_per_device(self.gptq_model.model, detailed=True)
+            vram_after = get_vram_per_device(self.gptq_model.model, detailed=True, include_cpu=False)
             for device, size in vram_after.items():
                 if device.startswith('cuda'):
-                    log.info(f"[VRAM-DEBUG]  - Device: {device}, Used: {size}")
+                    log.info(f"[VRAM-DEBUG]  - Main model Device: {device}, Used: {size}")
                     # Show detailed breakdown for CUDA devices
                     if '_detailed_breakdown' in vram_after:
                         for module_info in vram_after['_detailed_breakdown'].get(device, []):
                             log.info(f"[VRAM-DEBUG]    - Module: {module_info['name']}, Shape: {module_info['shape']}, Size: {module_info['size_human']}")
+            
+            # Check turtle model VRAM usage after offload
+            if hasattr(self.gptq_model, 'turtle_model') and self.gptq_model.turtle_model is not None:
+                turtle_vram_after = get_vram_per_device(self.gptq_model.turtle_model, detailed=False, include_cpu=False)
+                for device, size in turtle_vram_after.items():
+                    log.info(f"[VRAM-DEBUG]  - Turtle model Device: {device}, Used: {size}")
         else:
             # VRAM DEBUG: Check memory when offload_to_disk is False
             log.info("[VRAM-DEBUG] offload_to_disk=False - Checking initial VRAM state:")
-            vram_initial = get_vram_per_device(self.gptq_model.model, detailed=True)
+            vram_initial = get_vram_per_device(self.gptq_model.model, detailed=True, include_cpu=False)
             for device, size in vram_initial.items():
                 if device.startswith('cuda'):
-                    log.info(f"[VRAM-DEBUG]  - Device: {device}, Used: {size}")
+                    log.info(f"[VRAM-DEBUG]  - Main model Device: {device}, Used: {size}")
                     # Show detailed breakdown for CUDA devices
                     if '_detailed_breakdown' in vram_initial:
                         for module_info in vram_initial['_detailed_breakdown'].get(device, []):

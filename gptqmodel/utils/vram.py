@@ -190,13 +190,14 @@ def get_vram(model):
     return total_size, all_layers
 
 
-def get_vram_per_device(model: nn.Module, detailed: bool = False) -> Dict[str, str]:
+def get_vram_per_device(model: nn.Module, detailed: bool = False, include_cpu: bool = False) -> Dict[str, str]:
     """
-    Computes and returns the VRAM usage for each device the model is on.
+    Computes and returns VRAM usage for each device model is on.
 
     Args:
         model: The model to analyze.
         detailed: If True, provides detailed breakdown of memory usage by module
+        include_cpu: If False, skips CPU device to focus on GPU memory usage
 
     Returns:
         A dictionary where keys are device names (e.g., 'cuda:0', 'cpu') and
@@ -206,8 +207,16 @@ def get_vram_per_device(model: nn.Module, detailed: bool = False) -> Dict[str, s
     module_breakdown = defaultdict(list)
     
     for name, tensor in named_module_tensors(model, recurse=True):
-        size_bytes = tensor.numel() * dtype_byte_size(tensor.dtype)
+        # Skip meta device tensors as they don't consume actual memory
         device_str = str(tensor.device)
+        if device_str == 'meta':
+            continue
+            
+        # Skip CPU devices if not requested (to focus on GPU VRAM)
+        if not include_cpu and device_str == 'cpu':
+            continue
+            
+        size_bytes = tensor.numel() * dtype_byte_size(tensor.dtype)
         device_sizes[device_str] += size_bytes
         
         if detailed:

@@ -511,25 +511,11 @@ def _ensure_target_storage_on_device_(param: torch.nn.Parameter, device: torch.d
     
     # meta -> allocate fresh on device
     if getattr(param, "is_meta", False) or param.device.type == "meta":
-        # DEBUG: Log meta tensor materialization
-        original_size = param.numel() * (param.element_size() if hasattr(param, 'element_size') else 4)  # Default to 4 bytes for float32
-        log.info(f"[VRAM-DEBUG] META TENSOR: Creating new tensor on {device} for param with {param.numel()} elements (~{original_size / (1024*1024):.2f}MB)")
-        
-        # Force cleanup before materialization to reduce VRAM pressure
-        if device.type == "cuda":
-            torch_empty_cache()
-            log.info(f"[VRAM-DEBUG] Forced CUDA cache cleanup before materialization")
-        
-        new_param = torch.nn.Parameter(torch.empty_like(param, device=device), requires_grad=False)
-        return new_param
+        return torch.nn.Parameter(torch.empty_like(param, device=device), requires_grad=False)
+
     # already on device -> keep
     if param.device == device:
         return param
-    
-    # Force cleanup before moving to reduce VRAM pressure
-    if device.type == "cuda":
-        torch_empty_cache()
-        log.info(f"[VRAM-DEBUG] Forced CUDA cache cleanup before tensor move")
     
     # CPU or wrong GPU -> rebind data storage on target device
     param.data = param.data.to(device, copy=True)  # alloc new storage on device; keeps Parameter identity

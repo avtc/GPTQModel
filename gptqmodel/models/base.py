@@ -1538,10 +1538,50 @@ class BaseQModel(nn.Module):
             module_name = target_submodule.__class__.__name__
             
         log.info(f"[VRAM-DEBUG] Before materializing module: {module_name}")
-        vram_before = get_vram_per_device(self.model, detailed=False)
+        
+        # Check main model VRAM usage (GPU only, skip CPU to focus on VRAM)
+        vram_before = get_vram_per_device(self.model, detailed=False, include_cpu=False)
         for device_name, usage in vram_before.items():
             if device_name != '_detailed_breakdown':
-                log.info(f"[VRAM-DEBUG]  - Device: {device_name}, Used: {usage}")
+                log.info(f"[VRAM-DEBUG]  - Main model Device: {device_name}, Used: {usage}")
+        
+        # Check turtle model VRAM usage if it exists
+        if self.turtle_model is not None:
+            turtle_vram = get_vram_per_device(self.turtle_model, detailed=False, include_cpu=False)
+            for device_name, usage in turtle_vram.items():
+                if device_name != '_detailed_breakdown':
+                    log.info(f"[VRAM-DEBUG]  - Turtle model Device: {device_name}, Used: {usage}")
+        
+        # Check if there are any other references to the model that might be on GPU
+        import gc
+        from ..utils.vram import named_module_tensors, dtype_byte_size
+        from ..utils.torch import get_device
+        from accelerate.utils import convert_bytes
+        
+        model_refs = []
+        for obj in gc.get_objects():
+            try:
+                if hasattr(obj, 'config') and hasattr(obj, 'parameters') and obj is not self.model and obj is not self.turtle_model:
+                    # This looks like another model instance - check its GPU usage
+                    obj_device_vram = defaultdict(int)
+                    for name, tensor in named_module_tensors(obj, recurse=True):
+                        device_str = str(tensor.device)
+                        if device_str != 'meta' and device_str != 'cpu' and device_str.startswith('cuda'):
+                            size_bytes = tensor.numel() * dtype_byte_size(tensor.dtype)
+                            obj_device_vram[device_str] += size_bytes
+                    
+                    if obj_device_vram:
+                        total_vram = sum(obj_device_vram.values())
+                        model_refs.append((type(obj).__name__, dict(obj_device_vram), convert_bytes(total_vram)))
+            except:
+                pass
+        
+        if model_refs:
+            log.info(f"[VRAM-DEBUG] Found {len(model_refs)} additional model-like objects with GPU usage:")
+            for obj_type, device_breakdown, total_usage in model_refs[:5]:  # Limit to first 5 to avoid spam
+                log.info(f"[VRAM-DEBUG]  - {obj_type}: {total_usage} total")
+                for device, usage in device_breakdown.items():
+                    log.info(f"[VRAM-DEBUG]    - {device}: {convert_bytes(usage)}")
         
         with self._turtle_lock:
             turtle_model = self.turtle_model
@@ -1573,19 +1613,26 @@ class BaseQModel(nn.Module):
         
         # Log VRAM usage after materialization
         log.info(f"[VRAM-DEBUG] After materializing module: {module_name}")
-        vram_after = get_vram_per_device(self.model, detailed=False)
+        vram_after = get_vram_per_device(self.model, detailed=False, include_cpu=False)
         for device_name, usage in vram_after.items():
             if device_name != '_detailed_breakdown':
-                log.info(f"[VRAM-DEBUG]  - Device: {device_name}, Used: {usage}")
+                log.info(f"[VRAM-DEBUG]  - Main model Device: {device_name}, Used: {usage}")
+
+        # Check turtle model VRAM usage after materialization
+        if self.turtle_model is not None:
+            turtle_vram_after = get_vram_per_device(self.turtle_model, detailed=False, include_cpu=False)
+            for device_name, usage in turtle_vram_after.items():
+                if device_name != '_detailed_breakdown':
+                    log.info(f"[VRAM-DEBUG]  - Turtle model Device: {device_name}, Used: {usage}")
         
-        # Calculate and log VRAM difference
+        # Calculate and log VRAM difference for main model
         for device_name in vram_before:
             if device_name != '_detailed_breakdown' and device_name in vram_after:
                 before_usage = vram_before[device_name]
                 after_usage = vram_after[device_name]
                 if isinstance(before_usage, (int, float)) and isinstance(after_usage, (int, float)):
                     diff = after_usage - before_usage
-                    log.info(f"[VRAM-DEBUG] VRAM change on {device_name}: {diff:+.2f}MB")
+                    log.info(f"[VRAM-DEBUG] Main model VRAM change on {device_name}: {diff:+.2f}MB")
         
         return module
 

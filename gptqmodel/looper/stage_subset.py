@@ -348,13 +348,19 @@ def _run_single_subset_pass(
 
             if logger.isEnabledFor(logging.INFO):
                 logger.info(f"[VRAM-DEBUG] Before quantizing module: {module_label} on device {expected_device}")
-                vram_before = get_vram_per_device(looper.gptq_model.model, detailed=True)
+                vram_before = get_vram_per_device(looper.gptq_model.model, detailed=True, include_cpu=False)
                 for device, size in vram_before.items():
-                    logger.info(f"[VRAM-DEBUG]  - Device: {device}, Used: {size}")
+                    logger.info(f"[VRAM-DEBUG]  - Main model Device: {device}, Used: {size}")
                     # Show detailed breakdown for CUDA devices
                     if device.startswith('cuda') and '_detailed_breakdown' in vram_before:
                         for module_info in vram_before['_detailed_breakdown'].get(device, []):
                             logger.info(f"[VRAM-DEBUG]    - Module: {module_info['name']}, Shape: {module_info['shape']}, Size: {module_info['size_human']}")
+                
+                # Check turtle model VRAM usage if it exists
+                if hasattr(looper.gptq_model, 'turtle_model') and looper.gptq_model.turtle_model is not None:
+                    turtle_vram = get_vram_per_device(looper.gptq_model.turtle_model, detailed=False, include_cpu=False)
+                    for device, size in turtle_vram.items():
+                        logger.info(f"[VRAM-DEBUG]  - Turtle model Device: {device}, Used: {size}")
 
                 # Additional debug for offload_to_disk behavior
                 if hasattr(looper.gptq_model.quantize_config, 'offload_to_disk') and looper.gptq_model.quantize_config.offload_to_disk:
@@ -388,13 +394,19 @@ def _run_single_subset_pass(
             # Log VRAM after quantization
             if logger.isEnabledFor(logging.INFO):
                 logger.info(f"[VRAM-DEBUG] After quantizing module: {module_label}")
-                vram_after = get_vram_per_device(looper.gptq_model.model, detailed=True)
+                vram_after = get_vram_per_device(looper.gptq_model.model, detailed=True, include_cpu=False)
                 for device, size in vram_after.items():
-                    logger.info(f"[VRAM-DEBUG]  - Device: {device}, Used: {size}")
+                    logger.info(f"[VRAM-DEBUG]  - Main model Device: {device}, Used: {size}")
                     # Show detailed breakdown for CUDA devices
                     if device.startswith('cuda') and '_detailed_breakdown' in vram_after:
                         for module_info in vram_after['_detailed_breakdown'].get(device, []):
                             logger.info(f"[VRAM-DEBUG]    - Module: {module_info['name']}, Shape: {module_info['shape']}, Size: {module_info['size_human']}")
+                
+                # Check turtle model VRAM usage after quantization
+                if hasattr(looper.gptq_model, 'turtle_model') and looper.gptq_model.turtle_model is not None:
+                    turtle_vram_after = get_vram_per_device(looper.gptq_model.turtle_model, detailed=False, include_cpu=False)
+                    for device, size in turtle_vram_after.items():
+                        logger.info(f"[VRAM-DEBUG]  - Turtle model Device: {device}, Used: {size}")
                 
                 # Calculate and log VRAM difference for this quantization pass
                 logger.info(f"[VRAM-DEBUG] VRAM change analysis for module {module_label}:")
