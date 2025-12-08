@@ -139,6 +139,7 @@ def _offload_to_disk_impl(module: List[str] | nn.Module, model: nn.Module, disk_
     #with _lock:
     if isinstance(module, List):
         for name in module:
+            print(f"DEBUG: offload_to_disk requested for module name: {name}")
             m = get_submodule(model, name)
             # unwrap named module
             if isinstance(m, NamedModule):
@@ -154,6 +155,7 @@ def _offload_to_disk_impl(module: List[str] | nn.Module, model: nn.Module, disk_
             module = module.module
 
         full_name = get_module_fullname(model=model, module=module)
+        print(f"DEBUG: offload_to_disk requested for module: {full_name}")
 
         _offload_disk(module=module, name=full_name, disk_path=disk_path)
 
@@ -199,8 +201,11 @@ def _offload_disk_locked(module: nn.Module, name: str, disk_path: str = "."):
 
     for tensor in state_items:
         total_bytes += _tensor_nbytes(tensor)
+    
+    print(f"DEBUG: Attempting to offload '{name}'. Total size: {total_bytes} bytes.")
 
     if total_bytes <= _SMALL_MODULE_OFFLOAD_BYTES:
+        print(f"DEBUG: Skipping offload for '{name}' because it is too small ({total_bytes} bytes).")
         return
 
     _prepare_offload_directory(module_offload_dir)
