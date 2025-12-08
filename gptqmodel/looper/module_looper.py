@@ -1354,12 +1354,12 @@ class ModuleLooper():
             for device, size in vram_before.items():
                 log.info(f"[VRAM-DEBUG]  - Device: {device}, Used: {size}")
 
-            log.info("Offloading base modules to disk...")
-            offload_to_disk(
-                model=self.gptq_model.model,
-                module=self.gptq_model.get_base_modules(model=self.gptq_model.model),
-                disk_path=self.gptq_model.quantize_config.offload_to_disk_path
-            )
+            log.info("Skipping offload of base modules to disk to investigate VRAM pressure on cuda:0.")
+            # offload_to_disk(
+            #     model=self.gptq_model.model,
+            #     module=self.gptq_model.get_base_modules(model=self.gptq_model.model),
+            #     disk_path=self.gptq_model.quantize_config.offload_to_disk_path
+            # )
 
             # VRAM DEBUG: Check memory after offloading base modules
             log.info("[VRAM-DEBUG] After base module offload:")
