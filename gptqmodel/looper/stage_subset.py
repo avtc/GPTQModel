@@ -23,6 +23,7 @@ from ..quantization.config import VRAMStrategy
 from ..utils.device import get_device
 from ..utils.logger import setup_logger
 from ..utils.torch import torch_empty_cache, torch_sync
+from ..utils.vram import get_vram_per_device
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .module_looper import ModuleLooper
@@ -344,6 +345,12 @@ def _run_single_subset_pass(
                         expected_device,
                         bool(previous_subset_ref),
                     )
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"[VRAM-DEBUG] Before quantizing module: {module_label} on device {expected_device}")
+                vram_before = get_vram_per_device(looper.gptq_model.model)
+                for device, size in vram_before.items():
+                    logger.info(f"[VRAM-DEBUG]  - Device: {device}, Used: {size}")
+
             proc.process(
                 module=nm,
                 subset=subset_ref,

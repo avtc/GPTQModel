@@ -1142,10 +1142,15 @@ class GPTQ:
         self._borrow_workspace_last_chunk_rows = None
 
     def free(self):
+        log.info(f"GPTQ.free() called for module: {self.name}")
         if hasattr(self, "H"):
+            log.info(f"  - Deleting Hessian (H) for {self.name}. Device: {self.H.device if self.H is not None else 'N/A'}")
             del self.H
-        del self.quantizer
+        if hasattr(self, "quantizer"):
+            log.info(f"  - Deleting quantizer for {self.name}.")
+            del self.quantizer
         if hasattr(self, "module_copy"):
+            log.info(f"  - Deleting module_copy for {self.name}.")
             del self.module_copy
 
         if self._named_module is not None:
