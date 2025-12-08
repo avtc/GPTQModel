@@ -542,6 +542,11 @@ class LoopProcessor:
         pass
 
     def receive_input_cache(self, input_cache: InputCache):
+        # Detach all tensors in the input cache from their computation graph.
+        # This is critical for allowing `offload_to_disk` to work correctly,
+        # as it prevents stale references from pinning modules (like embeddings) to the GPU.
+        if input_cache:
+            input_cache.detach()
         self.inputs_cache = input_cache
 
     # called after every module generate

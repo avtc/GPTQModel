@@ -188,3 +188,26 @@ def get_vram(model):
     all_layers = get_all_layer_size(modules_to_treat, sizes, no_split_modules)
 
     return total_size, all_layers
+
+
+def get_vram_per_device(model: nn.Module) -> Dict[str, str]:
+    """
+    Computes and returns the VRAM usage for each device the model is on.
+
+    Args:
+        model: The model to analyze.
+
+    Returns:
+        A dictionary where keys are device names (e.g., 'cuda:0', 'cpu') and
+        values are human-readable memory usage strings (e.g., '1.16 GB').
+    """
+    device_sizes = defaultdict(int)
+    for name, tensor in named_module_tensors(model, recurse=True):
+        size_bytes = tensor.numel() * dtype_byte_size(tensor.dtype)
+        device_sizes[str(tensor.device)] += size_bytes
+
+    report = {
+        device: convert_bytes(size)
+        for device, size in device_sizes.items()
+    }
+    return report
