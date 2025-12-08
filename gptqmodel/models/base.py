@@ -1593,7 +1593,10 @@ class BaseQModel(nn.Module):
                 return target_submodule
 
             # Force cleanup before materialization to reduce VRAM pressure
-            if device.type == "cuda":
+            # Convert string to torch.device if needed
+            if isinstance(device, str):
+                device = torch.device(device)
+            if hasattr(device, 'type') and device.type == "cuda":
                 torch_empty_cache()
                 log.info(f"[VRAM-DEBUG] Forced CUDA cache cleanup before materialization of {module_name}")
 
@@ -1605,7 +1608,7 @@ class BaseQModel(nn.Module):
             )
             
             # Force cleanup after materialization to free any intermediate allocations
-            if device.type == "cuda":
+            if hasattr(device, 'type') and device.type == "cuda":
                 torch_empty_cache()
                 log.info(f"[VRAM-DEBUG] Forced CUDA cache cleanup after materialization of {module_name}")
                 
