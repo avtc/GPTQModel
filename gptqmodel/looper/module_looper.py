@@ -53,7 +53,8 @@ from ..utils.looper_helpers import (
 )
 from ..utils.model import find_modules, get_module, get_module_by_name_prefix, move_to, nested_move_to
 from ..utils.offload import offload_to_disk
-from ..utils.torch import (CPU, META, timed_gc_collect, torch_sync, tf32_high_precision_guard)
+from ..utils.torch import (CPU, META, timed_gc_collect, torch_sync, tf32_high_precision_guard, torch_empty_cache)
+from ..utils.vram import get_vram
 from .. import DEVICE_THREAD_POOL
 from .awq_processor import AWQProcessor
 from .qqq_processor import QQQProcessor
@@ -1346,12 +1347,28 @@ class ModuleLooper():
             processor.release_calibration_dataset()
 
         if self.gptq_model.quantize_config.offload_to_disk:
+            # VRAM DEBUG: Check memory before offloading base modules
+            torch_empty_cache()
+            total_size_before, layers_before = get_vram(self.gptq_model.model)
+            log.info(f"[VRAM-DEBUG] Before base module offload. Total size: {total_size_before}")
+            for layer, size in layers_before:
+                if self.gptq_model.model.base_modules_name_prefix in layer or "embed_tokens" in layer:
+                    log.info(f"[VRAM-DEBUG]  - Layer: {layer}, Size: {size}")
+
             log.info("Offloading base modules to disk...")
             offload_to_disk(
                 model=self.gptq_model.model,
                 module=self.gptq_model.get_base_modules(model=self.gptq_model.model),
                 disk_path=self.gptq_model.quantize_config.offload_to_disk_path
             )
+
+            # VRAM DEBUG: Check memory after offloading base modules
+            torch_empty_cache()
+            total_size_after, layers_after = get_vram(self.gptq_model.model)
+            log.info(f"[VRAM-DEBUG] After base module offload. Total size: {total_size_after}")
+            for layer, size in layers_after:
+                if self.gptq_model.model.base_modules_name_prefix in layer or "embed_tokens" in layer:
+                    log.info(f"[VRAM-DEBUG]  - Layer: {layer}, Size: {size}")
 
         if region_timer is not None:
             region_timer.flush()
