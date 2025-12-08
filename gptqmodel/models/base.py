@@ -1555,7 +1555,7 @@ class BaseQModel(nn.Module):
         # Check if there are any other references to the model that might be on GPU
         import gc
         from ..utils.vram import named_module_tensors, dtype_byte_size
-        from ..utils.torch import get_device
+        from ..utils.device import get_device
         from accelerate.utils import convert_bytes
         
         model_refs = []
