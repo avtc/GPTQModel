@@ -1586,8 +1586,8 @@ class BaseQModel(nn.Module):
         
         if model_refs:
             log.info(f"[VRAM-DEBUG] Found {len(model_refs)} additional model-like objects with GPU usage:")
-            for obj_id, obj_type, device_breakdown, total_usage, origin in model_refs[:10]:  # Limit to first 10 to avoid spam
-                log.info(f"[VRAM-DEBUG]  - {obj_type}[{obj_id}] from {origin}: {total_usage} total")
+            for obj_type, device_breakdown, total_usage in model_refs[:10]:  # Limit to first 10 to avoid spam
+                log.info(f"[VRAM-DEBUG]  - {obj_type}: {total_usage} total")
                 for device, usage in device_breakdown.items():
                     log.info(f"[VRAM-DEBUG]    - {device}: {convert_bytes(usage)}")
             
