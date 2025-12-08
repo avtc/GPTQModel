@@ -176,14 +176,11 @@ class StageInputsCapture:
                     else:
                         if len(v.shape) == 1:
                             v = v.unsqueeze(0)
-                        v_moved = move_to(v, device=data_device)
-                        print(f"DEBUG: Moving calibration batch tensor '{k}' to device: {v_moved.device}")
-                        example[k] = v_moved
+                        example[k] = move_to(v, device=data_device)
                 try:
                     if self.gptq_model.ATTENTION_MASKS_DTYPE is torch.long:
                         example["attention_mask"] = example["attention_mask"].long()
 
-                    print(f"DEBUG: Executing model forward pass. Model device: {self.gptq_model.model.device}, Input ID device: {example['input_ids'].device}")
                     with ctx(
                         DEVICE_THREAD_POOL.read_lock(self.gptq_model.quantize_config.device),
                         device_ctx(self.gptq_model.quantize_config.device),
