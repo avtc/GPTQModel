@@ -19,12 +19,12 @@ from accelerate import disk_offload
 from accelerate.hooks import remove_hook_from_module, remove_hook_from_submodules
 from accelerate.utils import align_module_device, has_offloaded_params
 from safetensors.torch import save_file as safetensors_save_file
-from torch import nn, torch_empty_cache
+from torch import nn
 
 from ..looper.named_module import NamedModule
 from .device import get_device
 from .module_locks import parent_module_lock
-from .torch import CPU, META
+from .torch import CPU, META, torch_empty_cache
 
 # Re-add thread lock for offloading operations to prevent race conditions
 _OFFLOAD_LOCK = threading.Lock()

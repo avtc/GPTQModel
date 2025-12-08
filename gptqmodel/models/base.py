@@ -14,6 +14,7 @@ from collections import defaultdict
 from contextlib import nullcontext
 from itertools import count
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Type, Union
+from ..utils.torch import torch_empty_cache
 
 import torch
 import torch._dynamo
@@ -1483,7 +1484,6 @@ class BaseQModel(nn.Module):
                             
                             # Clear CUDA cache regardless of whether we could move to CPU
                             if torch.cuda.is_available():
-                                from ..utils.torch import torch_empty_cache
                                 torch_empty_cache()
                         except Exception as e:
                             log.warning(f"[VRAM_TRACK] Failed to clear turtle model: {e}")
