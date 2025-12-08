@@ -1573,15 +1573,47 @@ class BaseQModel(nn.Module):
                     if obj_device_vram:
                         total_vram = sum(obj_device_vram.values())
                         model_refs.append((type(obj).__name__, dict(obj_device_vram), convert_bytes(total_vram)))
+                        
+                        # Log detailed tensor info for high VRAM usage objects
+                        if total_vram > 100 * 1024 * 1024:  # More than 100MB
+                            log.warning(f"[VRAM-DEBUG] High VRAM object {type(obj).__name__}: {convert_bytes(total_vram)}")
+                            log.warning(f"[VRAM-DEBUG] Tensor details for {type(obj).__name__}:")
+                            for name, tensor in named_module_tensors(obj, recurse=True):
+                                if str(tensor.device).startswith('cuda'):
+                                    log.warning(f"[VRAM-DEBUG]   - {name}: {tensor.shape} {tensor.dtype} = {convert_bytes(tensor.numel() * dtype_byte_size(tensor.dtype))}")
             except:
                 pass
         
         if model_refs:
             log.info(f"[VRAM-DEBUG] Found {len(model_refs)} additional model-like objects with GPU usage:")
-            for obj_type, device_breakdown, total_usage in model_refs[:5]:  # Limit to first 5 to avoid spam
-                log.info(f"[VRAM-DEBUG]  - {obj_type}: {total_usage} total")
+            for obj_id, obj_type, device_breakdown, total_usage, origin in model_refs[:10]:  # Limit to first 10 to avoid spam
+                log.info(f"[VRAM-DEBUG]  - {obj_type}[{obj_id}] from {origin}: {total_usage} total")
                 for device, usage in device_breakdown.items():
                     log.info(f"[VRAM-DEBUG]    - {device}: {convert_bytes(usage)}")
+            
+            # Force cleanup of additional model references to reduce VRAM pressure
+            log.warning(f"[VRAM-DEBUG] Cleaning up {len(model_refs)} additional model references to reduce VRAM usage")
+            for obj in gc.get_objects():
+                try:
+                    if hasattr(obj, 'config') and hasattr(obj, 'parameters') and obj is not self.model and obj is not self.turtle_model:
+                        # Check if this object has GPU usage
+                        obj_device_vram = defaultdict(int)
+                        for name, tensor in named_module_tensors(obj, recurse=True):
+                            device_str = str(tensor.device)
+                            if device_str != 'meta' and device_str != 'cpu' and device_str.startswith('cuda'):
+                                size_bytes = tensor.numel() * dtype_byte_size(tensor.dtype)
+                                obj_device_vram[device_str] += size_bytes
+                        
+                        if obj_device_vram:
+                            total_vram = sum(obj_device_vram.values())
+                            if total_vram > 100 * 1024 * 1024:  # More than 100MB
+                                log.warning(f"[VRAM-DEBUG] Deleting model reference {type(obj).__name__} consuming {convert_bytes(total_vram)}")
+                                del obj
+                except:
+                    pass
+            
+            # Force garbage collection after cleanup
+            torch_empty_cache()
         
         with self._turtle_lock:
             turtle_model = self.turtle_model
