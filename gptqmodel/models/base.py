@@ -1483,8 +1483,7 @@ class BaseQModel(nn.Module):
                                             param.data = torch.empty_like(param.data, device='meta')
                             
                             # Clear CUDA cache regardless of whether we could move to CPU
-                            if torch.cuda.is_available():
-                                torch_empty_cache()
+                            torch_empty_cache()
                         except Exception as e:
                             log.warning(f"[VRAM_TRACK] Failed to clear turtle model: {e}")
                     
@@ -1508,17 +1507,13 @@ class BaseQModel(nn.Module):
                 reload_spinner.close()
                 
                 # Log VRAM after turtle reload and clear cache aggressively for large models
-                if torch.cuda.is_available():
-                    from ..utils.torch import torch_empty_cache
-                    
-                    # Additional cleanup for very large models that might have meta layers
-                    try:
-                        torch_empty_cache()
-                    except Exception as cache_error:
-                        log.warning(f"[VRAM_TRACK] Cache clear failed: {cache_error}")
-                    
-                    vram_after = torch.cuda.memory_allocated() / 1024**3  # Convert to MB
-                    log.info(f"[VRAM_TRACK] After turtle model reload: {vram_after:.2f} MB allocated, delta: {vram_after - vram_before:.2f} MB")
+                try:
+                    torch_empty_cache()
+                except Exception as cache_error:
+                    log.warning(f"[VRAM_TRACK] Cache clear failed: {cache_error}")
+                
+                vram_after = torch.cuda.memory_allocated() / 1024**3  # Convert to MB
+                log.info(f"[VRAM_TRACK] After turtle model reload: {vram_after:.2f} MB allocated, delta: {vram_after - vram_before:.2f} MB")
 
     # transfer actually materizlied module from turtle (real) to shell
     def shell_module_materialize(
