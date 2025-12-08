@@ -345,12 +345,38 @@ def _run_single_subset_pass(
                         expected_device,
                         bool(previous_subset_ref),
                     )
+
             if logger.isEnabledFor(logging.INFO):
                 logger.info(f"[VRAM-DEBUG] Before quantizing module: {module_label} on device {expected_device}")
-                vram_before = get_vram_per_device(looper.gptq_model.model)
+                vram_before = get_vram_per_device(looper.gptq_model.model, detailed=True)
                 for device, size in vram_before.items():
                     logger.info(f"[VRAM-DEBUG]  - Device: {device}, Used: {size}")
+                    # Show detailed breakdown for CUDA devices
+                    if device.startswith('cuda') and '_detailed_breakdown' in vram_before:
+                        for module_info in vram_before['_detailed_breakdown'].get(device, []):
+                            logger.info(f"[VRAM-DEBUG]    - Module: {module_info['name']}, Shape: {module_info['shape']}, Size: {module_info['size_human']}")
 
+                # Additional debug for offload_to_disk behavior
+                if hasattr(looper.gptq_model.quantize_config, 'offload_to_disk') and looper.gptq_model.quantize_config.offload_to_disk:
+                    logger.info(f"[VRAM-DEBUG] offload_to_disk=True - Module {module_label} quantization with {len(subset_ref) if subset_ref else 0} modules in subset")
+                    # Check if turtle model exists and its state
+                    if hasattr(looper.gptq_model, 'turtle_model') and looper.gptq_model.turtle_model is not None:
+                        logger.info(f"[VRAM-DEBUG] Turtle model available: {type(looper.gptq_model.turtle_model).__name__}")
+                        # Check accumulated bytes
+                        if hasattr(looper.gptq_model, '_turtle_reload_accum_bytes'):
+                            logger.info(f"[VRAM-DEBUG] Turtle reload accumulated: {looper.gptq_model._turtle_reload_accum_bytes} bytes")
+                    else:
+                        logger.warning("[VRAM-DEBUG] Turtle model not available despite offload_to_disk=True!")
+                else:
+                    logger.info(f"[VRAM-DEBUG] offload_to_disk=False - Module {module_label} quantization with {len(subset_ref) if subset_ref else 0} modules in subset")
+                    
+                    # Monitor VRAM after materialization to detect leaks
+                    logger.info(f"[VRAM-DEBUG] After module materialization in _process_on_worker")
+                    vram_after = get_vram_per_device(looper.gptq_model.model, detailed=False)
+                    for device_name, usage in vram_after.items():
+                        if device_name != '_detailed_breakdown':
+                            logger.info(f"[VRAM-DEBUG]  - Device: {device_name}, Used: {usage}")
+    
             proc.process(
                 module=nm,
                 subset=subset_ref,
@@ -358,6 +384,27 @@ def _run_single_subset_pass(
                 subset_index=subset_idx,
                 subset_total=subset_total_count,
             )
+    
+            # Log VRAM after quantization
+            if logger.isEnabledFor(logging.INFO):
+                logger.info(f"[VRAM-DEBUG] After quantizing module: {module_label}")
+                vram_after = get_vram_per_device(looper.gptq_model.model, detailed=True)
+                for device, size in vram_after.items():
+                    logger.info(f"[VRAM-DEBUG]  - Device: {device}, Used: {size}")
+                    # Show detailed breakdown for CUDA devices
+                    if device.startswith('cuda') and '_detailed_breakdown' in vram_after:
+                        for module_info in vram_after['_detailed_breakdown'].get(device, []):
+                            logger.info(f"[VRAM-DEBUG]    - Module: {module_info['name']}, Shape: {module_info['shape']}, Size: {module_info['size_human']}")
+                
+                # Calculate and log VRAM difference for this quantization pass
+                logger.info(f"[VRAM-DEBUG] VRAM change analysis for module {module_label}:")
+                for device_name in vram_before:
+                    if device_name != '_detailed_breakdown' and device_name in vram_after:
+                        before_usage = vram_before[device_name]
+                        after_usage = vram_after[device_name]
+                        if isinstance(before_usage, (int, float)) and isinstance(after_usage, (int, float)):
+                            diff = after_usage - before_usage
+                            logger.info(f"[VRAM-DEBUG]  - Device {device_name}: {diff:+.2f}MB change during quantization")
         finally:
             if timer is not None and start is not None:
                 timer.record(

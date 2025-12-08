@@ -190,24 +190,42 @@ def get_vram(model):
     return total_size, all_layers
 
 
-def get_vram_per_device(model: nn.Module) -> Dict[str, str]:
+def get_vram_per_device(model: nn.Module, detailed: bool = False) -> Dict[str, str]:
     """
     Computes and returns the VRAM usage for each device the model is on.
 
     Args:
         model: The model to analyze.
+        detailed: If True, provides detailed breakdown of memory usage by module
 
     Returns:
         A dictionary where keys are device names (e.g., 'cuda:0', 'cpu') and
         values are human-readable memory usage strings (e.g., '1.16 GB').
     """
     device_sizes = defaultdict(int)
+    module_breakdown = defaultdict(list)
+    
     for name, tensor in named_module_tensors(model, recurse=True):
         size_bytes = tensor.numel() * dtype_byte_size(tensor.dtype)
-        device_sizes[str(tensor.device)] += size_bytes
+        device_str = str(tensor.device)
+        device_sizes[device_str] += size_bytes
+        
+        if detailed:
+            module_breakdown[device_str].append({
+                'name': name,
+                'shape': tuple(tensor.shape) if hasattr(tensor, 'shape') else 'unknown',
+                'dtype': str(tensor.dtype),
+                'size_bytes': size_bytes,
+                'size_human': convert_bytes(size_bytes)
+            })
 
     report = {
         device: convert_bytes(size)
         for device, size in device_sizes.items()
     }
+    
+    # Add detailed breakdown if requested
+    if detailed:
+        report['_detailed_breakdown'] = dict(module_breakdown)
+    
     return report

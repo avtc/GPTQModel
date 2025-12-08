@@ -1348,24 +1348,44 @@ class ModuleLooper():
 
         if self.gptq_model.quantize_config.offload_to_disk:
             # VRAM DEBUG: Check memory before offloading base modules
-            # VRAM DEBUG: Check memory before offloading base modules
             log.info("[VRAM-DEBUG] Before base module offload:")
-            vram_before = get_vram_per_device(self.gptq_model.model)
+            vram_before = get_vram_per_device(self.gptq_model.model, detailed=True)
             for device, size in vram_before.items():
-                log.info(f"[VRAM-DEBUG]  - Device: {device}, Used: {size}")
+                if device.startswith('cuda'):
+                    log.info(f"[VRAM-DEBUG]  - Device: {device}, Used: {size}")
+                    # Show detailed breakdown for CUDA devices
+                    if '_detailed_breakdown' in vram_before:
+                        for module_info in vram_before['_detailed_breakdown'].get(device, []):
+                            log.info(f"[VRAM-DEBUG]    - Module: {module_info['name']}, Shape: {module_info['shape']}, Size: {module_info['size_human']}")
 
-            log.info("Skipping offload of base modules to disk to investigate VRAM pressure on cuda:0.")
-            # offload_to_disk(
-            #     model=self.gptq_model.model,
-            #     module=self.gptq_model.get_base_modules(model=self.gptq_model.model),
-            #     disk_path=self.gptq_model.quantize_config.offload_to_disk_path
-            # )
+            log.info("Offload base modules")
+            offload_to_disk(
+                model=self.gptq_model.model,
+                module=self.gptq_model.get_base_modules(model=self.gptq_model.model),
+                disk_path=self.gptq_model.quantize_config.offload_to_disk_path
+            )
 
             # VRAM DEBUG: Check memory after offloading base modules
             log.info("[VRAM-DEBUG] After base module offload:")
-            vram_after = get_vram_per_device(self.gptq_model.model)
+            vram_after = get_vram_per_device(self.gptq_model.model, detailed=True)
             for device, size in vram_after.items():
-                log.info(f"[VRAM-DEBUG]  - Device: {device}, Used: {size}")
+                if device.startswith('cuda'):
+                    log.info(f"[VRAM-DEBUG]  - Device: {device}, Used: {size}")
+                    # Show detailed breakdown for CUDA devices
+                    if '_detailed_breakdown' in vram_after:
+                        for module_info in vram_after['_detailed_breakdown'].get(device, []):
+                            log.info(f"[VRAM-DEBUG]    - Module: {module_info['name']}, Shape: {module_info['shape']}, Size: {module_info['size_human']}")
+        else:
+            # VRAM DEBUG: Check memory when offload_to_disk is False
+            log.info("[VRAM-DEBUG] offload_to_disk=False - Checking initial VRAM state:")
+            vram_initial = get_vram_per_device(self.gptq_model.model, detailed=True)
+            for device, size in vram_initial.items():
+                if device.startswith('cuda'):
+                    log.info(f"[VRAM-DEBUG]  - Device: {device}, Used: {size}")
+                    # Show detailed breakdown for CUDA devices
+                    if '_detailed_breakdown' in vram_initial:
+                        for module_info in vram_initial['_detailed_breakdown'].get(device, []):
+                            log.info(f"[VRAM-DEBUG]    - Module: {module_info['name']}, Shape: {module_info['shape']}, Size: {module_info['size_human']}")
 
         if region_timer is not None:
             region_timer.flush()

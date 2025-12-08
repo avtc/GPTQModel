@@ -507,12 +507,30 @@ def _get_parent_and_leaf_by_path(root: torch.nn.Module, dotted: str):
 
 def _ensure_target_storage_on_device_(param: torch.nn.Parameter, device: torch.device) -> torch.nn.Parameter:
     """Make sure `param`'s storage is on `device` without using set_ across devices."""
+    from ..utils.torch import torch_empty_cache
+    
     # meta -> allocate fresh on device
     if getattr(param, "is_meta", False) or param.device.type == "meta":
-        return torch.nn.Parameter(torch.empty_like(param, device=device), requires_grad=False)
+        # DEBUG: Log meta tensor materialization
+        original_size = param.numel() * (param.element_size() if hasattr(param, 'element_size') else 4)  # Default to 4 bytes for float32
+        log.info(f"[VRAM-DEBUG] META TENSOR: Creating new tensor on {device} for param with {param.numel()} elements (~{original_size / (1024*1024):.2f}MB)")
+        
+        # Force cleanup before materialization to reduce VRAM pressure
+        if device.type == "cuda":
+            torch_empty_cache()
+            log.info(f"[VRAM-DEBUG] Forced CUDA cache cleanup before materialization")
+        
+        new_param = torch.nn.Parameter(torch.empty_like(param, device=device), requires_grad=False)
+        return new_param
     # already on device -> keep
     if param.device == device:
         return param
+    
+    # Force cleanup before moving to reduce VRAM pressure
+    if device.type == "cuda":
+        torch_empty_cache()
+        log.info(f"[VRAM-DEBUG] Forced CUDA cache cleanup before tensor move")
+    
     # CPU or wrong GPU -> rebind data storage on target device
     param.data = param.data.to(device, copy=True)  # alloc new storage on device; keeps Parameter identity
     return param
@@ -546,8 +564,14 @@ def alias_from_turtle_for_submodule(
             if t_p_new is not t_p:
                 parent, leaf = _get_parent_and_leaf_by_path(target_submodule, name)
                 setattr(parent, leaf, t_p_new)
+                # Explicitly delete old tensor reference to free VRAM immediately
+                del t_p
                 t_p = t_p_new
-            t_p.detach().copy_(s_p.detach(), non_blocking=(non_blocking and s_p.is_pinned()))
+            # VRAM OPTIMIZATION: Use in-place copy to avoid temporary double allocation
+            if hasattr(t_p, 'data') and t_p.device == device:
+                t_p.data.copy_(s_p.detach(), non_blocking=(non_blocking and s_p.is_pinned()))
+            else:
+                t_p.detach().copy_(s_p.detach(), non_blocking=(non_blocking and s_p.is_pinned()))
 
     t_bufs = dict(target_submodule.named_buffers(recurse=True))
     s_bufs = dict(src_sub.named_buffers(recurse=True))
@@ -560,10 +584,14 @@ def alias_from_turtle_for_submodule(
             parent.register_buffer(leaf, new_b, persistent=True)
         else:
             if tb.device != device:
+                # VRAM OPTIMIZATION: Create new buffer on target device and immediately replace old one
                 new_tb = torch.empty_like(s_b, device=device)
                 new_tb.copy_(s_b.detach(), non_blocking=(non_blocking and s_b.is_pinned()))
                 parent.register_buffer(leaf, new_tb, persistent=True)
+                # Explicitly delete old buffer reference to free VRAM immediately
+                del tb
             else:
+                # VRAM OPTIMIZATION: Use in-place copy when already on correct device
                 tb.copy_(s_b.detach(), non_blocking=(non_blocking and s_b.is_pinned()))
 
     if hasattr(target_model, "tie_weights"):
@@ -659,7 +687,9 @@ def alias_all_from_turtle_if_meta(
                     parent, leaf = _get_parent_and_leaf_by_path(shell_model, qname)
                     setattr(parent, leaf, turtle_sub)
                     swapped += 1
-                    log.info(f"Module: Sync {qname} <- from turtle ({turtle_sub.__class__.__name__})")
+                    log.info(f"Module:: Sync {qname} <- from turtle ({turtle_sub.__class__.__name__})")
+                    # VRAM OPTIMIZATION: Explicitly delete shell_sub reference to prevent VRAM leaks
+                    del shell_sub
                     continue
             continue
 

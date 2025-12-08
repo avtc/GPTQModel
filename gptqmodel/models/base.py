@@ -54,6 +54,8 @@ from ..utils.model import MODALITY, find_modules, get_module_by_name_prefix, mov
 from ..utils.offload import offload_to_disk
 from ..utils.structure import alias_from_turtle_for_submodule
 from ..utils.torch import TORCH_HAS_COMPILE, torch_compile
+from accelerate.utils import convert_bytes
+from ..utils.vram import get_vram_per_device
 from ._const import (
     CPU,
     DEFAULT_MAX_SHARD_SIZE,
@@ -1110,19 +1112,62 @@ class BaseQModel(nn.Module):
         return inputs
 
     def pre_quantize(self, module: nn.Module) -> nn.Module:
-        if get_device(module) == META:
-            return self.shell_module_materialize(
-                target_submodule=module,
-                device=self.quantize_config.device,
-            )
-        elif get_device(module) == CPU and self.quantize_config.device != CPU:
-            return move_to(module, device=self.quantize_config.device)
+        current_device = get_device(module)
+        target_device = self.quantize_config.device
+        
+        # DEBUG: Track materialization patterns
+        if hasattr(module, 'full_name'):
+            module_name = module.full_name
+        elif hasattr(module, 'name'):
+            module_name = module.name
         else:
+            module_name = module.__class__.__name__
+            
+        log.info(f"[VRAM-DEBUG] pre_quantize: {module_name} from {current_device} to {target_device}")
+        
+        if current_device == META:
+            result = self.shell_module_materialize(
+                target_submodule=module,
+                device=target_device,
+            )
+            # DEBUG: Check if materialization actually kept tensors on meta
+            result_device = get_device(result)
+            log.info(f"[VRAM-DEBUG] post_materialize: {module_name} on {result_device} (should be meta)")
+            return result
+        elif current_device == CPU and target_device != CPU:
+            result = move_to(module, device=target_device)
+            log.info(f"[VRAM-DEBUG] pre_quantize: {module_name} moved CPU->GPU")
+            return result
+        else:
+            log.info(f"[VRAM-DEBUG] pre_quantize: {module_name} already on {current_device}")
             return module
 
     def post_quantize(self, module: nn.Module) -> nn.Module:
+        # DEBUG: Track post-quantization behavior
+        if hasattr(module, 'full_name'):
+            module_name = module.full_name
+        elif hasattr(module, 'name'):
+            module_name = module.name
+        else:
+            module_name = module.__class__.__name__
+            
+        current_device = get_device(module)
+        log.info(f"[VRAM-DEBUG] post_quantize: {module_name} currently on {current_device}")
+        
+        # Check if offload_to_disk is actually working as expected
+        if hasattr(self.quantize_config, 'offload_to_disk') and self.quantize_config.offload_to_disk:
+            log.info(f"[VRAM-DEBUG] post_quantize: offload_to_disk=True, moving {module_name} to CPU")
+        else:
+            log.info(f"[VRAM-DEBUG] post_quantize: offload_to_disk=False, keeping {module_name} on current device")
+            
         #return self.offload_to_disk(module=module)
-        return move_to(module, device=CPU)
+        result = move_to(module, device=CPU)
+        
+        # DEBUG: Verify final device
+        final_device = get_device(result)
+        log.info(f"[VRAM-DEBUG] post_quantize: {module_name} final device: {final_device}")
+        
+        return result
 
     def move_embed(self, device: str):
         for embed_module_name in self.get_base_modules(self.model):
@@ -1423,6 +1468,10 @@ class BaseQModel(nn.Module):
 
         self._turtle_reload_accum_bytes += bytes_added
 
+        # Log turtle model reload accumulation
+        log.info(f"[VRAM-DEBUG] Turtle model reload threshold: {convert_bytes(threshold)}")
+        log.info(f"[VRAM-DEBUG] Bytes added: {convert_bytes(bytes_added)}, Accumulated: {convert_bytes(self._turtle_reload_accum_bytes)}")
+
         if self._turtle_reload_accum_bytes >= threshold:
             label = (
                 getattr(target_submodule, "full_name", None)
@@ -1430,6 +1479,7 @@ class BaseQModel(nn.Module):
                 or getattr(module, "full_name", None)
                 or module.__class__.__name__
             )
+            log.info(f"[VRAM-DEBUG] Turtle model reload threshold exceeded, reloading from source: auto:{label}")
             self.reload_turtle_model(source=f"auto:{label}")
             self._turtle_reload_accum_bytes = 0
 
@@ -1476,6 +1526,23 @@ class BaseQModel(nn.Module):
             device: torch.device,
             non_blocking: bool = False,
     ) -> torch.nn.Module:
+        from ..utils.torch import torch_empty_cache
+        from ..utils.vram import get_vram_per_device
+        
+        # Log VRAM before materialization
+        if hasattr(target_submodule, 'full_name'):
+            module_name = target_submodule.full_name
+        elif hasattr(target_submodule, 'name'):
+            module_name = target_submodule.name
+        else:
+            module_name = target_submodule.__class__.__name__
+            
+        log.info(f"[VRAM-DEBUG] Before materializing module: {module_name}")
+        vram_before = get_vram_per_device(self.model, detailed=False)
+        for device_name, usage in vram_before.items():
+            if device_name != '_detailed_breakdown':
+                log.info(f"[VRAM-DEBUG]  - Device: {device_name}, Used: {usage}")
+        
         with self._turtle_lock:
             turtle_model = self.turtle_model
 
@@ -1485,13 +1552,41 @@ class BaseQModel(nn.Module):
 
                 return target_submodule
 
+            # Force cleanup before materialization to reduce VRAM pressure
+            if device.type == "cuda":
+                torch_empty_cache()
+                log.info(f"[VRAM-DEBUG] Forced CUDA cache cleanup before materialization of {module_name}")
+
             module = alias_from_turtle_for_submodule(
                 target_model=self.model,
                 turtle_model=turtle_model,
                 target_submodule=target_submodule,
                 device=device,
             )
+            
+            # Force cleanup after materialization to free any intermediate allocations
+            if device.type == "cuda":
+                torch_empty_cache()
+                log.info(f"[VRAM-DEBUG] Forced CUDA cache cleanup after materialization of {module_name}")
+                
         self._maybe_auto_reload_after_alias(module, target_submodule)
+        
+        # Log VRAM usage after materialization
+        log.info(f"[VRAM-DEBUG] After materializing module: {module_name}")
+        vram_after = get_vram_per_device(self.model, detailed=False)
+        for device_name, usage in vram_after.items():
+            if device_name != '_detailed_breakdown':
+                log.info(f"[VRAM-DEBUG]  - Device: {device_name}, Used: {usage}")
+        
+        # Calculate and log VRAM difference
+        for device_name in vram_before:
+            if device_name != '_detailed_breakdown' and device_name in vram_after:
+                before_usage = vram_before[device_name]
+                after_usage = vram_after[device_name]
+                if isinstance(before_usage, (int, float)) and isinstance(after_usage, (int, float)):
+                    diff = after_usage - before_usage
+                    log.info(f"[VRAM-DEBUG] VRAM change on {device_name}: {diff:+.2f}MB")
+        
         return module
 
     ## overrides nn.module.train()
