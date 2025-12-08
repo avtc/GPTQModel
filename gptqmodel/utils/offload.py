@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import struct
+import threading
 from typing import Iterable, List, Optional, Set, Tuple
 
 import accelerate
@@ -18,12 +19,15 @@ from accelerate import disk_offload
 from accelerate.hooks import remove_hook_from_module, remove_hook_from_submodules
 from accelerate.utils import align_module_device, has_offloaded_params
 from safetensors.torch import save_file as safetensors_save_file
-from torch import nn
+from torch import nn, torch_empty_cache
 
 from ..looper.named_module import NamedModule
 from .device import get_device
 from .module_locks import parent_module_lock
 from .torch import CPU, META
+
+# Re-add thread lock for offloading operations to prevent race conditions
+_OFFLOAD_LOCK = threading.Lock()
 
 
 _SMALL_MODULE_OFFLOAD_BYTES = 4 * 1024  # Skip disk writes for <4KB payloads
@@ -136,26 +140,37 @@ def _offload_to_disk_impl(module: List[str] | nn.Module, model: nn.Module, disk_
     assert module is not None
     assert model is not None
 
-    #with _lock:
-    if isinstance(module, List):
-        for name in module:
-            m = get_submodule(model, name)
+    # Track VRAM before offloading
+    if torch.cuda.is_available():
+        vram_before = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
+        print(f"[VRAM_TRACK] Before offload: {vram_before:.2f} GB allocated")
+
+    #with _OFFLOAD_LOCK:
+    with _OFFLOAD_LOCK:  # Re-enable thread lock for safety
+        if isinstance(module, List):
+            for name in module:
+                m = get_submodule(model, name)
+                # unwrap named module
+                if isinstance(m, NamedModule):
+                    # print(f"offloading named module: {module.full_name}")
+                    m = m.module
+
+                full_name = get_module_fullname(model=model, module=m)
+                _offload_disk(module=m, name=full_name, disk_path=disk_path)
+        else:
             # unwrap named module
-            if isinstance(m, NamedModule):
+            if isinstance(module, NamedModule):
                 # print(f"offloading named module: {module.full_name}")
-                m = m.module
+                module = module.module
 
-            full_name = get_module_fullname(model=model, module=m)
-            _offload_disk(module=m, name=full_name, disk_path=disk_path)
-    else:
-        # unwrap named module
-        if isinstance(module, NamedModule):
-            # print(f"offloading named module: {module.full_name}")
-            module = module.module
+            full_name = get_module_fullname(model=model, module=module)
 
-        full_name = get_module_fullname(model=model, module=module)
-
-        _offload_disk(module=module, name=full_name, disk_path=disk_path)
+            _offload_disk(module=module, name=full_name, disk_path=disk_path)
+    
+    # Track VRAM after offloading
+    if torch.cuda.is_available():
+        vram_after = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
+        print(f"[VRAM_TRACK] After offload: {vram_after:.2f} GB allocated, delta: {vram_after - vram_before:.2f} GB")
 
     if hasattr(module, "config") and getattr(module.config,
                                              "tie_word_embeddings", False):
@@ -206,12 +221,25 @@ def _offload_disk_locked(module: nn.Module, name: str, disk_path: str = "."):
     _prepare_offload_directory(module_offload_dir)
     _bundle_module_state_dict(module, module_offload_dir)
 
+    # Track VRAM before disk offload
+    if torch.cuda.is_available():
+        vram_before_offload = torch.cuda.memory_allocated() / 1024**3
+        print(f"[VRAM_TRACK] Before disk_offload '{name}': {vram_before_offload:.2f} GB")
+
     _ = disk_offload(
         module,
         offload_dir=module_offload_dir,
         offload_buffers=True,
         execution_device=m_device,
     )
+    
+    # Clear CUDA cache aggressively for large models
+    if torch.cuda.is_available() and total_bytes > 1024**3:  # > 1GB modules
+        torch_empty_cache()
+        
+        # Track VRAM after disk offload
+        vram_after_offload = torch.cuda.memory_allocated() / 1024**3
+        print(f"[VRAM_TRACK] After disk_offload '{name}': {vram_after_offload:.2f} GB, freed: {vram_before_offload - vram_after_offload:.2f} GB")
 
     # print("offload_disk: list item tree")
     # print_module_tree(module)
@@ -350,11 +378,17 @@ def undo_offload_to_disk(
         delete_offload_folders: Best-effort cleanup of the on-disk folders backing offloaded weights.
 
     Returns:
-        The same `module`, now “de-offloaded”.
+        The same `module`, now "de-offloaded".
     """
-    #with _lock:
-    # Track candidate offload dirs if user asks to delete them later.
-    offload_dirs: Set[str] = set()
+    # Track VRAM before undo offload
+    if torch.cuda.is_available():
+        vram_before = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
+        print(f"[VRAM_TRACK] Before undo offload: {vram_before:.2f} GB allocated")
+
+    #with _OFFLOAD_LOCK:
+    with _OFFLOAD_LOCK:  # Re-enable thread lock for safety
+        # Track candidate offload dirs if user asks to delete them later.
+        offload_dirs: Set[str] = set()
 
     # 1) Materialize all offloaded leaves as real tensors on the target device/dtype.
     with torch.inference_mode():
@@ -403,5 +437,10 @@ def undo_offload_to_disk(
             for d in sorted(offload_dirs):
                 with contextlib.suppress(Exception):
                     shutil.rmtree(d, ignore_errors=True)
+    
+    # Track VRAM after undo offload
+    if torch.cuda.is_available():
+        vram_after = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
+        print(f"[VRAM_TRACK] After undo offload: {vram_after:.2f} GB allocated, delta: {vram_after - vram_before:.2f} GB")
 
-        return module
+    return module

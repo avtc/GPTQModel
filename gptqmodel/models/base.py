@@ -1437,6 +1437,11 @@ class BaseQModel(nn.Module):
         if self.quantize_config.offload_to_disk is False:
             return
 
+        # Log VRAM before turtle reload
+        if torch.cuda.is_available():
+            vram_before = torch.cuda.memory_allocated() / 1024**3  # Convert to MB
+            log.info(f"[VRAM_TRACK] Before turtle model reload: {vram_before:.2f} MB allocated")
+        
         timer = getattr(self, "quant_region_timer", None)
         timing_ctx = timer.measure("model_reload", source=source) if timer else nullcontext()
 
@@ -1451,6 +1456,39 @@ class BaseQModel(nn.Module):
 
                     reload_kwargs = self._clone_model_init_kwargs(turtle_model)
                     config = turtle_model.config
+                    
+                    # Explicitly clear old model from GPU/CPU before loading new one
+                    if hasattr(turtle_model, 'to'):
+                        try:
+                            # For very large models that don't fit in CPU, we need to be more careful
+                            # First check if model has any parts on CUDA that we can safely clear
+                            has_cuda_tensors = False
+                            for param in turtle_model.parameters():
+                                if param.device.type == 'cuda':
+                                    has_cuda_tensors = True
+                                    break
+                            
+                            if has_cuda_tensors:
+                                # Move CUDA tensors to CPU first, but handle potential OOM
+                                try:
+                                    # Try moving to CPU - this might fail for very large models
+                                    turtle_model.to('cpu')
+                                except Exception as cpu_move_error:
+                                    log.warning(f"[VRAM_TRACK] Cannot move turtle model to CPU (model too large): {cpu_move_error}")
+                                    # For very large models, we'll try a more targeted cleanup
+                                    # Clear CUDA tensors directly without CPU migration
+                                    for param in turtle_model.parameters():
+                                        if param.device.type == 'cuda':
+                                            param.data = torch.empty_like(param.data, device='meta')
+                            
+                            # Clear CUDA cache regardless of whether we could move to CPU
+                            if torch.cuda.is_available():
+                                from ..utils.torch import torch_empty_cache
+                                torch_empty_cache()
+                        except Exception as e:
+                            log.warning(f"[VRAM_TRACK] Failed to clear turtle model: {e}")
+                    
+                    # Delete reference to old model to free memory
                     del turtle_model
 
                     new_model = loader.from_pretrained(
@@ -1468,6 +1506,19 @@ class BaseQModel(nn.Module):
                 DEVICE_THREAD_POOL.submit("model_loader:cpu", _do_reload).result()
             finally:
                 reload_spinner.close()
+                
+                # Log VRAM after turtle reload and clear cache aggressively for large models
+                if torch.cuda.is_available():
+                    from ..utils.torch import torch_empty_cache
+                    
+                    # Additional cleanup for very large models that might have meta layers
+                    try:
+                        torch_empty_cache()
+                    except Exception as cache_error:
+                        log.warning(f"[VRAM_TRACK] Cache clear failed: {cache_error}")
+                    
+                    vram_after = torch.cuda.memory_allocated() / 1024**3  # Convert to MB
+                    log.info(f"[VRAM_TRACK] After turtle model reload: {vram_after:.2f} MB allocated, delta: {vram_after - vram_before:.2f} MB")
 
     # transfer actually materizlied module from turtle (real) to shell
     def shell_module_materialize(
