@@ -65,8 +65,8 @@ def autofix_hf_model_config(model: PreTrainedModel, path: str = None):
                 else:
                     pass
                     # logger.info(f"Model: loaded `generation_config` matching `generation_config.json`.")
-            except Exception:
-                log.info("Model: `generation_config.json` not found. Skipped checking.")
+            except Exception as e:
+                log.warn(f"Model: Exception loading `generation_config.json`: {e}. generatoin_config skipped.")
 
         # print(f"Before autofix_hf_model_config: {model.generation_config}")
         autofix_hf_generation_config(model.generation_config)
