@@ -48,11 +48,32 @@ def autofix_hf_model_config(model: PreTrainedModel, path: str = None):
         # sync config first
         if path:
             log.info(f"Model: Loaded `generation_config`: {model.generation_config}")
+            import os
+            gen_config_path = os.path.join(path, "generation_config.json")
+            log.info(f"Model: Looking for generation_config at: {gen_config_path}")
+            log.info(f"Model: generation_config.json exists: {os.path.exists(gen_config_path)}")
+
             try:
+                # Load and display raw generation_config.json content
+                if os.path.exists(gen_config_path):
+                    import json
+                    with open(gen_config_path, 'r') as f:
+                        raw_config = json.load(f)
+                    log.info(f"Model: Raw generation_config.json content: {raw_config}")
+
                 cfg = _load_sanitized_generation_config(path)
+                log.info(f"Model: _load_sanitized_generation_config returned: {cfg}")
+
                 if cfg is None:
+                    log.info("Model: _load_sanitized_generation_config returned None, trying from_pretrained")
                     cfg = GenerationConfig.from_pretrained(pretrained_model_name=path, do_sample=True)
+                    log.info(f"Model: GenerationConfig.from_pretrained returned: {cfg}")
                     _sanitize_generation_config(cfg, drop_sampling_fields=False)
+                    log.info(f"Model: After sanitization: {cfg}")
+
+                log.info(f"Model: Comparing configs - Current: {model.generation_config} vs Loaded: {cfg}")
+                log.info(f"Model: Are configs equal? {cfg == model.generation_config}")
+
                 if cfg != model.generation_config:
                     # migrated pad_token_id to config
                     if hasattr(model.generation_config, "pad_token_id"):
@@ -63,9 +84,9 @@ def autofix_hf_model_config(model: PreTrainedModel, path: str = None):
                         "Model: Auto-fixed `generation_config` mismatch between model and `generation_config.json`.")
                     log.info(f"Model: Updated `generation_config`: {model.generation_config}")
                 else:
-                    pass
-                    # logger.info(f"Model: loaded `generation_config` matching `generation_config.json`.")
-            except Exception:
+                    log.info("Model: loaded `generation_config` matching `generation_config.json`.")
+            except Exception as e:
+                log.error(f"Model: Exception loading generation_config.json: {e}")
                 log.info("Model: `generation_config.json` not found. Skipped checking.")
 
         # print(f"Before autofix_hf_model_config: {model.generation_config}")

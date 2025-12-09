@@ -261,15 +261,32 @@ def ModelLoader(cls):
             try:
                 from transformers import GenerationConfig
                 import os
+                import json
                 gen_config_path = os.path.join(model_local_path, "generation_config.json")
+                log.info(f"Loader: Checking generation_config.json at: {gen_config_path}")
+                log.info(f"Loader: generation_config.json exists: {os.path.exists(gen_config_path)}")
+
                 if os.path.exists(gen_config_path):
+                    # Read raw file content
+                    with open(gen_config_path, 'r') as f:
+                        raw_content = f.read()
+                    log.info(f"Loader: Raw generation_config.json content:\n{raw_content}")
+
                     # Load the original generation_config.json
                     original_gen_config = GenerationConfig.from_pretrained(model_local_path)
+                    log.info(f"Loader: Loaded GenerationConfig object: {original_gen_config}")
+                    log.info(f"Loader: Model current generation_config before update: {model.generation_config}")
+
                     # Apply the loaded generation config to the model
                     model.generation_config = original_gen_config
-                    log.info(f"Model: Loaded generation_config from {model_local_path}")
+                    log.info(f"Loader: Model generation_config after update: {model.generation_config}")
+                    log.info(f"Loader: Successfully loaded generation_config from {model_local_path}")
+                else:
+                    log.warning(f"Loader: generation_config.json not found at {gen_config_path}")
             except Exception as e:
-                log.info(f"Model: Could not load generation_config.json: {e}")
+                log.error(f"Loader: Exception while loading generation_config.json: {e}")
+                import traceback
+                log.error(f"Loader: Traceback: {traceback.format_exc()}")
 
             print_module_tree(model=model)
 
