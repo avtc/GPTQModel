@@ -233,14 +233,44 @@ def ModelLoader(cls):
             finally:
                 turtle_spinner.close()
 
-            # TODO FIX ME...temp store model_init args
+            # TODO FIX ME...temp store model_init_args
             turtle_model._model_init_kwargs = model_init_kwargs
+
+            # Load generation_config.json separately since passing config to from_pretrained prevents it from loading
+            try:
+                from transformers import GenerationConfig
+                import os
+                gen_config_path = os.path.join(model_local_path, "generation_config.json")
+                if os.path.exists(gen_config_path):
+                    # Load the original generation_config.json
+                    original_gen_config = GenerationConfig.from_pretrained(model_local_path)
+                    # Apply the loaded generation config to the model
+                    turtle_model.generation_config = original_gen_config
+                    log.info(f"Model: Loaded generation_config for turtle model from {model_local_path}")
+            except Exception as e:
+                log.info(f"Model: Could not load generation_config.json for turtle model: {e}")
+
             # print("actual turtle model-----------")
             # print_module_tree(model=turtle_model)
         else:
             print("loading model directly to CPU (not using meta device or turtle_model)-----------")
             model = cls.loader.from_pretrained(model_local_path, config=config, **model_init_kwargs)
             model._model_init_kwargs = model_init_kwargs
+
+            # Load generation_config.json separately since passing config to from_pretrained prevents it from loading
+            try:
+                from transformers import GenerationConfig
+                import os
+                gen_config_path = os.path.join(model_local_path, "generation_config.json")
+                if os.path.exists(gen_config_path):
+                    # Load the original generation_config.json
+                    original_gen_config = GenerationConfig.from_pretrained(model_local_path)
+                    # Apply the loaded generation config to the model
+                    model.generation_config = original_gen_config
+                    log.info(f"Model: Loaded generation_config from {model_local_path}")
+            except Exception as e:
+                log.info(f"Model: Could not load generation_config.json: {e}")
+
             print_module_tree(model=model)
 
             turtle_model = None
