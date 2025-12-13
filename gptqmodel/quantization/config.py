@@ -448,6 +448,16 @@ class QuantizeConfig():
                 f"QuantizeConfig: `vram_strategy` must be one of {[v.value for v in VRAMStrategy]}."
             )
 
+        # Normalize vram_opt_calibration_data_device to canonical form if it's a specific device (not "balanced")
+        if self.vram_opt_calibration_data_device is not None:
+            if isinstance(self.vram_opt_calibration_data_device, str):
+                if self.vram_opt_calibration_data_device.lower() == "balanced":
+                    self.vram_opt_calibration_data_device = "balanced"
+                else:
+                    # Import here to avoid circular import
+                    from ..utils.looper_helpers import _canonical_device
+                    self.vram_opt_calibration_data_device = _canonical_device(torch.device(self.vram_opt_calibration_data_device))
+
     def extension_set(self, key: str, value: Any):
         if self.adapter is None:
             self.adapter = {}

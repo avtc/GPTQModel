@@ -82,7 +82,7 @@ class StageInputsCapture:
         # Prepare devices for balanced mode
         balanced_devices: List[torch.device] = []
         balanced_mode = False
-        if isinstance(calib_device_cfg, str) and calib_device_cfg.lower() == "balanced":
+        if calib_device_cfg == "balanced":  # No need for .lower() since it's normalized in __post_init__
             balanced_mode = True
             # Get all available devices of same type
             from ..utils.looper_helpers import select_forward_devices
@@ -96,7 +96,8 @@ class StageInputsCapture:
                 balanced_devices = all_devices
             data_device = balanced_devices[0] if balanced_devices else cur_layer_device
         elif calib_device_cfg is not None:
-            data_device = torch.device(calib_device_cfg) if isinstance(calib_device_cfg, str) else calib_device_cfg
+            # No need to create torch.device since it's already canonicalized in __post_init__
+            data_device = calib_device_cfg
             self.logger.info(f"DEBUG cache_inputs: Using specific calibration device: {data_device} (type: {type(data_device)})")
         else:
             data_device = cur_layer_device
