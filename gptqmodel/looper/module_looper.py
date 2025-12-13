@@ -765,6 +765,12 @@ class ModuleLooper():
 
         devices = select_forward_devices(cur_layer_device)
 
+        # Exclude calibration data device from forward pass to preserve VRAM for calibration data
+        calib_device_cfg = self.gptq_model.quantize_config.vram_opt_calibration_data_device
+        if calib_device_cfg is not None:
+            calib_device = torch.device(calib_device_cfg) if isinstance(calib_device_cfg, str) else calib_device_cfg
+            devices = [d for d in devices if d != calib_device]
+
         if len(devices) <= 1:
             return self._run_forward_batches_single(
                 module=module,
@@ -917,7 +923,12 @@ class ModuleLooper():
 
                 if need_outputs and module_output is not None:
                     primary = module_output[0] if isinstance(module_output, tuple) else module_output
-                    primary = move_to(primary, device=cur_layer_device)
+                    # Move to calibration device if specified, otherwise cur_layer_device
+                    output_device = cur_layer_device
+                    calib_device_cfg = self.gptq_model.quantize_config.vram_opt_calibration_data_device
+                    if calib_device_cfg is not None:
+                        output_device = torch.device(calib_device_cfg) if isinstance(calib_device_cfg, str) else calib_device_cfg
+                    primary = move_to(primary, device=output_device)
                     outputs.append([primary])
 
                 # Release module_output promptly after extracting what we need
@@ -1179,7 +1190,12 @@ class ModuleLooper():
                 primary = module_output[0]
             else:
                 primary = module_output
-            primary = move_to(primary, device=cur_layer_device)
+            # Move to calibration device if specified, otherwise cur_layer_device
+            output_device = cur_layer_device
+            calib_device_cfg = self.gptq_model.quantize_config.vram_opt_calibration_data_device
+            if calib_device_cfg is not None:
+                output_device = torch.device(calib_device_cfg) if isinstance(calib_device_cfg, str) else calib_device_cfg
+            primary = move_to(primary, device=output_device)
             ordered_outputs.append([primary])
 
         return ordered_outputs

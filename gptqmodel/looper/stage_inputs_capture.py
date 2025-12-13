@@ -73,7 +73,12 @@ class StageInputsCapture:
             )
 
         cur_layer_device = get_device(layers[0])
-        data_device = cur_layer_device
+        # Use vram_opt_calibration_data_device if specified, otherwise use cur_layer_device
+        calib_device_cfg = self.gptq_model.quantize_config.vram_opt_calibration_data_device
+        if calib_device_cfg is not None:
+            data_device = torch.device(calib_device_cfg) if isinstance(calib_device_cfg, str) else calib_device_cfg
+        else:
+            data_device = cur_layer_device
 
         cache_forward_pb = None
         processed_rows = 0

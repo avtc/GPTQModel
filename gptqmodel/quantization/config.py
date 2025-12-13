@@ -294,6 +294,13 @@ class QuantizeConfig():
         metadata={"help": "Force serial forward pass for subsets instead of data parallel"}
     )
 
+    # Device for storing calibration data when separate from compute device
+    # This device will be excluded from forward pass to preserve VRAM for calibration data
+    vram_opt_calibration_data_device: Optional[Union[str, torch.device]] = field(
+        default=None,
+        metadata={"help": "Device for storing calibration data. Set to a non-compute GPU to free VRAM on compute device."}
+    )
+
     def __post_init__(self):
         fields_info = fields(self)
 
