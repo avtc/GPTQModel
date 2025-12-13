@@ -75,10 +75,30 @@ class StageInputsCapture:
         cur_layer_device = get_device(layers[0])
         # Use vram_opt_calibration_data_device if specified, otherwise use cur_layer_device
         calib_device_cfg = self.gptq_model.quantize_config.vram_opt_calibration_data_device
-        if calib_device_cfg is not None:
+        
+        # Prepare devices for balanced mode
+        balanced_devices: List[torch.device] = []
+        balanced_mode = False
+        if isinstance(calib_device_cfg, str) and calib_device_cfg.lower() == "balanced":
+            balanced_mode = True
+            # Get all available devices of same type
+            from ..utils.looper_helpers import select_forward_devices
+            all_devices = select_forward_devices(cur_layer_device)
+            # Exclude device 0 if vram_opt_exclude_device_0_from_compute is set
+            if self.gptq_model.quantize_config.vram_opt_exclude_device_0_from_compute:
+                balanced_devices = [d for d in all_devices if d.index != 0]
+                if len(balanced_devices) < 1:
+                    balanced_devices = all_devices
+            else:
+                balanced_devices = all_devices
+            data_device = balanced_devices[0] if balanced_devices else cur_layer_device
+        elif calib_device_cfg is not None:
             data_device = torch.device(calib_device_cfg) if isinstance(calib_device_cfg, str) else calib_device_cfg
         else:
             data_device = cur_layer_device
+        
+        # Round-robin counter for balanced mode
+        balanced_rr_counter = [0]  # Use list to allow modification in nested function
 
         cache_forward_pb = None
         processed_rows = 0
@@ -100,26 +120,33 @@ class StageInputsCapture:
             ).draw()
 
         def store_input_hook(module, args, kwargs):
+            # Select device for this batch (round-robin for balanced mode)
+            if balanced_mode and balanced_devices:
+                batch_device = balanced_devices[balanced_rr_counter[0] % len(balanced_devices)]
+                balanced_rr_counter[0] += 1
+            else:
+                batch_device = data_device
+            
             layer_input: List[torch.Tensor] = []
             if kwargs.get("hidden_states") is not None:
-                layer_input.append(move_to(kwargs["hidden_states"], device=data_device))
+                layer_input.append(move_to(kwargs["hidden_states"], device=batch_device))
             else:
-                layer_input.append(move_to(args[0], device=data_device))
+                layer_input.append(move_to(args[0], device=batch_device))
 
             layer_inputs.append(layer_input)
 
             if kwargs.get("attention_mask") is not None:
-                attention_masks.append(kwargs["attention_mask"].to(device=data_device))
+                attention_masks.append(kwargs["attention_mask"].to(device=batch_device))
             else:
                 attention_masks.append(None)
 
             pos_ids = kwargs.get("position_ids", None)
             if pos_ids is not None:
-                position_ids.append(move_to(pos_ids, device=data_device))
+                position_ids.append(move_to(pos_ids, device=batch_device))
             one_kwargs: Dict[str, Any] = {}
             for (k, v) in kwargs.items():
                 if k not in ["hidden_states", "attention_mask", "position_ids"]:
-                    one_kwargs[k] = nested_move_to(v, device=data_device)
+                    one_kwargs[k] = nested_move_to(v, device=batch_device)
             layer_input_kwargs.append(one_kwargs)
 
             # In normal repeating layer/sbuset early stop happens on the last module forward

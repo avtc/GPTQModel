@@ -275,6 +275,14 @@ class QuantizeConfig():
         metadata={"help": "Exclude device 0 from forward pass and quantization to reserve memory for model weights, input/output tokens"}
     )
 
+    # Device for storing calibration data when separate from compute device
+    # This device will be excluded from forward pass to preserve VRAM for calibration data
+    # Special value "balanced" distributes samples across all GPUs via round-robin
+    vram_opt_calibration_data_device: Optional[Union[str, torch.device]] = field(
+        default=None,
+        metadata={"help": "Device for storing calibration data. 'balanced' = round-robin across GPUs, or specify device like 'cuda:1'."}
+    )
+
     # MoE quantization: forward whole calibration dataset to each expert instead of only routed data
     # This ensures all experts receive sufficient calibration samples but increases quantization time
     moe_bypass_router: bool = field(
@@ -292,13 +300,6 @@ class QuantizeConfig():
     force_subset_forward_serial: bool = field(
         default=False,
         metadata={"help": "Force serial forward pass for subsets instead of data parallel"}
-    )
-
-    # Device for storing calibration data when separate from compute device
-    # This device will be excluded from forward pass to preserve VRAM for calibration data
-    vram_opt_calibration_data_device: Optional[Union[str, torch.device]] = field(
-        default=None,
-        metadata={"help": "Device for storing calibration data. Set to a non-compute GPU to free VRAM on compute device."}
     )
 
     def __post_init__(self):
