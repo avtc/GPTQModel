@@ -772,7 +772,15 @@ class ModuleLooper():
             is_balanced = isinstance(calib_device_cfg, str) and calib_device_cfg.lower() == "balanced"
             if not is_balanced:
                 calib_device = torch.device(calib_device_cfg) if isinstance(calib_device_cfg, str) else calib_device_cfg
-                devices = [d for d in devices if d != calib_device]
+                # DEBUG: Log the devices before and after filtering
+                log.info(f"DEBUG: Original devices: {devices}")
+                log.info(f"DEBUG: Calibration device to exclude: {calib_device} (type: {type(calib_device)})")
+                # Check if any device in the list matches the calibration device
+                matching_devices = [d for d in devices if str(d) == str(calib_device)]
+                log.info(f"DEBUG: Devices that match by string: {matching_devices}")
+                # Fix: Compare devices using string representation to handle device object differences
+                devices = [d for d in devices if str(d) != str(calib_device)]
+                log.info(f"DEBUG: Filtered devices: {devices}")
 
         if len(devices) <= 1:
             return self._run_forward_batches_single(
@@ -1091,6 +1099,12 @@ class ModuleLooper():
             # Check if balanced mode is active - if so, assign batches where data already resides
             calib_device_cfg = self.gptq_model.quantize_config.vram_opt_calibration_data_device
             is_balanced_mode = isinstance(calib_device_cfg, str) and calib_device_cfg.lower() == "balanced"
+            
+            # DEBUG: Log devices in parallel mode
+            if not is_balanced_mode and calib_device_cfg is not None:
+                calib_device = torch.device(calib_device_cfg) if isinstance(calib_device_cfg, str) else calib_device_cfg
+                log.info(f"DEBUG (parallel): Original devices: {forward_devices}")
+                log.info(f"DEBUG (parallel): Calibration device to exclude: {calib_device}")
             
             if is_balanced_mode:
                 # In balanced mode, assign each batch to the device where its input resides

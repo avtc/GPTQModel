@@ -76,6 +76,9 @@ class StageInputsCapture:
         # Use vram_opt_calibration_data_device if specified, otherwise use cur_layer_device
         calib_device_cfg = self.gptq_model.quantize_config.vram_opt_calibration_data_device
         
+        # DEBUG: Log the calibration device configuration
+        self.logger.info(f"DEBUG cache_inputs: calib_device_cfg={calib_device_cfg}, type={type(calib_device_cfg)}")
+        
         # Prepare devices for balanced mode
         balanced_devices: List[torch.device] = []
         balanced_mode = False
@@ -94,8 +97,10 @@ class StageInputsCapture:
             data_device = balanced_devices[0] if balanced_devices else cur_layer_device
         elif calib_device_cfg is not None:
             data_device = torch.device(calib_device_cfg) if isinstance(calib_device_cfg, str) else calib_device_cfg
+            self.logger.info(f"DEBUG cache_inputs: Using specific calibration device: {data_device} (type: {type(data_device)})")
         else:
             data_device = cur_layer_device
+            self.logger.info(f"DEBUG cache_inputs: Using layer device: {data_device}")
         
         # Round-robin counter for balanced mode
         balanced_rr_counter = [0]  # Use list to allow modification in nested function
