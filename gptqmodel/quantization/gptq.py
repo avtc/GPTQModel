@@ -301,7 +301,6 @@ class GPTQ:
             else:
                 existing.add_(xtx)
                 if self.qcfg.hessian_cache:
-                    print(f"DEBUG: add_batch put xtx shape={xtx.shape} device={xtx.device}")
                     HessianCache().put(xtx)
                 del xtx
 
@@ -419,7 +418,6 @@ class GPTQ:
 
         cached_xtx = None
         if self.qcfg.hessian_cache:
-            print(f"DEBUG: compute_hessian_xtx get shape={(self.columns, self.columns)} device={matrix.device}")
             cached_xtx = HessianCache().get((self.columns, self.columns), matrix.device)
 
         if chunk_size is None:
@@ -562,7 +560,6 @@ class GPTQ:
             if total_samples == 0:
                 cached_H = None
                 if self.qcfg.hessian_cache:
-                    print(f"DEBUG: materialize_global_hessian get (total=0) shape={(self.columns, self.columns)} device={device}")
                     cached_H = HessianCache().get((self.columns, self.columns), device)
 
                 if cached_H is not None:
@@ -585,13 +582,11 @@ class GPTQ:
                 H = single_partial.to(device=device)
 
                 if H is not single_partial and self.qcfg.hessian_cache:
-                    print(f"DEBUG: materialize_global_hessian put single_partial shape={single_partial.shape} device={single_partial.device}")
                     HessianCache().put(single_partial)
                 
                 H.mul_(2.0 / float(total_samples))
 
                 if self.H is not None and self.H is not H and self.qcfg.hessian_cache:
-                    print(f"DEBUG: materialize_global_hessian put self.H shape={self.H.shape} device={self.H.device}")
                     HessianCache().put(self.H)
 
                 self.H = H
@@ -615,7 +610,6 @@ class GPTQ:
             else:
                 cached_H = None
                 if self.qcfg.hessian_cache:
-                    print(f"DEBUG: materialize_global_hessian get (merge) shape={(self.columns, self.columns)} device={device}")
                     cached_H = HessianCache().get((self.columns, self.columns), device)
 
                 if cached_H is not None:
@@ -654,7 +648,6 @@ class GPTQ:
 
             if self.qcfg.hessian_cache:
                 for partial in self._device_hessian_partials.values():
-                    print(f"DEBUG: materialize_global_hessian put partial shape={partial.shape} device={partial.device}")
                     HessianCache().put(partial)
 
             self._device_hessian_partials.clear()
