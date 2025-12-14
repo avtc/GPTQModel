@@ -14,6 +14,7 @@ import torch
 from torch.nn import parallel as torch_parallel
 
 from .. import DEBUG_ON, DEVICE_THREAD_POOL
+from ..utils.python import has_gil_disabled
 from ..nn_modules.hooked_linear import (
     HookedConv1D,
     HookedConv1d,
@@ -376,7 +377,7 @@ def clone_module_for_devices(
         _prepare_module(stage_device, f"stage_{stage_device}")
         _notify(0, stage_device, "stage")
 
-    for idx, dev in enumerate(devices, start=1):
+    def deepcopy_for_device(dev: torch.device, idx: int) -> torch.nn.Module:
         start_ts = time.perf_counter()
         with _DEEPCOPY_LOCK:
             replica = copy.deepcopy(module)
@@ -384,9 +385,35 @@ def clone_module_for_devices(
         rehome_module_to_device(replica, dev, move_parameters=True, move_buffers=True)
         clear_state_fn(replica)
         setattr(replica, "_gptqmodule_device_hint", dev)
-        clones[dev] = replica
         _record(str(dev), start_ts)
         _notify(idx, dev, "clone")
+        return replica
+
+    # Use parallel threads when GIL is disabled and multiple devices
+    if has_gil_disabled() and len(devices) > 1:
+        threads: List[threading.Thread] = []
+        results: Dict[torch.device, torch.nn.Module] = {}
+        
+        def clone_worker(dev_idx):
+            dev, idx = dev_idx
+            results[dev] = deepcopy_for_device(dev, idx)
+        
+        # Create and start threads for each device
+        for idx, dev in enumerate(devices, start=1):
+            threads.append(threading.Thread(target=clone_worker, args=((dev, idx),)))
+        
+        for thread in threads:
+            thread.start()
+        
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
+        
+        clones.update(results)
+    else:
+        # Sequential processing for single device or when GIL is enabled
+        for idx, dev in enumerate(devices, start=1):
+            clones[dev] = deepcopy_for_device(dev, idx)
 
     _emit_clone_log("deepcopy")
     return clones

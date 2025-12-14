@@ -4,6 +4,7 @@
 # Contact: qubitium@modelcloud.ai, x.com/qubitium
 
 import contextlib
+import threading
 import time
 from contextlib import contextmanager
 from enum import Enum
@@ -351,7 +352,25 @@ def torch_empty_cache_any(device: Union[torch.device, str, int, None] = None, gc
 
 
 def torch_empty_cache(device: torch.device = None, gc: bool = True) -> bool:
-    return torch_empty_cache_any(device=device, gc=gc)
+    if device == None and has_gil_disabled():
+        if gc:
+            timed_gc_collect()
+
+        threads: List[threading.Thread] = []
+        
+        # Create and start a thread for each device
+        for device_i in ALL_DEVICES:
+            thread = threading.Thread(target=torch_empty_cache_any, args=(device_i, False))
+            threads.append(thread)
+            thread.start()
+
+        # Wait for all threads to complete
+        for thread in threads:
+            thread.join()
+        
+        return True
+    else:
+        return torch_empty_cache_any(device=device, gc=gc)
 
 def auto_select_torch_device(index: int = 0):
     assert index >= 0, f"device index should be a positive integer: actual = `{index}`"
