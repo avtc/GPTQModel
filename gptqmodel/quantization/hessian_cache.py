@@ -47,6 +47,7 @@ class HessianCache:
         device_lock = self._get_device_lock(device)
         with device_lock:
             key = f"{shape}-{device}"
+            print(f"DEBUG: GET key={key} cache_len={len(self.cache.get(key, []))}")
             if key in self.cache and self.cache[key]:
                 return self.cache[key].pop()
             return None
@@ -61,6 +62,7 @@ class HessianCache:
         device_lock = self._get_device_lock(tensor.device)
         with device_lock:
             key = f"{tensor.shape}-{tensor.device}"
+            print(f"DEBUG: PUT key={key}")
             if key not in self.cache:
                 self.cache[key] = []
             self.cache[key].append(tensor)
