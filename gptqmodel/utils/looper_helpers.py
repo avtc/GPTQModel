@@ -396,6 +396,11 @@ def clone_module_for_devices(
                 replicas = torch_replicate(module, devices)
                 
             _record("replicate", replicate_start)
+            replicate_duration = (time.perf_counter() - replicate_start) * 1000.0
+            log.info(f"DEBUG Clone: replicate in {replicate_duration:.2f}ms")
+
+            # Start timing for all rehome operations
+            rehome_all_start = time.perf_counter()
 
             # Function to process a single replica
             def process_replica(idx, dev, replica):
@@ -422,6 +427,10 @@ def clone_module_for_devices(
                 # Sequential approach
                 for idx, (dev, replica) in enumerate(zip(devices, replicas), start=1):
                     process_replica(idx, dev, replica)
+            
+            # Record total time for all rehome operations
+            rehome_all_duration = (time.perf_counter() - rehome_all_start) * 1000.0
+            log.info(f"DEBUG Clone: rehome_all in {rehome_all_duration:.2f}ms")
 
             _emit_clone_log("replicate")
             return clones
