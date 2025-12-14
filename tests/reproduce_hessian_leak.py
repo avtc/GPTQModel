@@ -6,10 +6,9 @@ from gptqmodel.quantization.gptq import GPTQ
 from gptqmodel.quantization import QuantizeConfig
 import gc
 
-class MockModule(nn.Module):
+class MockModule(nn.Linear):
     def __init__(self, size):
-        super().__init__()
-        self.weight = nn.Parameter(torch.randn(size, size))
+        super().__init__(size, size, bias=False)
 
 def test_cache_growth():
     size = 128
