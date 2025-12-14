@@ -33,6 +33,12 @@ class HessianCache:
                 self.locks[key] = threading.Lock()
             return self.locks[key]
 
+    def _get_cache_key(self, shape: Tuple, device: torch.device) -> str:
+        # Normalize shape to tuple of ints to ensure consistent keys
+        # handles torch.Size, tuple of numpy ints, etc
+        shape_tuple = tuple(int(x) for x in shape)
+        return f"{shape_tuple}-{device}"
+
     def get(self, shape: torch.Size, device: torch.device) -> Optional[torch.Tensor]:
         """
         Retrieves a tensor of the specified shape and device from the cache pool in a thread-safe manner.
@@ -46,8 +52,7 @@ class HessianCache:
         """
         device_lock = self._get_device_lock(device)
         with device_lock:
-            key = f"{shape}-{device}"
-            print(f"DEBUG: GET key={key} cache_len={len(self.cache.get(key, []))}")
+            key = self._get_cache_key(shape, device)
             if key in self.cache and self.cache[key]:
                 return self.cache[key].pop()
             return None
@@ -61,8 +66,7 @@ class HessianCache:
         """
         device_lock = self._get_device_lock(tensor.device)
         with device_lock:
-            key = f"{tensor.shape}-{tensor.device}"
-            print(f"DEBUG: PUT key={key}")
+            key = self._get_cache_key(tensor.shape, tensor.device)
             if key not in self.cache:
                 self.cache[key] = []
             self.cache[key].append(tensor)
