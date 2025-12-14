@@ -27,10 +27,8 @@ class TestHessianCache(unittest.TestCase):
         # Calibration data
         calibration_data = [torch.randn(1, 128) for _ in range(10)]
 
-        with patch('torch.zeros') as mock_zeros:
-            original_zeros = torch.zeros
-            mock_zeros.side_effect = lambda *args, **kwargs: original_zeros(*args, **kwargs)
-
+        original_zeros = torch.zeros
+        with patch('torch.zeros', side_effect=lambda *args, **kwargs: original_zeros(*args, **kwargs)) as mock_zeros:
             for name, module in model.named_modules():
                 if isinstance(module, nn.Linear):
                     gptq = GPTQ(module, q_config)
