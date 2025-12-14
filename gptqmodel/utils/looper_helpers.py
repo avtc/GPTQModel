@@ -38,6 +38,9 @@ USE_TORCH_REPLICATE = env_flag("GPTQMODEL_USE_TORCH_REPLICATE", True)
 _THREAD_SAFE_PARALLEL = ThreadSafe(torch_parallel)
 _DEEPCOPY_LOCK = threading.Lock()
 
+# Thread-local storage for torch_replicate when GIL is disabled
+_torch_replicate_tls = threading.local()
+
 def torch_replicate(
     module: torch.nn.Module,
     devices: Sequence[torch.device | str | int],
@@ -57,14 +60,33 @@ def torch_replicate(
 
     lock_scope = normalized_devices or None
 
-    with DEVICE_THREAD_POOL.lock(lock_scope):
-        for dev in normalized_devices:
-            if dev.type in {"cuda", "xpu", "mps", "npu"}:
-                try:
-                    torch_sync(dev)
-                except BaseException:
-                    pass
-        return _THREAD_SAFE_PARALLEL.replicate(module, normalized_devices, detach=detach)
+    # Use thread-local lock when GIL is disabled to avoid lock contention
+    if has_gil_disabled():
+        # Get or create thread-local lock
+        if not hasattr(_torch_replicate_tls, 'lock'):
+            _torch_replicate_tls.lock = threading.Lock()
+        lock = _torch_replicate_tls.lock
+        
+        with lock:
+            for dev in normalized_devices:
+                if dev.type in {"cuda", "xpu", "mps", "npu"}:
+                    try:
+                        torch_sync(dev)
+                    except BaseException:
+                        pass
+            # Use raw torch_parallel when GIL is disabled to avoid global lock
+            return torch_parallel.replicate(module, normalized_devices, detach=detach)
+    else:
+        # Use ThreadSafe wrapper when GIL is enabled
+        lock = DEVICE_THREAD_POOL.lock(lock_scope)
+        with lock:
+            for dev in normalized_devices:
+                if dev.type in {"cuda", "xpu", "mps", "npu"}:
+                    try:
+                        torch_sync(dev)
+                    except BaseException:
+                        pass
+            return _THREAD_SAFE_PARALLEL.replicate(module, normalized_devices, detach=detach)
 
 log = setup_logger()
 
