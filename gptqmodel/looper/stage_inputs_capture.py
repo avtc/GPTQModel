@@ -133,11 +133,26 @@ class StageInputsCapture:
             else:
                 batch_device = data_device
             
+            # DEBUG: Log where we're placing the calibration data
+            self.logger.info(f"DEBUG store_input_hook: Placing batch on device {batch_device} (data_device={data_device}, balanced_mode={balanced_mode})")
+            
             layer_input: List[torch.Tensor] = []
             if kwargs.get("hidden_states") is not None:
-                layer_input.append(move_to(kwargs["hidden_states"], device=batch_device))
+                input_tensor = kwargs["hidden_states"]
+                self.logger.info(f"DEBUG: Moving hidden_states from {input_tensor.device} to {batch_device}")
+                layer_input.append(move_to(input_tensor, device=batch_device))
             else:
-                layer_input.append(move_to(args[0], device=batch_device))
+                input_tensor = args[0]
+                self.logger.info(f"DEBUG: Moving args[0] from {input_tensor.device} to {batch_device}")
+                layer_input.append(move_to(input_tensor, device=batch_device))
+
+            # Verify the tensor was actually moved
+            if layer_input:
+                actual_device = layer_input[0].device
+                if actual_device != batch_device:
+                    self.logger.warning(f"WARNING: Tensor still on {actual_device} after move_to to {batch_device}")
+                else:
+                    self.logger.info(f"DEBUG: Successfully moved tensor to {actual_device}")
 
             layer_inputs.append(layer_input)
 
@@ -155,8 +170,8 @@ class StageInputsCapture:
                     one_kwargs[k] = nested_move_to(v, device=batch_device)
             layer_input_kwargs.append(one_kwargs)
 
-            # In normal repeating layer/sbuset early stop happens on the last module forward
-            # but the first model input embedding call we use a simple model register forwar hook
+            # In normal repeating layer/sbuset early stop happens on last module forward
+            # but first model input embedding call we use a simple model register forwar hook
             # and wait for the first instance this callback is called
             raise STOP_FORWARD_EXCEPTION
 
@@ -167,7 +182,11 @@ class StageInputsCapture:
             )
             cur_layer_device = self.gptq_model.quantize_config.device
         else:
-            layers[0] = layers[0].to(self.gptq_model.quantize_config.device)
+            # DEBUG: Log where layer is being moved to
+            original_device = get_device(layers[0])
+            target_device = self.gptq_model.quantize_config.device
+            self.logger.info(f"DEBUG: Moving layer from {original_device} to {target_device}")
+            layers[0] = layers[0].to(target_device)
 
         ori_outside_layer_module_devices: Dict[str, torch.device] = {}
         for module_name in self.gptq_model.get_base_modules(self.gptq_model.model):
@@ -194,9 +213,9 @@ class StageInputsCapture:
             for batch_index, example in enumerate(calibration_data, start=1):
                 for k, v in example.items():
                     if self.gptq_model.ATTENTION_MASKS_REQUIRED_FOR_INPUT:
-                        data_device = self.gptq_model.quantize_config.device
+                        model_input_device = self.gptq_model.quantize_config.device
                     else:
-                        data_device = (
+                        model_input_device = (
                             self.gptq_model.quantize_config.device
                             if k == "pixel_values"
                             else cur_layer_device
@@ -209,12 +228,18 @@ class StageInputsCapture:
                                 v[index].to(self.gptq_model.model.visual_tokenizer.dtype)
                                 if is_ovis
                                 else v[index],
-                                device=data_device,
+                                device=model_input_device,
                             )
                     else:
                         if len(v.shape) == 1:
                             v = v.unsqueeze(0)
-                        example[k] = move_to(v, device=data_device)
+                        example[k] = move_to(v, device=model_input_device)
+                        # DEBUG: Verify the tensor was actually moved
+                        final_device = get_device(example[k]) if isinstance(example[k], torch.Tensor) else "not a tensor"
+                        if final_device != model_input_device:
+                            self.logger.warning(f"WARNING: Input tensor '{k}' still on {final_device} after move_to to {model_input_device}")
+                        else:
+                            self.logger.info(f"DEBUG: Input tensor '{k}' successfully moved to {final_device}")
                 try:
                     if self.gptq_model.ATTENTION_MASKS_DTYPE is torch.long:
                         example["attention_mask"] = example["attention_mask"].long()
