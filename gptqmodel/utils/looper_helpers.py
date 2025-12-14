@@ -14,6 +14,7 @@ import torch
 from torch.nn import parallel as torch_parallel
 
 from .. import DEBUG_ON, DEVICE_THREAD_POOL
+from ..utils import has_gil_disabled
 from ..nn_modules.hooked_linear import (
     HookedConv1D,
     HookedConv1d,
@@ -345,16 +346,72 @@ def clone_module_for_devices(
             _notify(0, base_device, "stage")
 
             replicate_start = time.perf_counter()
-            replicas = torch_replicate(module, devices)
+            
+            # Use parallel threads when GIL is disabled
+            if has_gil_disabled():
+                # Create device pairs: (0,1), (0,2), (0,3), etc.
+                device_pairs = []
+                if len(devices) > 1:
+                    for i in range(1, len(devices)):
+                        device_pairs.append((devices[0], devices[i]))
+                
+                # Thread function to handle replication for a device pair
+                def replicate_pair(src_dev, dst_dev, result_dict, result_index):
+                    pair_replicas = torch_replicate(module, [src_dev, dst_dev])
+                    result_dict[result_index] = (dst_dev, pair_replicas[1])  # Store destination device and its replica
+                
+                # Run replication in parallel for each device pair
+                threads = []
+                results = {}  # Using dict to store results by index to avoid race conditions
+                
+                for idx, (src_dev, dst_dev) in enumerate(device_pairs):
+                    thread = threading.Thread(target=replicate_pair, args=(src_dev, dst_dev, results, idx))
+                    threads.append(thread)
+                    thread.start()
+                
+                # Wait for all threads to complete
+                for thread in threads:
+                    thread.join()
+                
+                # Get the replica for the base device
+                base_replicas = torch_replicate(module, [devices[0]])
+                replicas = [base_replicas[0]]
+                
+                # Add replicas from parallel execution in order
+                for i in range(len(device_pairs)):
+                    if i in results:
+                        replicas.append(results[i][1])
+            else:
+                # Original sequential approach
+                replicas = torch_replicate(module, devices)
+                
             _record("replicate", replicate_start)
 
-            for idx, (dev, replica) in enumerate(zip(devices, replicas), start=1):
+            # Function to process a single replica
+            def process_replica(idx, dev, replica):
                 replica.eval()
                 rehome_module_to_device(replica, dev, move_parameters=True, move_buffers=True)
                 clear_state_fn(replica)
                 setattr(replica, "_gptqmodule_device_hint", dev)
                 clones[dev] = replica
                 _notify(idx, dev, "replica")
+            
+            # Process replicas in parallel when GIL is disabled, otherwise sequentially
+            if has_gil_disabled():
+                # Create and start threads for each replica
+                threads = []
+                for idx, (dev, replica) in enumerate(zip(devices, replicas), start=1):
+                    thread = threading.Thread(target=process_replica, args=(idx, dev, replica))
+                    threads.append(thread)
+                    thread.start()
+                
+                # Wait for all threads to complete
+                for thread in threads:
+                    thread.join()
+            else:
+                # Sequential approach
+                for idx, (dev, replica) in enumerate(zip(devices, replicas), start=1):
+                    process_replica(idx, dev, replica)
 
             _emit_clone_log("replicate")
             return clones
