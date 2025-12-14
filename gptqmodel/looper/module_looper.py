@@ -768,20 +768,8 @@ class ModuleLooper():
         # Exclude calibration data device from forward pass to preserve VRAM for calibration data
         # Only when a specific device is set (not for "balanced" mode which uses all devices)
         calib_device_cfg = self.gptq_model.quantize_config.vram_opt_calibration_data_device
-        if calib_device_cfg is not None:
-            is_balanced = calib_device_cfg == "balanced"  # No need for .lower() since it's normalized in __post_init__
-            if not is_balanced:
-                # No need to create torch.device from string since it's already canonicalized in __post_init__
-                calib_device = calib_device_cfg
-                # DEBUG: Log the devices before and after filtering
-                log.info(f"DEBUG: Original devices: {devices}")
-                log.info(f"DEBUG: Calibration device to exclude: {calib_device} (type: {type(calib_device)})")
-                # Check if any device in the list matches the calibration device
-                matching_devices = [d for d in devices if d == calib_device]
-                log.info(f"DEBUG: Devices that match: {matching_devices}")
-                # Direct device comparison should work now since calib_device is canonicalized
-                devices = [d for d in devices if d != calib_device]
-                log.info(f"DEBUG: Filtered devices: {devices}")
+        if calib_device_cfg != "balanced":
+            devices = [d for d in devices if d != calib_device_cfg]
 
         if len(devices) <= 1:
             return self._run_forward_batches_single(
@@ -1099,14 +1087,7 @@ class ModuleLooper():
 
             # Check if balanced mode is active - if so, assign batches where data already resides
             calib_device_cfg = self.gptq_model.quantize_config.vram_opt_calibration_data_device
-            is_balanced_mode = calib_device_cfg == "balanced"  # No need for .lower() since it's normalized in __post_init__
-            
-            # DEBUG: Log devices in parallel mode
-            if not is_balanced_mode and calib_device_cfg is not None:
-                # No need to create torch.device since it's already canonicalized in __post_init__
-                calib_device = calib_device_cfg
-                log.info(f"DEBUG (parallel): Original devices: {forward_devices}")
-                log.info(f"DEBUG (parallel): Calibration device to exclude: {calib_device}")
+            is_balanced_mode = calib_device_cfg == "balanced"
             
             if is_balanced_mode:
                 # In balanced mode, assign each batch to the device where its input resides

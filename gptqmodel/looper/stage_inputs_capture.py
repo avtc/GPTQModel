@@ -76,13 +76,10 @@ class StageInputsCapture:
         # Use vram_opt_calibration_data_device if specified, otherwise use cur_layer_device
         calib_device_cfg = self.gptq_model.quantize_config.vram_opt_calibration_data_device
         
-        # DEBUG: Log the calibration device configuration
-        self.logger.info(f"DEBUG cache_inputs: calib_device_cfg={calib_device_cfg}, type={type(calib_device_cfg)}")
-        
         # Prepare devices for balanced mode
         balanced_devices: List[torch.device] = []
         balanced_mode = False
-        if calib_device_cfg == "balanced":  # No need for .lower() since it's normalized in __post_init__
+        if calib_device_cfg == "balanced":
             balanced_mode = True
             # Get all available devices of same type
             from ..utils.looper_helpers import select_forward_devices
@@ -96,12 +93,9 @@ class StageInputsCapture:
                 balanced_devices = all_devices
             data_device = balanced_devices[0] if balanced_devices else cur_layer_device
         elif calib_device_cfg is not None:
-            # No need to create torch.device since it's already canonicalized in __post_init__
             data_device = calib_device_cfg
-            self.logger.info(f"DEBUG cache_inputs: Using specific calibration device: {data_device} (type: {type(data_device)})")
         else:
             data_device = cur_layer_device
-            self.logger.info(f"DEBUG cache_inputs: Using layer device: {data_device}")
         
         # Round-robin counter for balanced mode
         balanced_rr_counter = [0]  # Use list to allow modification in nested function
@@ -133,26 +127,11 @@ class StageInputsCapture:
             else:
                 batch_device = data_device
             
-            # DEBUG: Log where we're placing the calibration data
-            self.logger.info(f"DEBUG store_input_hook: Placing batch on device {batch_device} (data_device={data_device}, balanced_mode={balanced_mode})")
-            
             layer_input: List[torch.Tensor] = []
             if kwargs.get("hidden_states") is not None:
-                input_tensor = kwargs["hidden_states"]
-                self.logger.info(f"DEBUG: Moving hidden_states from {input_tensor.device} to {batch_device}")
-                layer_input.append(move_to(input_tensor, device=batch_device))
+                layer_input.append(move_to(kwargs["hidden_states"], device=batch_device))
             else:
-                input_tensor = args[0]
-                self.logger.info(f"DEBUG: Moving args[0] from {input_tensor.device} to {batch_device}")
-                layer_input.append(move_to(input_tensor, device=batch_device))
-
-            # Verify the tensor was actually moved
-            if layer_input:
-                actual_device = layer_input[0].device
-                if actual_device != batch_device:
-                    self.logger.warning(f"WARNING: Tensor still on {actual_device} after move_to to {batch_device}")
-                else:
-                    self.logger.info(f"DEBUG: Successfully moved tensor to {actual_device}")
+                layer_input.append(move_to(args[0], device=batch_device))
 
             layer_inputs.append(layer_input)
 
@@ -170,8 +149,8 @@ class StageInputsCapture:
                     one_kwargs[k] = nested_move_to(v, device=batch_device)
             layer_input_kwargs.append(one_kwargs)
 
-            # In normal repeating layer/sbuset early stop happens on last module forward
-            # but first model input embedding call we use a simple model register forwar hook
+            # In normal repeating layer/sbuset early stop happens on the last module forward
+            # but the first model input embedding call we use a simple model register forwar hook
             # and wait for the first instance this callback is called
             raise STOP_FORWARD_EXCEPTION
 
@@ -182,11 +161,7 @@ class StageInputsCapture:
             )
             cur_layer_device = self.gptq_model.quantize_config.device
         else:
-            # DEBUG: Log where layer is being moved to
-            original_device = get_device(layers[0])
-            target_device = self.gptq_model.quantize_config.device
-            self.logger.info(f"DEBUG: Moving layer from {original_device} to {target_device}")
-            layers[0] = layers[0].to(target_device)
+            layers[0] = layers[0].to(self.gptq_model.quantize_config.device)
 
         ori_outside_layer_module_devices: Dict[str, torch.device] = {}
         for module_name in self.gptq_model.get_base_modules(self.gptq_model.model):
@@ -234,12 +209,6 @@ class StageInputsCapture:
                         if len(v.shape) == 1:
                             v = v.unsqueeze(0)
                         example[k] = move_to(v, device=model_input_device)
-                        # DEBUG: Verify the tensor was actually moved
-                        final_device = get_device(example[k]) if isinstance(example[k], torch.Tensor) else "not a tensor"
-                        if final_device != model_input_device:
-                            self.logger.warning(f"WARNING: Input tensor '{k}' still on {final_device} after move_to to {model_input_device}")
-                        else:
-                            self.logger.info(f"DEBUG: Input tensor '{k}' successfully moved to {final_device}")
                 try:
                     if self.gptq_model.ATTENTION_MASKS_DTYPE is torch.long:
                         example["attention_mask"] = example["attention_mask"].long()
