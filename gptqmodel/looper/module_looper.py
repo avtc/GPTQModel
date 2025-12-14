@@ -1053,6 +1053,8 @@ class ModuleLooper():
                     f"{stage_label} rows 0/{total_rows}"
                 ).draw()
 
+        is_balanced_mode = self.gptq_model.quantize_config.vram_opt_calibration_data_device == "balanced"
+
         # Apply MoE lifecycle hooks to ALL replicas (not just the original module)
         moe_contexts = []
         try:
@@ -1086,9 +1088,6 @@ class ModuleLooper():
             num_devices = len(forward_devices)
 
             # Check if balanced mode is active - if so, assign batches where data already resides
-            calib_device_cfg = self.gptq_model.quantize_config.vram_opt_calibration_data_device
-            is_balanced_mode = calib_device_cfg == "balanced"
-            
             if is_balanced_mode:
                 # In balanced mode, assign each batch to the device where its input resides
                 for device in forward_devices:
@@ -1103,6 +1102,9 @@ class ModuleLooper():
                             # Fallback: data is on a device not in forward_devices, use round-robin
                             fallback_device = forward_devices[batch_idx % num_devices]
                             device_segments[fallback_device].append(batch_idx)
+                            log.warn(
+                                f"DEBUG parallel: Fallback: data is on a device {batch_device} not in forward_devices {forward_devices}, use round-robin {fallback_device}"
+                                )
             else:
                 # Default behavior: split batches contiguously across devices
                 for index, device in enumerate(forward_devices):
@@ -1213,6 +1215,10 @@ class ModuleLooper():
             # Move output back to the same device where input was stored
             # This preserves calibration data placement (especially for balanced mode)
             input_device = layer_inputs[idx][0].device if layer_inputs[idx] else cur_layer_device
+            if is_balanced_mode and primary.device != input_device:
+                log.info(
+                    f"DEBUG parallel: output is on a device {primary.device} will be moved to input device: {input_device}"
+                    )
             primary = move_to(primary, device=input_device)
             ordered_outputs.append([primary])
 
