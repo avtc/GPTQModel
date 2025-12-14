@@ -108,6 +108,7 @@ def device_ctx(dev: Optional[torch.device | "DEVICE"]):
     yield
 
 _rehome_lock = threading.Lock()
+_rehome_tls = threading.local()
 
 @torch.inference_mode()
 def rehome_module_to_device(
@@ -120,7 +121,16 @@ def rehome_module_to_device(
     only_mismatched: bool = True,
 ) -> None:
     """Move registered tensors on ``module`` to ``device`` with defensive fallbacks."""
-    with _rehome_lock:
+    # Use thread-local lock when GIL is disabled to avoid lock contention
+    if has_gil_disabled():
+        # Get or create thread-local lock
+        if not hasattr(_rehome_tls, 'lock'):
+            _rehome_tls.lock = threading.Lock()
+        lock = _rehome_tls.lock
+    else:
+        lock = _rehome_lock
+    
+    with lock:
         for sub in module.modules():
             # Special handling for hooked modules that may not register params correctly
             if isinstance(sub, (HookedLinear, HookedConv1D, HookedConv1d, HookedConv2d, HookedTransformerConv1D)):
