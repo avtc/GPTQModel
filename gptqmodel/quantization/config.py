@@ -258,6 +258,7 @@ class QuantizeConfig():
     hessian_chunk_size: Optional[int] = field(default=None, metadata={"help": "Maximum rows per Hessian chunk"})
     hessian_chunk_bytes: Optional[int] = field(default=None, metadata={"help": "Memory budget (in bytes) for Hessian chunk staging"})
     hessian_use_bfloat16_staging: bool = field(default=False, metadata={"help": "Stage Hessian chunks in bfloat16 when supported"})
+    hessian_cache: bool = field(default=False, metadata={"help": "Cache Hessian accumulator across layers to reduce memory allocations"})
 
     # VRAM allocation strategy for MoE-heavy subsets
     vram_strategy: VRAMStrategy = field(default=VRAMStrategy.EXCLUSIVE)

@@ -26,6 +26,7 @@ from ..utils.logger import setup_logger
 from ..utils.torch import torch_sync
 from .gar import compose_final_perm, compute_global_perm, compute_local_perms, invert_perm
 from .quantizer import HF_OPTIMUM, Quantizer
+from .hessian_cache import HessianCache
 
 
 log = setup_logger()
@@ -299,6 +300,8 @@ class GPTQ:
                 self._device_hessian_partials[dev] = xtx
             else:
                 existing.add_(xtx)
+                if self.qcfg.hessian_cache:
+                    HessianCache().put(xtx)
                 del xtx
 
             self._device_sample_counts[dev] = self._device_sample_counts.get(dev, 0) + batch_token_size
@@ -413,14 +416,25 @@ class GPTQ:
         self._borrow_workspace_stage_dtype = stage_dtype
         self._borrow_workspace_last_chunk_rows = chunk_size if chunk_size is not None else rows
 
+        cached_xtx = None
+        if self.qcfg.hessian_cache:
+            cached_xtx = HessianCache().get((self.columns, self.columns), matrix.device)
+
         if chunk_size is None:
             mat32 = matrix.to(dtype=torch.float32)
-            xtx = torch.matmul(mat32.T, mat32)
+            if cached_xtx is not None:
+                xtx = torch.matmul(mat32.T, mat32, out=cached_xtx)
+            else:
+                xtx = torch.matmul(mat32.T, mat32)
             del mat32
             torch_sync(device=xtx.device)
             return xtx
 
-        xtx_accum = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=matrix.device)
+        if cached_xtx is not None:
+            xtx_accum = cached_xtx
+            xtx_accum.zero_()
+        else:
+            xtx_accum = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=matrix.device)
 
         for start in range(0, rows, chunk_size):
             rows_this = min(chunk_size, rows - start)
@@ -555,12 +569,20 @@ class GPTQ:
                 result_accum = self.H
                 result_accum.zero_()
             else:
-                torch_sync(device) # try to avoid torch.AcceleratorError: CUDA error: unspecified launch failure
-                result_accum = torch.zeros(
-                    (self.columns, self.columns),
-                    dtype=torch.float32,
-                    device=device,
-                )
+                cached_H = None
+                if self.qcfg.hessian_cache:
+                    cached_H = HessianCache().get((self.columns, self.columns), device)
+
+                if cached_H is not None:
+                    result_accum = cached_H
+                    result_accum.zero_()
+                else:
+                    torch_sync(device)  # try to avoid torch.AcceleratorError: CUDA error: unspecified launch failure
+                    result_accum = torch.zeros(
+                        (self.columns, self.columns),
+                        dtype=torch.float32,
+                        device=device,
+                    )
 
             if total_samples == 0:
                 self.H = result_accum
@@ -595,6 +617,11 @@ class GPTQ:
             self.nsamples = total_samples
             self._hessian_dirty = False
             self._final_hessian_device_hint = result_accum.device
+
+            if self.qcfg.hessian_cache:
+                for partial in self._device_hessian_partials.values():
+                    HessianCache().put(partial)
+
             self._device_hessian_partials.clear()
             self._device_sample_counts.clear()
             del result_accum
@@ -990,6 +1017,8 @@ class GPTQ:
             avg_loss = 999999999
 
         del Losses
+        if self.qcfg.hessian_cache and hasattr(self, "H") and self.H is not None:
+            HessianCache().put(self.H)
         del self.H
         del W
 
