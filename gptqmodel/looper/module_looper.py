@@ -1215,10 +1215,6 @@ class ModuleLooper():
             # Move output back to the same device where input was stored
             # This preserves calibration data placement (especially for balanced mode)
             input_device = layer_inputs[idx][0].device if layer_inputs[idx] else cur_layer_device
-            if is_balanced_mode and primary.device != input_device:
-                log.info(
-                    f"DEBUG parallel: output is on a device {primary.device} will be moved to input device: {input_device}"
-                    )
             primary = move_to(primary, device=input_device)
             ordered_outputs.append([primary])
 
