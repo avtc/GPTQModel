@@ -557,7 +557,46 @@ class GPTQ:
 
             total_samples = sum(self._device_sample_counts.values())
 
-            # Reuse the existing tensor when possible to avoid an extra allocation.
+            if total_samples == 0:
+                cached_H = None
+                if self.qcfg.hessian_cache:
+                    cached_H = HessianCache().get((self.columns, self.columns), device)
+
+                if cached_H is not None:
+                    result_accum = cached_H
+                    result_accum.zero_()
+                else:
+                    result_accum = torch.zeros((self.columns, self.columns), dtype=torch.float32, device=device)
+
+                self.H = result_accum
+                self.nsamples = 0
+                self._hessian_dirty = False
+                self._final_hessian_device_hint = device
+                self._device_hessian_partials.clear()
+                self._device_sample_counts.clear()
+                return
+
+            # OPTIMIZATION for single-device/single-partial case
+            if len(self._device_hessian_partials) == 1:
+                _, single_partial = self._device_hessian_partials.popitem()
+                H = single_partial.to(device=device)
+
+                if H is not single_partial and self.qcfg.hessian_cache:
+                    HessianCache().put(single_partial)
+                
+                H.mul_(2.0 / float(total_samples))
+
+                if self.H is not None and self.H is not H and self.qcfg.hessian_cache:
+                    HessianCache().put(self.H)
+
+                self.H = H
+                self.nsamples = total_samples
+                self._hessian_dirty = False
+                self._final_hessian_device_hint = device
+                self._device_sample_counts.clear()
+                return
+
+            # Logic for merging multiple partials
             reuse_buffer = (
                 self.H is not None
                 and self.H.shape == (self.columns, self.columns)
@@ -577,26 +616,15 @@ class GPTQ:
                     result_accum = cached_H
                     result_accum.zero_()
                 else:
-                    torch_sync(device)  # try to avoid torch.AcceleratorError: CUDA error: unspecified launch failure
+                    torch_sync(device)
                     result_accum = torch.zeros(
                         (self.columns, self.columns),
                         dtype=torch.float32,
                         device=device,
                     )
 
-            if total_samples == 0:
-                self.H = result_accum
-                self.nsamples = 0
-                self._hessian_dirty = False
-                self._final_hessian_device_hint = device
-                self._device_hessian_partials.clear()
-                self._device_sample_counts.clear()
-                return
-
             for partial_device, partial in self._device_hessian_partials.items():
                 if partial.device != result_accum.device or partial.dtype != torch.float32:
-                    # TODO FIXME multi-3090 using P2P is revaling an issue where result_accum and/or partial is not ready for consolidation on the main thread
-                    # when parials are calculated on the individual
                     try:
                         result_accum.add_(partial.to(device=result_accum.device, dtype=torch.float32))
                     except:
@@ -624,7 +652,6 @@ class GPTQ:
 
             self._device_hessian_partials.clear()
             self._device_sample_counts.clear()
-            del result_accum
 
     def finalize_hessian(self, target_device: Optional[torch.device] = None) -> torch.Tensor:
         self.materialize_global_hessian(target_device=target_device)
