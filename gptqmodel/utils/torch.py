@@ -277,6 +277,7 @@ def empty_cache_for_device(device: torch.device) -> bool:
         if fn is None:
             return False
         target = device if device.index is not None else torch.device("cuda")
+        log.info(f"DEBUG empty_cache: Target: {target}, index: {device.index}")
         with torch.cuda.device(target):
             fn()
         return True
