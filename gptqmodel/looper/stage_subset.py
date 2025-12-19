@@ -102,28 +102,14 @@ def run_subset_stage(
             processor=processor_name,
         )
 
-    # TODO FIXME: If a full layer has no module to quantize a simple forward() is enough and output is captured 
-    # to be used as next layer's input. So one pass forward (entire layer simple forward wihout need of dealing 
-    # with subset loops and micro forward loops, just full layer, usally XXXDecodeLayer.forward(). 
-    # So output = current_layer.forward() is enough or sometimes just calling the layer callable like layer() 
-    # which same as layer.forward().
-    #
-    # Assume layer 2 has no modules to quantize. At beginniing loop for layer 2, we have layer_output 
-    # from completed forward_replay() of layer 1. Then pass this to layer 2 (as a whole) as layer_input 
-    # and store ouput, then immediately loop to layer 3 without any further subset work that is only necessary 
-    # if we need to quantize part of a layer.
-    #
-    # if len(subset) == 0:
-    #     if logger.isEnabledFor(logging.DEBUG):
-    #         logger.debug(
-    #             "StageSubset: layer=%s subset=%s/%s processor=%s produced empty subset (names=%s)",
-    #             layer_index,
-    #             subset_index + 1,
-    #             subset_total,
-    #             processor_name,
-    #             subset_names,
-    #         )
-    #     return SubsetStageResult(processed_subset={}, layer_inputs=layer_inputs, forward_context=None)
+    # OPTIMIZATION: Early exit for empty created subsets
+    # This handles cases where module names exist but no actual modules are found
+    # (e.g., when expert modules are excluded or absent on current layer)
+    if not subset:
+        return _handle_empty_subset(
+            layer_index, subset_index, subset_total, processor_name, subset_event_cb,
+            layer_inputs, logger
+        )
 
     if DEBUG_ON and logger.isEnabledFor(logging.DEBUG):
         if is_awq_processor:
@@ -522,4 +508,53 @@ def run_subset_stage(
         processed_subset=processed_subset,
         layer_inputs=layer_inputs,
         forward_context=context,
+    )
+
+def _handle_empty_subset(
+    layer_index: int,
+    subset_index: int,
+    subset_total: int,
+    processor_name: str,
+    subset_event_cb: Optional[Callable[..., None]],
+    layer_inputs: List[List[torch.Tensor]],
+    logger,
+) -> SubsetStageResult:
+    """Handle empty subset with consistent logging, events, and memory cleanup."""
+    if DEBUG_ON and logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            f"StageSubset: layer={layer_index} subset={subset_index + 1}/{subset_total} "
+            f"processor={processor_name} skipping empty subset"
+        )
+
+    # Emit subset lifecycle events for consistency with monitoring systems
+    # Only emit events that match processor requirements
+    subset_lifecycle_stages = ["forward_start", "forward_end", "quant_start", "quant_complete"]
+    for stage in subset_lifecycle_stages:
+        if subset_event_cb:
+            try:
+                subset_event_cb(
+                    stage=stage,
+                    layer_idx=layer_index,
+                    subset_index=subset_index,
+                    subset_total=subset_total,
+                    module_names=[],
+                    processor=processor_name,
+                )
+            except Exception as e:
+                logger.warning(f"Subset event callback failed for stage {stage}: {e}")
+
+    # Create consistent forward context
+    # Note: subset_forward_serial should be determined consistently with normal path
+    forward_context = SubsetForwardContext(
+        subset={},
+        forward_device_map={},
+        subset_forward_serial=False,  # Consistent with empty subset behavior
+        subset_total=subset_total,
+        subset_index=subset_index,
+    )
+
+    return SubsetStageResult(
+        processed_subset={},
+        layer_inputs=layer_inputs,
+        forward_context=forward_context,
     )
