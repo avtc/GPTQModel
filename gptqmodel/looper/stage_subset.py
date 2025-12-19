@@ -251,9 +251,9 @@ def _run_single_subset_pass(
             subset[name].forward_hook = None
             subset[name].forward_hook_last = False
 
-    if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
-        torch_sync()
-        torch_empty_cache()
+    #if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
+    #    torch_sync()
+    #    torch_empty_cache()
 
     moe_skip_modules = []
     if isinstance(processor, GPTQProcessor):
@@ -722,8 +722,8 @@ def run_subset_stage(
             processed_results.update(chunk_result)
             
             # Force cleanup between chunks
-            if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
-                 torch_empty_cache()
+            #if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
+            #     torch_empty_cache()
     
         # If processor.fwd_after_process is False, stage_layer won't run replay.
         # But we haven't collected proper full outputs yet (we ignored them or they were partial).
