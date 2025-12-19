@@ -535,3 +535,8 @@ def run_layer_stage(
                         submodule_finalized=True,
                         raise_in_place=True,
                     )
+
+        # Check for pause after completing each layer (perfect pause point)
+        layer_info = f"layer {layer_index}" if not is_lm_head_module else "lm_head"
+        if hasattr(looper, 'pause_controller'):
+            looper.pause_controller.check_pause_point(f"after {layer_info}")

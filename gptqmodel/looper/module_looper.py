@@ -43,6 +43,7 @@ from ..utils.ctx import ctx
 from ..utils.device import get_device, get_device_new
 from ..utils.disk import estimate_disk_io_speed
 from ..utils.logger import setup_logger, log_time_block
+from ..utils.pause_resume import PauseResumeController, PauseResumeState
 from ..utils.looper_helpers import (
     clone_module_for_devices,
     device_ctx,
@@ -92,6 +93,15 @@ class ModuleLooper():
         self._loop_stop_event = threading.Event()
         self._loop_stop_exc: Optional[BaseException] = None
         self._loop_stop_waited = False
+
+        # Initialize pause/resume controller
+        self.pause_controller = PauseResumeController(enable_keyboard=model.quantize_config.enable_pause_resume)
+
+        # Set up status callback for progress bar updates
+        self.pause_controller.set_status_callback(self._on_pause_resume_state_change)
+
+        # Track if we've shown pause instructions
+        self._pause_instructions_shown = False
 
         disk_speed = estimate_disk_io_speed()
         disk_speed_mb = disk_speed / (1024 * 1024)
@@ -1317,6 +1327,24 @@ class ModuleLooper():
             
         return pre_hook
 
+    def _on_pause_resume_state_change(self, state: PauseResumeState):
+        """Handle pause/resume state changes for progress bar updates."""
+        # Update progress bars with pause/resume status
+        try:
+            # Try to get the current progress bar from processors
+            for processor in self.processors:
+                if hasattr(processor, 'pb') and processor.pb is not None:
+                    pb = processor.pb
+                    if state == PauseResumeState.PAUSE_REQUESTED:
+                        pb.subtitle("[PAUSE REQUESTED] Will pause after current layer").draw()
+                    elif state == PauseResumeState.PAUSED:
+                        pb.subtitle("[PAUSED] Press Pause/Break to resume").draw()
+                    elif state == PauseResumeState.RUNNING:
+                        # Restore normal subtitle (will be updated by next iteration)
+                        pass
+        except Exception as e:
+            log.debug(f"Error updating progress bar with pause state: {e}")
+
     def cache_inputs(self, layers, calibration_data, use_cache):
         capture_stage = StageInputsCapture(self, logger=log)
         return capture_stage.cache_inputs(
@@ -1421,6 +1449,11 @@ class ModuleLooper():
                     parent = getattr(parent, part)
                 setattr(parent, module_path[-1], hooked_lm_head)
 
+        # Show pause instructions once if keyboard control is enabled
+        if not self._pause_instructions_shown and self.pause_controller._keyboard_active:
+            log.info("Pause/Resume controls: Press Pause/Break to toggle pause/resume")
+            self._pause_instructions_shown = True
+
         run_layer_stage(
             self,
             layers=layers,
@@ -1502,6 +1535,10 @@ class ModuleLooper():
             region_timer.flush()
 
         self.gptq_model.model.config.use_cache = forward_pass_use_cache
+
+        # Cleanup pause/resume controller
+        if hasattr(self, 'pause_controller'):
+            self.pause_controller.cleanup()
 
         return total_log
 
