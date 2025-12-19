@@ -251,9 +251,9 @@ def _run_single_subset_pass(
             subset[name].forward_hook = None
             subset[name].forward_hook_last = False
 
-    #if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
-    #    torch_sync()
-    #    torch_empty_cache()
+    if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
+        torch_sync()
+        torch_empty_cache()
 
     moe_skip_modules = []
     if isinstance(processor, GPTQProcessor):
@@ -385,8 +385,8 @@ def _run_single_subset_pass(
         processed_subset[name] = named_module
     torch_sync()
 
-    #if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
-    #    torch_empty_cache()
+    if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
+        torch_empty_cache()
 
     if subset_event_cb:
         subset_event_cb(stage="quant_complete", layer_idx=layer_index, subset_index=subset_index, subset_total=subset_total, module_names=list(subset.keys()), processor=getattr(processor, "name", type(processor).__name__))
@@ -722,15 +722,15 @@ def run_subset_stage(
             processed_results.update(chunk_result)
             
             # Force cleanup between chunks
-            #if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
-            #     torch_empty_cache()
+            if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
+                 torch_empty_cache()
     
         # If processor.fwd_after_process is False, stage_layer won't run replay.
         # But we haven't collected proper full outputs yet (we ignored them or they were partial).
         # So we MUST run a replay here to get valid layer_inputs for the next layer.
         if not processor.fwd_after_process:
-            # Final Replay to collect layer outputs
-            _, new_layer_inputs = _run_single_subset_pass(
+             # Final Replay to collect layer outputs
+             _, new_layer_inputs = _run_single_subset_pass(
                 looper=looper,
                 processor=processor,
                 module=module,
@@ -763,11 +763,8 @@ def run_subset_stage(
                 return_outputs=True,
                 disable_moe_hooks=True,
             )
-            if new_layer_inputs is not None:
-                layer_inputs = new_layer_inputs
-                
-        if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
-            torch_empty_cache()
+             if new_layer_inputs is not None:
+                 layer_inputs = new_layer_inputs
     
     elif processor.require_fwd:
         # Single pass
@@ -805,9 +802,6 @@ def run_subset_stage(
         )
         if new_layer_inputs is not None:
              layer_inputs = new_layer_inputs
-
-        if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
-             torch_empty_cache()
     else:
         # No forward required
         if DEBUG_ON:
