@@ -71,7 +71,7 @@ class PauseResumeController:
         if state == PauseResumeState.RUNNING:
             return "('p' to ⏸️)"
         elif state == PauseResumeState.PAUSE_REQUESTED:
-            return "(⏸️ requested)"
+            return "(will ⏸️ at layer end)"
         elif state == PauseResumeState.PAUSED:
             return "('p' to ▶️)"
         else:
