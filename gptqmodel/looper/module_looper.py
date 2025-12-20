@@ -88,6 +88,9 @@ class ModuleLooper():
         self.processors = processors
         self.gptq_model = model
 
+        # Initialize pause/resume controller first
+        self.pause_controller = PauseResumeController(enable_keyboard=model.quantize_config.enable_pause_resume)
+
         # Give processors access to pause controller for status
         for processor in self.processors:
             processor._pause_controller = self.pause_controller
@@ -97,9 +100,6 @@ class ModuleLooper():
         self._loop_stop_event = threading.Event()
         self._loop_stop_exc: Optional[BaseException] = None
         self._loop_stop_waited = False
-
-        # Initialize pause/resume controller
-        self.pause_controller = PauseResumeController(enable_keyboard=model.quantize_config.enable_pause_resume)
 
         # Set up status callback for progress bar updates
         self.pause_controller.set_status_callback(self._on_pause_resume_state_change)
