@@ -12,13 +12,8 @@ import threading
 import logging
 from enum import Enum
 from typing import Optional, Callable
-
-try:
-    import keyboard
-    KEYBOARD_AVAILABLE = True
-except ImportError:
-    KEYBOARD_AVAILABLE = False
-    keyboard = None
+from contextlib import contextmanager
+import keyboard
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +48,7 @@ class PauseResumeController:
         self._resume_event = threading.Event()
 
         # Keyboard handling
-        self._keyboard_enabled = enable_keyboard and KEYBOARD_AVAILABLE
+        self._keyboard_enabled = enable_keyboard
         self._keyboard_active = False
 
         # Callbacks for status updates
@@ -67,9 +62,6 @@ class PauseResumeController:
 
     def _setup_keyboard_handler(self):
         """Setup keyboard event handlers for pause/break keys."""
-        if not KEYBOARD_AVAILABLE:
-            log.warning("Keyboard library not available. Install with: pip install keyboard")
-            return
 
         def on_key_press(event):
             try:
@@ -211,7 +203,7 @@ class PauseResumeController:
     def cleanup(self):
         """Cleanup resources and keyboard handlers."""
         # Cleanup keyboard handlers
-        if self._keyboard_active and KEYBOARD_AVAILABLE:
+        if self._keyboard_active:
             try:
                 keyboard.unhook_all()
                 self._keyboard_active = False

@@ -20,3 +20,4 @@ pyarrow>=21.0
 dill>=0.3.8
 pypcre>=0.2.5
 torchao>=0.14.1
+keyboard>=0.13.5
