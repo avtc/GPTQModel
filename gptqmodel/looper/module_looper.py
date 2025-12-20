@@ -104,9 +104,6 @@ class ModuleLooper():
         # Set up status callback for progress bar updates
         self.pause_controller.set_status_callback(self._on_pause_resume_state_change)
 
-        # Track if we've shown pause instructions
-        self._pause_instructions_shown = False
-
         disk_speed = estimate_disk_io_speed()
         disk_speed_mb = disk_speed / (1024 * 1024)
         if disk_speed < 200 * 1024 * 1024:
@@ -1441,11 +1438,6 @@ class ModuleLooper():
                     parent = getattr(parent, part)
                 setattr(parent, module_path[-1], hooked_lm_head)
 
-        # Show pause instructions once if keyboard control is enabled
-        if not self._pause_instructions_shown and self.pause_controller._keyboard_active:
-            log.info("Pause/Resume controls: Press 'p', Pause/Break to toggle pause/resume")
-            self._pause_instructions_shown = True
-
         run_layer_stage(
             self,
             layers=layers,
@@ -1528,9 +1520,7 @@ class ModuleLooper():
 
         self.gptq_model.model.config.use_cache = forward_pass_use_cache
 
-        # Cleanup pause/resume controller
-        if hasattr(self, 'pause_controller'):
-            self.pause_controller.cleanup()
+        self.pause_controller.cleanup()
 
         return total_log
 

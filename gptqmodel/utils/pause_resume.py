@@ -120,7 +120,6 @@ class PauseResumeController:
             self._keyboard_listener = keyboard.Listener(on_press=on_key_press)
             self._keyboard_listener.start()
             self._keyboard_active = True
-            log.info("Keyboard pause/resume enabled (Press 'p' or Pause/Break to toggle)")
         except Exception as e:
             log.warning(f"Failed to setup keyboard handler: {e}")
             self._keyboard_active = False
@@ -152,10 +151,6 @@ class PauseResumeController:
                 except Exception as e:
                     log.warning(f"Status callback error: {e}")
 
-            # Status is now shown in main progress bar via get_status_hint()
-
-            log.info(f"Pause/Resume state: {old_state.value} -> {new_state.value}")
-
     def get_state(self) -> PauseResumeState:
         """Get current state."""
         with self._state_lock:
@@ -166,21 +161,12 @@ class PauseResumeController:
         with self._state_lock:
             if self._state == PauseResumeState.RUNNING:
                 self._set_state(PauseResumeState.PAUSE_REQUESTED)
-            elif self._state == PauseResumeState.PAUSED:
-                log.info("Already paused")
-            elif self._state == PauseResumeState.PAUSE_REQUESTED:
-                log.info("Pause already requested")
 
     def resume(self):
         """Resume quantization."""
         with self._state_lock:
-            if self._state == PauseResumeState.PAUSED:
+            if self._state == PauseResumeState.PAUSED or self._state == PauseResumeState.PAUSE_REQUESTED:
                 self._set_state(PauseResumeState.RUNNING)
-            elif self._state == PauseResumeState.PAUSE_REQUESTED:
-                log.info("Resuming from pause requested state")
-                self._set_state(PauseResumeState.RUNNING)
-            elif self._state == PauseResumeState.RUNNING:
-                log.info("Already running")
 
     def toggle_pause_resume(self):
         """Toggle between pause and resume states."""
@@ -206,8 +192,6 @@ class PauseResumeController:
         with self._state_lock:
             if self._state == PauseResumeState.PAUSE_REQUESTED:
                 self._set_state(PauseResumeState.PAUSED)
-                layer_msg = f" after {layer_info}" if layer_info else ""
-                log.info(f"⏸️  Quantization paused{layer_msg}. Press 'p' or Pause/Break to resume.")
 
         # Wait if paused
         if self._pause_event.is_set():
@@ -216,8 +200,6 @@ class PauseResumeController:
                     with self._state_lock:
                         if self._state == PauseResumeState.PAUSED:
                             self._set_state(PauseResumeState.RUNNING)
-                            layer_msg = f" after {layer_info}" if layer_info else ""
-                            log.info(f"▶️  Quantization resumed{layer_msg}")
                         break
 
         return True
@@ -255,7 +237,6 @@ class PauseResumeController:
                 self._keyboard_listener.stop()
                 self._keyboard_listener = None
                 self._keyboard_active = False
-                log.info("Keyboard handlers cleaned up")
             except Exception as e:
                 log.warning(f"Error cleaning up keyboard handlers: {e}")
 
