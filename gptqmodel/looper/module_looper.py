@@ -1338,7 +1338,7 @@ class ModuleLooper():
                     if state == PauseResumeState.PAUSE_REQUESTED:
                         pb.subtitle("[PAUSE REQUESTED] Will pause after current layer").draw()
                     elif state == PauseResumeState.PAUSED:
-                        pb.subtitle("[PAUSED] Press Pause/Break to resume").draw()
+                        pb.subtitle("[PAUSED] Press 'p' or Pause/Break to resume").draw()
                     elif state == PauseResumeState.RUNNING:
                         # Restore normal subtitle (will be updated by next iteration)
                         pass
@@ -1451,7 +1451,7 @@ class ModuleLooper():
 
         # Show pause instructions once if keyboard control is enabled
         if not self._pause_instructions_shown and self.pause_controller._keyboard_active:
-            log.info("Pause/Resume controls: Press Pause/Break to toggle pause/resume")
+            log.info("Pause/Resume controls: Press 'p', Pause/Break to toggle pause/resume")
             self._pause_instructions_shown = True
 
         run_layer_stage(

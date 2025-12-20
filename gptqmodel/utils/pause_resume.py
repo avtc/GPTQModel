@@ -66,19 +66,19 @@ class PauseResumeController:
         def on_key_press(event):
             try:
                 # Whitelist allowed keys
-                allowed_keys = {'pause', 'break'}
+                allowed_keys = {'pause', 'break', 'p'}
                 if event.name.lower() not in allowed_keys:
                     return
 
-                if event.name.lower() in ['pause', 'break']:
+                if event.name.lower() in ['pause', 'break', 'p']:
                     self.toggle_pause_resume()
             except Exception as e:
-                log.debug(f"Keyboard handler error: {e}")
+                log.warning(f"Keyboard handler error: {e}")
 
         try:
             keyboard.on_press(on_key_press)
             self._keyboard_active = True
-            log.info("Keyboard pause/resume enabled (Press Pause/Break to toggle)")
+            log.info("Keyboard pause/resume enabled (Press 'p' or Pause/Break to toggle)")
         except Exception as e:
             log.warning(f"Failed to setup keyboard handler: {e}")
             self._keyboard_active = False
@@ -160,7 +160,7 @@ class PauseResumeController:
             if self._state == PauseResumeState.PAUSE_REQUESTED:
                 self._set_state(PauseResumeState.PAUSED)
                 layer_msg = f" after {layer_info}" if layer_info else ""
-                log.info(f"Quantization paused{layer_msg}. Press Pause/Break to resume.")
+                log.info(f"Quantization paused{layer_msg}. Press 'p' or Pause/Break to resume.")
 
         # Wait if paused
         if self._pause_event.is_set():
@@ -209,7 +209,7 @@ class PauseResumeController:
                 self._keyboard_active = False
                 log.debug("Keyboard handlers cleaned up")
             except Exception as e:
-                log.debug(f"Error cleaning up keyboard handlers: {e}")
+                log.warning(f"Error cleaning up keyboard handlers: {e}")
 
         # Set final state to running for clean shutdown
         with self._state_lock:
