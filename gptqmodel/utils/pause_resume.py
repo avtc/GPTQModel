@@ -92,24 +92,29 @@ class PauseResumeController:
             text = f"{text} {hint}"
         return text
     
-    def register_progress_bar(self, pb, title_func: Optional[Callable[[], str]] = None):
+    def register_and_draw_progress_bar(self, pb, title: Optional[str] = None, subtitle: Optional[str] = None):
         """
         Register a progress bar for immediate title updates when pause/resume state changes.
         
         Args:
             pb: Progress bar instance
-            title_func: Optional function that returns the base title without status icons/hints
+            title: Optional title string without status icons/hints
+            subtitle: Optional subtitle string
         """
-        with self._state_lock:
-            # Check if this progress bar is already registered
-            for item in self._progress_bars:
-                if item["pb"] == pb:
-                    # Update the title_func if already registered
-                    item["title_func"] = title_func
-                    return
-            
-            # Register new progress bar
-            self._progress_bars.append({"pb": pb, "title_func": title_func})
+        try:
+            with self._state_lock:
+                # Check if this progress bar is already registered
+                for item in self._progress_bars:
+                    if item["pb"] == pb:
+                        # Update the title and subtitle if already registered
+                        item["title"] = title
+                        item["subtitle"] = subtitle
+                        return
+                
+                # Register new progress bar
+                self._progress_bars.append({"pb": pb, "title": title, "subtitle": subtitle})
+        finally:
+            self._update_progress_bars()
     
     def unregister_progress_bar(self, pb):
         """
@@ -125,13 +130,16 @@ class PauseResumeController:
         """Update all registered progress bars with current pause/resume status."""
         for item in self._progress_bars:
             pb = item["pb"]
-            title_func = item.get("title_func")
+            title = item.get("title")
+            subtitle = item.get("subtitle")
             
-            if title_func:
-                base_title = title_func()
-                wrapped_title = self.wrap_text(base_title)
+            if title:
+                wrapped_title = self.wrap_text(title)
                 try:
-                    pb.title(wrapped_title).draw()
+                    pb.title(wrapped_title)
+                    if subtitle is not None:
+                        pb.subtitle(subtitle)
+                    pb.draw()
                 except Exception as e:
                     log.warning(f"Failed to update progress bar title: {e}")
 

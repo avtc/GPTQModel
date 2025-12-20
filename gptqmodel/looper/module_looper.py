@@ -89,7 +89,7 @@ class ModuleLooper():
         self.gptq_model = model
 
         # Initialize pause/resume controller first
-        self.pause_controller = PauseResumeController(enable_keyboard=model.quantize_config.enable_pause_resume)
+        self.pause_controller = PauseResumeController()
 
         # Give processors access to pause controller for status
         for processor in self.processors:

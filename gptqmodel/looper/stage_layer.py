@@ -62,14 +62,7 @@ def run_layer_stage(
             layer_title = f"Quantizing layer {layer_index} of {layer_count - 1}"
             module = layers[layer_index]
 
-        # Register progress bar with pause controller for immediate title updates
-        looper.pause_controller.register_progress_bar(
-            pb,
-            title_func=lambda: layer_title
-        )
-        
-        layer_title = looper.pause_controller.wrap_text(layer_title)
-        pb.title(layer_title).subtitle("").draw()
+        looper.pause_controller.register_and_draw_progress_bar(pb, title=layer_title, subtitle="")
 
         if module.__class__.__name__.lower() == "MllamaCrossAttentionDecoderLayer".lower():
             # TODO FIXME: currently we not support quantizing cross attention layer (pixel_values)
@@ -319,14 +312,7 @@ def run_layer_stage(
                 processor.clear_cache_data()
                 processor.receive_layer_inputs(layer_outputs)
                 layer_inputs = processor.inputs_cache.layer_inputs
-
-                pb.title(layer_title).subtitle("").draw()
-                
-                # Re-register progress bar with pause controller after processor completion
-                looper.pause_controller.register_progress_bar(
-                    pb,
-                    title_func=lambda: layer_title
-                )
+                looper.pause_controller.register_and_draw_progress_bar(pb, title=layer_title, subtitle="")
 
             if p_index == len(looper.processors) - 1:
                 torch_sync()
@@ -551,8 +537,7 @@ def run_layer_stage(
 
         # Check for pause after completing each layer (perfect pause point)
         layer_info = f"layer {layer_index}" if not is_lm_head_module else "lm_head"
-        if hasattr(looper, 'pause_controller'):
-            looper.pause_controller.check_pause_point(f"after {layer_info}")
+        looper.pause_controller.check_pause_point(f"after {layer_info}")
             
         # Unregister progress bar when moving to next layer
         looper.pause_controller.unregister_progress_bar(pb)
