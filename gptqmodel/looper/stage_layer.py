@@ -62,6 +62,12 @@ def run_layer_stage(
             layer_title = f"Quantizing layer {layer_index} of {layer_count - 1}"
             module = layers[layer_index]
 
+        # Add pause/resume status hint if available
+        if hasattr(looper, 'pause_controller'):
+            status_hint = looper.pause_controller.get_status_hint()
+            if status_hint:
+                layer_title += f" {status_hint}"
+
         pb.title(layer_title).subtitle("").draw()
 
         if module.__class__.__name__.lower() == "MllamaCrossAttentionDecoderLayer".lower():

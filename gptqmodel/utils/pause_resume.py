@@ -56,46 +56,23 @@ class PauseResumeController:
         # Callbacks for status updates
         self._status_callback: Optional[Callable[[PauseResumeState], None]] = None
 
-        # Status bar for pause/resume
-        self._status_bar = None
-        self._setup_status_bar()
-
         # Initialize events
         self._resume_event.set()  # Allow execution to start
 
         if self._keyboard_enabled:
             self._setup_keyboard_handler()
 
-    def _setup_status_bar(self):
-        """Setup a dedicated status bar for pause/resume information."""
-        try:
-            logger = LogBar.shared()
-            # Create a manual progress bar for status (using range(1) for static display)
-            self._status_bar = logger.pb(range(1)).title("Pause/Resume Status").manual()
-            self._update_status_bar()
-        except Exception as e:
-            log.warning(f"Failed to setup pause/resume status bar: {e}")
-            self._status_bar = None
-
-    def _update_status_bar(self):
-        """Update the pause/resume status bar."""
-        if not self._status_bar:
-            return
-
-        try:
-            state = self.get_state()
-            if state == PauseResumeState.RUNNING:
-                status_msg = "Running (Press 'p' or Pause/Break to pause)"
-            elif state == PauseResumeState.PAUSE_REQUESTED:
-                status_msg = "Pause requested - will pause after current layer"
-            elif state == PauseResumeState.PAUSED:
-                status_msg = "Paused (Press 'p' or Pause/Break to resume)"
-            else:
-                status_msg = state.value
-
-            self._status_bar.subtitle(status_msg).draw()
-        except Exception as e:
-            log.warning(f"Failed to update status bar: {e}")
+    def get_status_hint(self) -> str:
+        """Get status hint for main progress bar."""
+        state = self.get_state()
+        if state == PauseResumeState.RUNNING:
+            return "('p' to ⏸️)"
+        elif state == PauseResumeState.PAUSE_REQUESTED:
+            return "⏸️ requested"
+        elif state == PauseResumeState.PAUSED:
+            return "('p' to ▶️)"
+        else:
+            return ""
 
     def _setup_keyboard_handler(self):
         """Setup keyboard event handlers for pause/break keys."""
@@ -154,8 +131,7 @@ class PauseResumeController:
                 except Exception as e:
                     log.warning(f"Status callback error: {e}")
 
-            # Update status bar
-            self._update_status_bar()
+            # Status is now shown in main progress bar via get_status_hint()
 
             log.info(f"Pause/Resume state: {old_state.value} -> {new_state.value}")
 
@@ -252,14 +228,6 @@ class PauseResumeController:
 
     def cleanup(self):
         """Cleanup resources and keyboard handlers."""
-        # Cleanup status bar
-        if self._status_bar:
-            try:
-                self._status_bar.close()
-                self._status_bar = None
-            except Exception as e:
-                log.warning(f"Error closing status bar: {e}")
-
         # Cleanup keyboard handlers
         if self._keyboard_active and self._keyboard_listener:
             try:

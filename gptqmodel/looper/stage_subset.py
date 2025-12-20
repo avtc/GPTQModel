@@ -680,12 +680,18 @@ def run_subset_stage(
              non_expert_modules.sort()
              all_chunks_modules.append(non_expert_modules)
 
-        for i, chunk_keys in enumerate(all_chunks_modules):
+        # Create progress bar for MOE chunks
+        moe_chunk_pb = logger.pb(range(len(all_chunks_modules))).manual()
+        moe_chunk_pb.title(f"MoE Chunks ({len(all_chunks_modules)} total)")
+
+        for chunk_idx in moe_chunk_pb:
+            chunk_keys = all_chunks_modules[chunk_idx]
             # Create subset for this chunk
             chunk_subset = {k: subset[k] for k in chunk_keys}
-            
-            logger.info(f"Processing MoE Chunk {i+1}/{len(all_chunks_modules)} ({len(chunk_subset)} modules)...")
-            
+
+            moe_chunk_pb.subtitle(f"Chunk {chunk_idx+1}/{len(all_chunks_modules)} ({len(chunk_subset)} modules)").draw()
+            logger.info(f"Processing MoE Chunk {chunk_idx+1}/{len(all_chunks_modules)} ({len(chunk_subset)} modules)...")
+
             # Run pass
             chunk_result, _ = _run_single_subset_pass(
                 looper=looper,
@@ -724,6 +730,9 @@ def run_subset_stage(
             # Force cleanup between chunks
             if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
                  torch_empty_cache()
+
+        # Close MOE chunks progress bar
+        moe_chunk_pb.close()
     
         # If processor.fwd_after_process is False, stage_layer won't run replay.
         # But we haven't collected proper full outputs yet (we ignored them or they were partial).
