@@ -101,6 +101,9 @@ class PauseResumeController:
             title: Optional title string without status icons/hints
             subtitle: Optional subtitle string
         """
+        # update progress bar subtitle
+        pb.subtitle(subtitle)
+        # register or update base title for progress bar
         try:
             with self._state_lock:
                 # Check if this progress bar is already registered
@@ -108,11 +111,10 @@ class PauseResumeController:
                     if item["pb"] == pb:
                         # Update the title and subtitle if already registered
                         item["title"] = title
-                        item["subtitle"] = subtitle
                         return
                 
                 # Register new progress bar
-                self._progress_bars.append({"pb": pb, "title": title, "subtitle": subtitle})
+                self._progress_bars.append({"pb": pb, "title": title})
         finally:
             self._update_progress_bars()
     
@@ -131,14 +133,11 @@ class PauseResumeController:
         for item in self._progress_bars:
             pb = item["pb"]
             title = item.get("title")
-            subtitle = item.get("subtitle")
             
             if title:
                 wrapped_title = self.wrap_text(title)
                 try:
                     pb.title(wrapped_title)
-                    if subtitle is not None:
-                        pb.subtitle(subtitle)
                     pb.draw()
                 except Exception as e:
                     log.warning(f"Failed to update progress bar title: {e}")

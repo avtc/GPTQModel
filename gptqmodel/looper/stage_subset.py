@@ -238,8 +238,6 @@ def _run_single_subset_pass(
             source=forward_source,
         )
 
-    pb.title(layer_title).subtitle("").draw()
-
     for h in handle:
         # Detach temporary hooks to avoid leaking state into future passes.
         h.remove()
