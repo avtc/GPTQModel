@@ -1075,7 +1075,15 @@ class AWQProcessor(LoopProcessor):
         for name, named_module in named_linears.items():
             # print("app_quant", name)
             # Add pause/resume status
-            title_text = self._pause_controller.wrap_text(f"Quantizing {named_module.name} in layer")
+            base_title = f"Quantizing {named_module.name} in layer"
+            
+            # Register progress bar with pause controller for immediate title updates
+            self._pause_controller.register_progress_bar(
+                self.pb,
+                title_func=lambda: base_title
+            )
+            
+            title_text = self._pause_controller.wrap_text(base_title)
             self.pb.title(title_text).draw()
             linear_layer = named_module.module
             # NOTE: small regression in perplexity if linear layer uses .cpu().float()

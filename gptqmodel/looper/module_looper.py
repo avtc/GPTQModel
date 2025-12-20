@@ -101,9 +101,6 @@ class ModuleLooper():
         self._loop_stop_exc: Optional[BaseException] = None
         self._loop_stop_waited = False
 
-        # Set up status callback for progress bar updates
-        self.pause_controller.set_status_callback(self._on_pause_resume_state_change)
-
         disk_speed = estimate_disk_io_speed()
         disk_speed_mb = disk_speed / (1024 * 1024)
         if disk_speed < 200 * 1024 * 1024:
@@ -1327,12 +1324,6 @@ class ModuleLooper():
                     )
             
         return pre_hook
-
-    def _on_pause_resume_state_change(self, state: PauseResumeState):
-        """Handle pause/resume state changes."""
-        # Status is now handled by the dedicated status line in PauseResumeController
-        # No need to modify progress bar subtitles
-        pass
 
     def cache_inputs(self, layers, calibration_data, use_cache):
         capture_stage = StageInputsCapture(self, logger=log)

@@ -55,6 +55,9 @@ class PauseResumeController:
 
         # Callbacks for status updates
         self._status_callback: Optional[Callable[[PauseResumeState], None]] = None
+        
+        # Progress bar references for immediate title updates
+        self._progress_bars: List[Dict] = []  # List of {"pb": progress_bar, "title_func": callable}
 
         # Initialize events
         self._resume_event.set()  # Allow execution to start
@@ -68,7 +71,7 @@ class PauseResumeController:
         if state == PauseResumeState.RUNNING:
             return "('p' to ⏸️)"
         elif state == PauseResumeState.PAUSE_REQUESTED:
-            return "⏸️ requested"
+            return "(⏸️ requested)"
         elif state == PauseResumeState.PAUSED:
             return "('p' to ▶️)"
         else:
@@ -94,6 +97,49 @@ class PauseResumeController:
         if hint:
             text = f"{text} {hint}"
         return text
+    
+    def register_progress_bar(self, pb, title_func: Optional[Callable[[], str]] = None):
+        """
+        Register a progress bar for immediate title updates when pause/resume state changes.
+        
+        Args:
+            pb: Progress bar instance
+            title_func: Optional function that returns the base title without status icons/hints
+        """
+        with self._state_lock:
+            # Check if this progress bar is already registered
+            for item in self._progress_bars:
+                if item["pb"] == pb:
+                    # Update the title_func if already registered
+                    item["title_func"] = title_func
+                    return
+            
+            # Register new progress bar
+            self._progress_bars.append({"pb": pb, "title_func": title_func})
+    
+    def unregister_progress_bar(self, pb):
+        """
+        Unregister a progress bar from immediate title updates.
+        
+        Args:
+            pb: Progress bar instance to remove
+        """
+        with self._state_lock:
+            self._progress_bars = [item for item in self._progress_bars if item["pb"] != pb]
+    
+    def _update_progress_bars(self):
+        """Update all registered progress bars with current pause/resume status."""
+        for item in self._progress_bars:
+            pb = item["pb"]
+            title_func = item.get("title_func")
+            
+            if title_func:
+                base_title = title_func()
+                wrapped_title = self.wrap_text(base_title)
+                try:
+                    pb.title(wrapped_title).draw()
+                except Exception as e:
+                    log.warning(f"Failed to update progress bar title: {e}")
 
     def _setup_keyboard_handler(self):
         """Setup keyboard event handlers for pause/break keys."""
@@ -143,6 +189,10 @@ class PauseResumeController:
             elif new_state == PauseResumeState.RUNNING:
                 self._pause_event.clear()
                 self._resume_event.set()
+
+            # Update progress bars immediately when state changes
+            if old_state != new_state:
+                self._update_progress_bars()
 
             # Notify callback
             if self._status_callback and old_state != new_state:
@@ -239,6 +289,10 @@ class PauseResumeController:
                 self._keyboard_active = False
             except Exception as e:
                 log.warning(f"Error cleaning up keyboard handlers: {e}")
+
+        # Clear progress bar references
+        with self._state_lock:
+            self._progress_bars.clear()
 
         # Set final state to running for clean shutdown
         with self._state_lock:

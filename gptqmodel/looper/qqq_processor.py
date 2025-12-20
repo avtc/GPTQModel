@@ -127,7 +127,15 @@ class QQQProcessor(LoopProcessor):
         subset_total: Optional[int] = None,
     ):
         # Add pause/resume status
-        title_text = self._pause_controller.wrap_text(f"Quantizing {module.name} in layer")
+        base_title = f"Quantizing {module.name} in layer"
+        
+        # Register progress bar with pause controller for immediate title updates
+        self._pause_controller.register_progress_bar(
+            self.pb,
+            title_func=lambda: base_title
+        )
+        
+        title_text = self._pause_controller.wrap_text(base_title)
         self.pb.title(title_text).draw()
         qqq = self.tasks
 

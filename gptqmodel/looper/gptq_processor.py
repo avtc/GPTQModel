@@ -134,7 +134,15 @@ class GPTQProcessor(LoopProcessor):
         # Reset peak memory stats
         #torch.cuda.reset_peak_memory_stats()
         # Add pause/resume status
-        title_text = self._pause_controller.wrap_text(f"Quantizing {module.name} in layer")
+        base_title = f"Quantizing {module.name} in layer"
+        
+        # Register progress bar with pause controller for immediate title updates
+        self._pause_controller.register_progress_bar(
+            self.pb,
+            title_func=lambda: base_title
+        )
+        
+        title_text = self._pause_controller.wrap_text(base_title)
         self.pb.title(title_text).draw()
 
         # logger.info(f"Quantizing module START: {name}, {gptq[name].shape()}")
