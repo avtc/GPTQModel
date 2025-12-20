@@ -170,6 +170,9 @@ class TestPauseResumeController:
         controller.resume()
         assert controller.get_state() == PauseResumeState.RUNNING
 
+        # Keyboard should be inactive
+        assert not controller._keyboard_active
+
         controller.cleanup()
 
     def test_thread_safety(self):

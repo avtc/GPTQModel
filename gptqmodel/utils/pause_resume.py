@@ -13,7 +13,7 @@ import logging
 from enum import Enum
 from typing import Optional, Callable
 from contextlib import contextmanager
-import keyboard
+from pynput import keyboard
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +50,7 @@ class PauseResumeController:
         # Keyboard handling
         self._keyboard_enabled = enable_keyboard
         self._keyboard_active = False
+        self._keyboard_listener = None
 
         # Callbacks for status updates
         self._status_callback: Optional[Callable[[PauseResumeState], None]] = None
@@ -63,30 +64,33 @@ class PauseResumeController:
     def _setup_keyboard_handler(self):
         """Setup keyboard event handlers for pause/break keys."""
 
-        def on_key_press(event):
+        def on_key_press(key):
             try:
-                # Whitelist allowed keys
-                allowed_keys = {'pause', 'break', 'p'}
-                if event.name.lower() not in allowed_keys:
-                    return
+                # Convert pynput key to string representation
+                key_str = str(key).lower()
 
-                if event.name.lower() in ['pause', 'break', 'p']:
+                # Handle different key formats
+                if hasattr(key, 'char') and key.char:
+                    key_char = key.char.lower()
+                    if key_char == 'p':
+                        self.toggle_pause_resume()
+                        return
+
+                # Handle special keys
+                if 'pause' in key_str or 'break' in key_str:
                     self.toggle_pause_resume()
             except Exception as e:
                 log.warning(f"Keyboard handler error: {e}")
 
         try:
-            keyboard.on_press(on_key_press)
+            self._keyboard_listener = keyboard.Listener(on_press=on_key_press)
+            self._keyboard_listener.start()
             self._keyboard_active = True
             log.info("Keyboard pause/resume enabled (Press 'p' or Pause/Break to toggle)")
         except Exception as e:
             log.warning(f"Failed to setup keyboard handler: {e}")
             self._keyboard_active = False
-            # Ensure cleanup even on failure
-            try:
-                keyboard.unhook_all()
-            except Exception:
-                pass
+            self._keyboard_listener = None
 
     def set_status_callback(self, callback: Callable[[PauseResumeState], None]):
         """Set callback for state changes."""
@@ -203,9 +207,10 @@ class PauseResumeController:
     def cleanup(self):
         """Cleanup resources and keyboard handlers."""
         # Cleanup keyboard handlers
-        if self._keyboard_active:
+        if self._keyboard_active and self._keyboard_listener:
             try:
-                keyboard.unhook_all()
+                self._keyboard_listener.stop()
+                self._keyboard_listener = None
                 self._keyboard_active = False
                 log.debug("Keyboard handlers cleaned up")
             except Exception as e:
