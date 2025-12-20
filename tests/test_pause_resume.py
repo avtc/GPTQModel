@@ -17,7 +17,7 @@ class TestPauseResumeController:
 
     def test_initial_state(self):
         """Test that controller starts in running state."""
-        controller = PauseResumeController(enable_keyboard=False)
+        controller = PauseResumeController()
 
         assert controller.get_state() == PauseResumeState.RUNNING
         assert controller.is_running()
@@ -27,7 +27,7 @@ class TestPauseResumeController:
 
     def test_pause_requested_state(self):
         """Test pause request functionality."""
-        controller = PauseResumeController(enable_keyboard=False)
+        controller = PauseResumeController()
 
         # Request pause
         controller.pause()
@@ -39,7 +39,7 @@ class TestPauseResumeController:
 
     def test_pause_resume_cycle(self):
         """Test complete pause/resume cycle."""
-        controller = PauseResumeController(enable_keyboard=False)
+        controller = PauseResumeController()
 
         # Start running
         assert controller.is_running()
@@ -58,7 +58,7 @@ class TestPauseResumeController:
 
     def test_toggle_functionality(self):
         """Test toggle between pause and resume."""
-        controller = PauseResumeController(enable_keyboard=False)
+        controller = PauseResumeController()
 
         # Toggle to pause
         controller.toggle_pause_resume()
@@ -74,7 +74,7 @@ class TestPauseResumeController:
 
     def test_check_pause_point_when_running(self):
         """Test check_pause_point when running (should not block)."""
-        controller = PauseResumeController(enable_keyboard=False)
+        controller = PauseResumeController()
 
         start_time = time.time()
         result = controller.check_pause_point("test layer")
@@ -87,7 +87,7 @@ class TestPauseResumeController:
 
     def test_check_pause_point_with_pause_requested(self):
         """Test check_pause_point when pause was requested."""
-        controller = PauseResumeController(enable_keyboard=False)
+        controller = PauseResumeController()
 
         # Request pause
         controller.pause()
@@ -117,7 +117,7 @@ class TestPauseResumeController:
     def test_status_callback(self):
         """Test status callback functionality."""
         callback = Mock()
-        controller = PauseResumeController(enable_keyboard=False)
+        controller = PauseResumeController()
         controller.set_status_callback(callback)
 
         # Trigger state change
@@ -135,7 +135,7 @@ class TestPauseResumeController:
 
     def test_pause_context_manager(self):
         """Test pause_context context manager."""
-        controller = PauseResumeController(enable_keyboard=False)
+        controller = PauseResumeController()
 
         # Test when running
         with controller.pause_context("test operation"):
@@ -161,7 +161,7 @@ class TestPauseResumeController:
 
     def test_keyboard_disabled(self):
         """Test controller with keyboard disabled."""
-        controller = PauseResumeController(enable_keyboard=False)
+        controller = PauseResumeController()
 
         # Should work normally without keyboard
         controller.pause()
@@ -177,7 +177,7 @@ class TestPauseResumeController:
 
     def test_thread_safety(self):
         """Test thread safety of pause/resume operations."""
-        controller = PauseResumeController(enable_keyboard=False)
+        controller = PauseResumeController()
         results = []
         errors = []
 
@@ -216,7 +216,7 @@ class TestPauseResumeController:
 
     def test_cleanup(self):
         """Test cleanup functionality."""
-        controller = PauseResumeController(enable_keyboard=False)
+        controller = PauseResumeController()
 
         # Use controller
         controller.pause()
