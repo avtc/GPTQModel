@@ -74,6 +74,27 @@ class PauseResumeController:
         else:
             return ""
 
+    def status_icon(self) -> str:
+        """Get current status icon (⏸️ for pause states, ▶️ for running)."""
+        state = self.get_state()
+        if state == PauseResumeState.RUNNING:
+            return "▶️"
+        elif state in [PauseResumeState.PAUSE_REQUESTED, PauseResumeState.PAUSED]:
+            return "⏸️"
+        else:
+            return ""
+
+    def wrap_text(self, text: str) -> str:
+        """Wrap text with status icon and hint for progress bar display."""
+        icon = self.status_icon()
+        hint = self.get_status_hint()
+
+        if icon:
+            text = f"{icon} {text}"
+        if hint:
+            text = f"{text} {hint}"
+        return text
+
     def _setup_keyboard_handler(self):
         """Setup keyboard event handlers for pause/break keys."""
 

@@ -1074,7 +1074,9 @@ class AWQProcessor(LoopProcessor):
     def pack_module(self, named_linears: Dict[str, NamedModule], start_time, scales_list):
         for name, named_module in named_linears.items():
             # print("app_quant", name)
-            self.pb.title(f"Quantizing {named_module.name} in layer ").draw()
+            # Add pause/resume status
+            title_text = self._pause_controller.wrap_text(f"Quantizing {named_module.name} in layer")
+            self.pb.title(title_text).draw()
             linear_layer = named_module.module
             # NOTE: small regression in perplexity if linear layer uses .cpu().float()
             linear_layer = linear_layer.to(get_best_device()).half()

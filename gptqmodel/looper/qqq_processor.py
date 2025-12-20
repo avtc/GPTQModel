@@ -126,7 +126,9 @@ class QQQProcessor(LoopProcessor):
         subset_index: Optional[int] = None,
         subset_total: Optional[int] = None,
     ):
-        self.pb.title(f"Quantizing {module.name} in layer ").draw()
+        # Add pause/resume status
+        title_text = self._pause_controller.wrap_text(f"Quantizing {module.name} in layer")
+        self.pb.title(title_text).draw()
         qqq = self.tasks
 
         # logger.info(f"Quantizing module START: {name}, {gptq[name].shape()}")

@@ -87,6 +87,10 @@ class ModuleLooper():
     def __init__(self, model: BaseQModel, processors: List[LoopProcessor]):
         self.processors = processors
         self.gptq_model = model
+
+        # Give processors access to pause controller for status
+        for processor in self.processors:
+            processor._pause_controller = self.pause_controller
         self.support_batch_quantize = model.support_batch_quantize
         self.lock = threading.Lock()
         self._layer_callback = getattr(model, "layer_callback", None)
