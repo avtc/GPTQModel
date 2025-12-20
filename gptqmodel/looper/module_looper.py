@@ -1328,22 +1328,10 @@ class ModuleLooper():
         return pre_hook
 
     def _on_pause_resume_state_change(self, state: PauseResumeState):
-        """Handle pause/resume state changes for progress bar updates."""
-        # Update progress bars with pause/resume status
-        try:
-            # Try to get the current progress bar from processors
-            for processor in self.processors:
-                if hasattr(processor, 'pb') and processor.pb is not None:
-                    pb = processor.pb
-                    if state == PauseResumeState.PAUSE_REQUESTED:
-                        pb.subtitle("[PAUSE REQUESTED] Will pause after current layer").draw()
-                    elif state == PauseResumeState.PAUSED:
-                        pb.subtitle("[PAUSED] Press 'p' or Pause/Break to resume").draw()
-                    elif state == PauseResumeState.RUNNING:
-                        # Restore normal subtitle (will be updated by next iteration)
-                        pass
-        except Exception as e:
-            log.debug(f"Error updating progress bar with pause state: {e}")
+        """Handle pause/resume state changes."""
+        # Status is now handled by the dedicated status line in PauseResumeController
+        # No need to modify progress bar subtitles
+        pass
 
     def cache_inputs(self, layers, calibration_data, use_cache):
         capture_stage = StageInputsCapture(self, logger=log)
