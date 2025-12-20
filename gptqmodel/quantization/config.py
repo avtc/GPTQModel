@@ -254,9 +254,6 @@ class QuantizeConfig():
     # skip all heavy computations for testing model loading
     mock_quantization: bool = field(default=False, metadata={"help": "Skip heavy computations for fast model loading validation"})
 
-    # pause/resume functionality
-    enable_pause_resume: bool = field(default=True, metadata={"help": "Enable pause/resume functionality during quantization with keyboard controls"})
-
     # Hessian accumulation controls (GPTQ only)
     hessian_chunk_size: Optional[int] = field(default=None, metadata={"help": "Maximum rows per Hessian chunk"})
     hessian_chunk_bytes: Optional[int] = field(default=None, metadata={"help": "Memory budget (in bytes) for Hessian chunk staging"})

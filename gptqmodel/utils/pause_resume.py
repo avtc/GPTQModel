@@ -11,10 +11,9 @@ Provides thread-safe pause/resume capabilities with keyboard input handling.
 import threading
 import logging
 from enum import Enum
-from typing import Optional, Callable
+from typing import Dict, List, Optional, Callable
 from contextlib import contextmanager
 from pynput import keyboard
-from logbar import LogBar
 
 log = logging.getLogger(__name__)
 
@@ -36,12 +35,9 @@ class PauseResumeController:
     - Integration with progress tracking
     """
 
-    def __init__(self, enable_keyboard: bool = True):
+    def __init__(self):
         """
         Initialize the pause/resume controller.
-
-        Args:
-            enable_keyboard: Whether to enable keyboard input handling
         """
         self._state = PauseResumeState.RUNNING
         self._state_lock = threading.RLock()
@@ -49,7 +45,6 @@ class PauseResumeController:
         self._resume_event = threading.Event()
 
         # Keyboard handling
-        self._keyboard_enabled = enable_keyboard
         self._keyboard_active = False
         self._keyboard_listener = None
 
@@ -62,8 +57,7 @@ class PauseResumeController:
         # Initialize events
         self._resume_event.set()  # Allow execution to start
 
-        if self._keyboard_enabled:
-            self._setup_keyboard_handler()
+        self._setup_keyboard_handler()
 
     def get_status_hint(self) -> str:
         """Get status hint for main progress bar."""
@@ -298,17 +292,3 @@ class PauseResumeController:
         with self._state_lock:
             if self._state != PauseResumeState.RUNNING:
                 self._set_state(PauseResumeState.RUNNING)
-
-
-# Convenience function for quick setup
-def create_pause_controller(enable_keyboard: bool = True) -> PauseResumeController:
-    """
-    Create a pause/resume controller with sensible defaults.
-
-    Args:
-        enable_keyboard: Whether to enable keyboard input handling
-
-    Returns:
-        Configured PauseResumeController instance
-    """
-    return PauseResumeController(enable_keyboard=enable_keyboard)
