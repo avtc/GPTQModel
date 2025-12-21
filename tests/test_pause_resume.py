@@ -163,34 +163,49 @@ class TestPauseResumeController:
     @patch('sys.stdin.isatty', return_value=True)
     def test_keyboard_input_toggles_pause(self, mock_isatty):
         """Test that keyboard input 'p' toggles the pause state."""
+        
+        state_changed = threading.Event()
+        
+        def state_change_callback(new_state):
+            # This callback will be executed in the listener thread
+            state_changed.set()
+
         if sys.platform == "win32":
-            # Simulate two key presses with delays in between
-            kbhit_mock = Mock(side_effect=[True, False, True, False, False, False])
+            # On each call to kbhit, we want to simulate a key press only on the first and third check
+            # The listener thread loops roughly every 0.1s
+            kbhit_mock = Mock(side_effect=[True, False, True, False, False, False, False, False])
             getch_mock = Mock(return_value=b'p')
             
             with patch('msvcrt.kbhit', kbhit_mock), \
                  patch('msvcrt.getch', getch_mock):
                 
                 controller = PauseResumeController()
+                controller.set_status_callback(state_change_callback)
                 
-                # Allow listener to detect first key press
-                time.sleep(0.15)
+                # Wait for the listener thread to detect the first key press
+                assert state_changed.wait(timeout=1), "Timeout waiting for first state change"
                 assert controller.get_state() == PauseResumeState.PAUSE_REQUESTED
                 assert getch_mock.call_count == 1
 
-                # Allow listener to detect second key press
-                time.sleep(0.25)
+                # Reset event for the next state change
+                state_changed.clear()
+                
+                # Wait for the listener thread to detect the second key press
+                assert state_changed.wait(timeout=1), "Timeout waiting for second state change"
                 assert controller.get_state() == PauseResumeState.RUNNING
                 assert getch_mock.call_count == 2
 
                 controller.cleanup()
         else:  # POSIX
-            # Simulate two key presses with delays
+            # On each call to select, we want to simulate a key press only on the first and third check
             select_mock = Mock(side_effect=[
                 ([sys.stdin], [], []),  # First press
-                ([], [], []),
+                ([], [], []),           # No press
                 ([sys.stdin], [], []),  # Second press
-                ([], [], []), ([], [], []),
+                ([], [], []),           # No press
+                ([], [], []),           # ... and so on
+                ([], [], []),
+                ([], [], []),
             ])
             read_mock = Mock(return_value='p')
 
@@ -201,14 +216,18 @@ class TestPauseResumeController:
                  patch('tty.setcbreak'):
                 
                 controller = PauseResumeController()
+                controller.set_status_callback(state_change_callback)
 
-                # Allow listener to detect first key press
-                time.sleep(0.15)
+                # Wait for the listener thread to detect the first key press
+                assert state_changed.wait(timeout=1), "Timeout waiting for first state change"
                 assert controller.get_state() == PauseResumeState.PAUSE_REQUESTED
                 assert read_mock.call_count == 1
+
+                # Reset event for the next state change
+                state_changed.clear()
                 
-                # Allow listener to detect second key press
-                time.sleep(0.25)
+                # Wait for the listener thread to detect the second key press
+                assert state_changed.wait(timeout=1), "Timeout waiting for second state change"
                 assert controller.get_state() == PauseResumeState.RUNNING
                 assert read_mock.call_count == 2
                 
