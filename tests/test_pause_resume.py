@@ -13,18 +13,6 @@ import pytest
 from gptqmodel.utils.pause_resume import PauseResumeController, PauseResumeState
 
 
-@pytest.fixture
-def mock_stdin():
-    """Fixture to mock stdin for testing."""
-    if sys.platform == "win32":
-        with patch('msvcrt.kbhit', return_value=True), \
-             patch('msvcrt.getch', return_value=b'p'):
-            yield
-    else:
-        with patch('select.select', return_value=([sys.stdin], [], [])), \
-             patch('sys.stdin.read', return_value='p'):
-            yield
-
 class TestPauseResumeController:
     """Test the pause/resume controller functionality."""
 
@@ -173,19 +161,58 @@ class TestPauseResumeController:
         controller.cleanup()
 
     @patch('sys.stdin.isatty', return_value=True)
-    def test_keyboard_input_toggles_pause(self, mock_isatty, mock_stdin):
+    def test_keyboard_input_toggles_pause(self, mock_isatty):
         """Test that keyboard input 'p' toggles the pause state."""
-        controller = PauseResumeController()
-        
-        # Simulate a key press 'p'
-        # The listener runs in a background thread, so we wait a bit for it to process
-        time.sleep(0.2) 
-        assert controller.get_state() == PauseResumeState.PAUSE_REQUESTED
+        if sys.platform == "win32":
+            # Simulate two key presses with delays in between
+            kbhit_mock = Mock(side_effect=[True, False, True, False, False, False])
+            getch_mock = Mock(return_value=b'p')
+            
+            with patch('msvcrt.kbhit', kbhit_mock), \
+                 patch('msvcrt.getch', getch_mock):
+                
+                controller = PauseResumeController()
+                
+                # Allow listener to detect first key press
+                time.sleep(0.15)
+                assert controller.get_state() == PauseResumeState.PAUSE_REQUESTED
+                assert getch_mock.call_count == 1
 
-        time.sleep(0.2)
-        assert controller.get_state() == PauseResumeState.RUNNING
-        
-        controller.cleanup()
+                # Allow listener to detect second key press
+                time.sleep(0.25)
+                assert controller.get_state() == PauseResumeState.RUNNING
+                assert getch_mock.call_count == 2
+
+                controller.cleanup()
+        else:  # POSIX
+            # Simulate two key presses with delays
+            select_mock = Mock(side_effect=[
+                ([sys.stdin], [], []),  # First press
+                ([], [], []),
+                ([sys.stdin], [], []),  # Second press
+                ([], [], []), ([], [], []),
+            ])
+            read_mock = Mock(return_value='p')
+
+            with patch('select.select', select_mock), \
+                 patch('sys.stdin.read', read_mock), \
+                 patch('termios.tcgetattr'), \
+                 patch('termios.tcsetattr'), \
+                 patch('tty.setcbreak'):
+                
+                controller = PauseResumeController()
+
+                # Allow listener to detect first key press
+                time.sleep(0.15)
+                assert controller.get_state() == PauseResumeState.PAUSE_REQUESTED
+                assert read_mock.call_count == 1
+                
+                # Allow listener to detect second key press
+                time.sleep(0.25)
+                assert controller.get_state() == PauseResumeState.RUNNING
+                assert read_mock.call_count == 2
+                
+                controller.cleanup()
 
     def test_thread_safety(self):
         """Test thread safety of pause/resume operations."""
