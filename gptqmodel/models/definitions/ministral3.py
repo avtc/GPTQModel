@@ -13,6 +13,9 @@ class Ministral3QModel(BaseQModel):
     # the o_proj must match v_proj or else scaling optimizations are skipped (GQA vs MHA)
     awq_scale_optimize_shape_dependent_modules = ["self_attn.o_proj"]
 
+    # Ministral3 requires custom modeling files since it's only in transformers v5.0.0rc0+
+    require_trust_remote_code = True
+
     module_tree = [
         "model",
         "layers",
