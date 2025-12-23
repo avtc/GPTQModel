@@ -4,32 +4,16 @@
 #             the file from the modular. If any change should be done, please apply the change to the
 #                          modular_ministral3.py file directly. One of our CI enforces this.
 #                🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨
-from collections.abc import Callable
-from typing import Optional, Union
+from typing import Optional, Union, Tuple, Callable, Dict, Any
 
 import torch
 from torch import nn
 
-from transformers.utils.generic import check_model_inputs
-
 from transformers.activations import ACT2FN
-from transformers.cache_utils import Cache, DynamicCache
+from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
-from transformers.integrations import use_kernel_forward_from_hub, use_kernel_func_from_hub, use_kernelized_func
-from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
-from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
-from transformers.modeling_layers import (
-    GenericForQuestionAnswering,
-    GenericForSequenceClassification,
-    GenericForTokenClassification,
-    GradientCheckpointingLayer,
-)
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
-from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS, dynamic_rope_update
-from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
-from transformers.processing_utils import Unpack
-from transformers.utils import TransformersKwargs, auto_docstring, can_return_tuple
-from transformers.utils.generic import maybe_autocast
+from transformers.modeling_utils import PreTrainedModel
 from .configuration_ministral3 import Ministral3Config
 
 
@@ -40,7 +24,6 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 
-@use_kernel_func_from_hub("rotary_pos_emb")
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """Applies Rotary Position Embedding to the query and key tensors.
 
@@ -88,7 +71,7 @@ def eager_attention_forward(
     attention_mask: Optional[torch.Tensor],
     scaling: float,
     dropout: float = 0.0,
-    **kwargs: Unpack[TransformersKwargs],
+    **kwargs,
 ):
     key_states = repeat_kv(key, module.num_key_value_groups)
     value_states = repeat_kv(value, module.num_key_value_groups)
@@ -111,7 +94,6 @@ def _get_llama_4_attn_scale(positions_ids: torch.Tensor, beta: float, max_positi
     return scaling.unsqueeze(-1)
 
 
-@use_kernelized_func(apply_rotary_pos_emb)
 class Ministral3Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
@@ -132,12 +114,12 @@ class Ministral3Attention(nn.Module):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        position_embeddings: Tuple[torch.Tensor, torch.Tensor],
         attention_mask: Optional[torch.Tensor],
-        past_key_values: Optional[Cache] = None,
+        past_key_values: Optional[Union[Cache, Tuple[Tuple[torch.Tensor, torch.Tensor], ...]]] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        **kwargs,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -154,15 +136,17 @@ class Ministral3Attention(nn.Module):
         ).to(query_states.dtype)
 
         if past_key_values is not None:
-            # sin and cos are specific to RoPE models; cache_position needed for the static cache
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            # For v4.57.3 compatibility, update tuple-based cache
+            if past_key_values[self.layer_idx][0] is not None:
+                past_key = past_key_values[self.layer_idx][0]
+                past_value = past_key_values[self.layer_idx][1]
+                # Concatenate past and new key/value states
+                key_states = torch.cat([past_key, key_states], dim=2)
+                value_states = torch.cat([past_value, value_states], dim=2)
+            # Update cache with new key/value states
+            past_key_values[self.layer_idx] = (key_states, value_states)
 
-        attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != "eager":
-            attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
-
-        attn_output, attn_weights = attention_interface(
+        attn_output, attn_weights = eager_attention_forward(
             self,
             query_states,
             key_states,
@@ -170,7 +154,6 @@ class Ministral3Attention(nn.Module):
             attention_mask,
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
-            sliding_window=getattr(self.config, "sliding_window", None),  # main diff with Llama
             **kwargs,
         )
 
@@ -195,7 +178,6 @@ class Ministral3MLP(nn.Module):
         return down_proj
 
 
-@use_kernel_forward_from_hub("RMSNorm")
 class Ministral3RMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         """
@@ -216,7 +198,7 @@ class Ministral3RMSNorm(nn.Module):
         return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
 
 
-class Ministral3DecoderLayer(GradientCheckpointingLayer):
+class Ministral3DecoderLayer(nn.Module):
     def __init__(self, config: Ministral3Config, layer_idx: int):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -230,11 +212,11 @@ class Ministral3DecoderLayer(GradientCheckpointingLayer):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
+        past_key_values: Optional[Union[Cache, Tuple[Tuple[torch.Tensor, torch.Tensor], ...]]] = None,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
-        **kwargs: Unpack[TransformersKwargs],
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        **kwargs,
     ) -> torch.Tensor:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -259,23 +241,14 @@ class Ministral3DecoderLayer(GradientCheckpointingLayer):
         return hidden_states
 
 
-@auto_docstring
 class Ministral3PreTrainedModel(PreTrainedModel):
     config: Ministral3Config
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _no_split_modules = ["Ministral3DecoderLayer"]
     _skip_keys_device_placement = ["past_key_values"]
-    _supports_flash_attn = True
+    _supports_flash_attn_2 = True
     _supports_sdpa = True
-    _supports_flex_attn = True
-
-    _can_compile_fullgraph = True
-    _supports_attention_backend = True
-    _can_record_outputs = {
-        "hidden_states": Ministral3DecoderLayer,
-        "attentions": Ministral3Attention,
-    }
 
 
 class Ministral3RotaryEmbedding(nn.Module):
@@ -287,12 +260,10 @@ class Ministral3RotaryEmbedding(nn.Module):
         self.original_max_seq_len = config.max_position_embeddings
 
         self.config = config
-
-        self.rope_type = self.config.rope_parameters["rope_type"]
-        rope_init_fn: Callable = self.compute_default_rope_parameters
-        if self.rope_type != "default":
-            rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
-        inv_freq, self.attention_scaling = rope_init_fn(self.config, device)
+        self.rope_type = self.config.rope_parameters.get("type", "default")
+        
+        # Compute inverse frequencies
+        inv_freq, self.attention_scaling = self.compute_default_rope_parameters(config, device)
 
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.register_buffer("original_inv_freq", inv_freq.clone(), persistent=False)
@@ -302,7 +273,7 @@ class Ministral3RotaryEmbedding(nn.Module):
         config: Optional[Ministral3Config] = None,
         device: Optional["torch.device"] = None,
         seq_len: Optional[int] = None,
-    ) -> tuple["torch.Tensor", float]:
+    ) -> Tuple["torch.Tensor", float]:
         """
         Computes the inverse frequencies according to the original RoPE implementation
         Args:
@@ -316,34 +287,31 @@ class Ministral3RotaryEmbedding(nn.Module):
             Tuple of (`torch.Tensor`, `float`), containing the inverse frequencies for the RoPE embeddings and the
             post-processing scaling factor applied to the computed cos/sin (unused in this type of RoPE).
         """
-        base = config.rope_parameters["rope_theta"]
+        rope_theta = config.rope_parameters.get("rope_theta", 1000000.0)
         dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
 
-        attention_factor = 1.0  # Unused in this type of RoPE
+        attention_factor = config.rope_parameters.get("mscale", 1.0)
 
         # Compute the inverse frequencies
         inv_freq = 1.0 / (
-            base ** (torch.arange(0, dim, 2, dtype=torch.int64).to(device=device, dtype=torch.float) / dim)
+            rope_theta ** (torch.arange(0, dim, 2, dtype=torch.int64).to(device=device, dtype=torch.float) / dim)
         )
         return inv_freq, attention_factor
 
     @torch.no_grad()
-    @dynamic_rope_update  # power user: used with advanced RoPE types (e.g. dynamic rope)
     def forward(self, x, position_ids):
         inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
         position_ids_expanded = position_ids[:, None, :].float()
 
-        device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
-        with maybe_autocast(device_type=device_type, enabled=False):  # Force float32
-            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
-            emb = torch.cat((freqs, freqs), dim=-1)
-            cos = emb.cos() * self.attention_scaling
-            sin = emb.sin() * self.attention_scaling
+        # Force float32 computation for RoPE
+        freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        cos = emb.cos() * self.attention_scaling
+        sin = emb.sin() * self.attention_scaling
 
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
-@auto_docstring
 class Ministral3Model(Ministral3PreTrainedModel):
     def __init__(self, config: Ministral3Config):
         super().__init__(config)
@@ -361,18 +329,16 @@ class Ministral3Model(Ministral3PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @check_model_inputs
-    @auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
+        past_key_values: Optional[Union[Cache, Tuple[Tuple[torch.Tensor, torch.Tensor], ...]]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        **kwargs: Unpack[TransformersKwargs],
+        **kwargs,
     ) -> BaseModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -381,10 +347,17 @@ class Ministral3Model(Ministral3PreTrainedModel):
             inputs_embeds = self.embed_tokens(input_ids)
 
         if use_cache and past_key_values is None:
-            past_key_values = DynamicCache(config=self.config)
+            # For v4.57.3 compatibility, initialize cache as tuple of tuples
+            batch_size = inputs_embeds.shape[0]
+            past_key_values = tuple(
+                (None, None) for _ in range(config.num_hidden_layers)
+            )
 
         if cache_position is None:
-            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            # For v4.57.3 compatibility, get cache length from first layer
+            past_seen_tokens = 0
+            if past_key_values is not None and past_key_values[0][0] is not None:
+                past_seen_tokens = past_key_values[0][0].shape[2]
             cache_position = torch.arange(
                 past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
@@ -392,15 +365,14 @@ class Ministral3Model(Ministral3PreTrainedModel):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        mask_function = create_causal_mask if self.config.sliding_window is None else create_sliding_window_causal_mask
-        causal_mask = mask_function(
-            config=self.config,
-            input_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-            cache_position=cache_position,
-            past_key_values=past_key_values,
-            position_ids=position_ids,
-        )
+        # Create causal mask compatible with v4.57.3
+        causal_mask = None
+        if attention_mask is not None:
+            batch_size, seq_length = inputs_embeds.shape[:2]
+            causal_mask = attention_mask[:, :, None, None, :]
+            causal_mask = causal_mask.to(dtype=inputs_embeds.dtype)
+            if causal_mask.size(1) > 1:
+                causal_mask = causal_mask[:, -1:, :, :, :]
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids=position_ids)
@@ -423,7 +395,6 @@ class Ministral3Model(Ministral3PreTrainedModel):
         )
 
 
-@auto_docstring
 class Ministral3ForCausalLM(Ministral3PreTrainedModel, GenerationMixin):
     _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
     _tp_plan = {"lm_head": "colwise_rep"}
@@ -438,20 +409,18 @@ class Ministral3ForCausalLM(Ministral3PreTrainedModel, GenerationMixin):
         # Initialize weights and apply final processing
         self.post_init()
 
-    @can_return_tuple
-    @auto_docstring
     def forward(
         self,
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
+        past_key_values: Optional[Union[Cache, Tuple[Tuple[torch.Tensor, torch.Tensor], ...]]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
-        **kwargs: Unpack[TransformersKwargs],
+        **kwargs,
     ) -> CausalLMOutputWithPast:
         r"""
         Example:
@@ -499,23 +468,13 @@ class Ministral3ForCausalLM(Ministral3PreTrainedModel, GenerationMixin):
         )
 
 
-class Ministral3ForTokenClassification(GenericForTokenClassification, Ministral3PreTrainedModel):
-    pass
-
-
-class Ministral3ForSequenceClassification(GenericForSequenceClassification, Ministral3PreTrainedModel):
-    pass
-
-
-class Ministral3ForQuestionAnswering(GenericForQuestionAnswering, Ministral3PreTrainedModel):
-    pass
+# For v4.57.3 compatibility, these generic classes are not available
+# These classes are typically not needed for GPTQ quantized models
+# which primarily use Ministral3ForCausalLM
 
 
 __all__ = [
     "Ministral3ForCausalLM",
-    "Ministral3ForQuestionAnswering",
     "Ministral3Model",
     "Ministral3PreTrainedModel",
-    "Ministral3ForSequenceClassification",
-    "Ministral3ForTokenClassification",
 ]

@@ -14,10 +14,9 @@
 # limitations under the License.
 """Ministral model configuration"""
 
-from typing import Optional
+from typing import Optional, Union, Dict, Any
 
 from transformers.configuration_utils import PreTrainedConfig
-from transformers.modeling_rope_utils import RopeParameters
 from transformers.utils import logging
 
 
@@ -142,7 +141,7 @@ class Ministral3Config(PreTrainedConfig):
         bos_token_id: Optional[int] = 1,
         eos_token_id: Optional[int] = 2,
         tie_word_embeddings: Optional[bool] = False,
-        rope_parameters: Optional[RopeParameters | dict[str, RopeParameters]] = None,
+        rope_parameters: Optional[Union[Dict[str, Any], dict]] = None,
         sliding_window: Optional[int] = None,
         attention_dropout: Optional[float] = 0.0,
         **kwargs,
