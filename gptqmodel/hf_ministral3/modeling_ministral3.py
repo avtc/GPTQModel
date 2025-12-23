@@ -4,13 +4,14 @@
 #             the file from the modular. If any change should be done, please apply the change to the
 #                          modular_ministral3.py file directly. One of our CI enforces this.
 #                🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨🚨
-from typing import Optional, Tuple, Union
+from typing import Optional, Union, Tuple, Callable, Dict, Any
 
 import torch
 from torch import nn
 
 from transformers.activations import ACT2FN
-from transformers.generation.utils import GenerationMixin
+from transformers.cache_utils import Cache
+from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from transformers.modeling_utils import PretrainedModel
 from .configuration_ministral3 import Ministral3Config
@@ -94,11 +95,13 @@ def _get_llama_4_attn_scale(positions_ids: torch.Tensor, beta: float, max_positi
 
 
 class Ministral3Attention(nn.Module):
+    """Multi-headed attention from 'Attention Is All You Need' paper"""
+
     def __init__(self, config: Ministral3Config, layer_idx: int):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
-        self.head_dim = config.hidden_size // config.num_attention_heads
+        self.head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
         self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
         self.scaling = self.head_dim**-0.5
         self.attention_dropout = config.attention_dropout
@@ -107,26 +110,22 @@ class Ministral3Attention(nn.Module):
         self.k_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(config.hidden_size, config.num_key_value_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(config.num_attention_heads * self.head_dim, config.hidden_size, bias=False)
-        self.num_attention_heads = config.num_attention_heads
-        self.num_key_value_heads = config.num_key_value_heads
-        self.hidden_size = config.hidden_size
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         position_embeddings: Tuple[torch.Tensor, torch.Tensor],
-        attention_mask: Optional[torch.Tensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        output_attentions: bool = False,
-        use_cache: bool = False,
+        attention_mask: Optional[torch.Tensor],
+        past_key_values: Optional[Union[Cache, Tuple[Tuple[torch.Tensor, torch.Tensor], ...]]] = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        bsz, q_len, _ = hidden_states.shape
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        input_shape = hidden_states.shape[:-1]
+        hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_proj(hidden_states).view(bsz, q_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
-        key_states = self.k_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = self.v_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        query_states = self.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
@@ -136,11 +135,16 @@ class Ministral3Attention(nn.Module):
             self.config.rope_parameters.get("original_max_position_embeddings"),
         ).to(query_states.dtype)
 
-        if past_key_value is not None:
-            key_states = torch.cat([past_key_value[0], key_states], dim=2)
-            value_states = torch.cat([past_key_value[1], value_states], dim=2)
-
-        past_key_value = (key_states, value_states) if use_cache else None
+        if past_key_values is not None:
+            # For v4.57.3 compatibility, update tuple-based cache
+            if past_key_values[self.layer_idx][0] is not None:
+                past_key = past_key_values[self.layer_idx][0]
+                past_value = past_key_values[self.layer_idx][1]
+                # Concatenate past and new key/value states
+                key_states = torch.cat([past_key, key_states], dim=2)
+                value_states = torch.cat([past_value, value_states], dim=2)
+            # Update cache with new key/value states
+            past_key_values[self.layer_idx] = (key_states, value_states)
 
         attn_output, attn_weights = eager_attention_forward(
             self,
@@ -150,18 +154,12 @@ class Ministral3Attention(nn.Module):
             attention_mask,
             dropout=0.0 if not self.training else self.attention_dropout,
             scaling=self.scaling,
-            sliding_window=getattr(self.config, "sliding_window", None),
             **kwargs,
         )
 
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
-
-        if not output_attentions:
-            attn_weights = None
-
-        return attn_output, attn_weights, past_key_value
+        return attn_output, attn_weights
 
 
 class Ministral3MLP(nn.Module):
@@ -214,30 +212,25 @@ class Ministral3DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
-        output_attentions: Optional[bool] = False,
+        past_key_values: Optional[Union[Cache, Tuple[Tuple[torch.Tensor, torch.Tensor], ...]]] = None,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         **kwargs,
-    ) -> Union[Tuple[torch.Tensor], Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, ...]]]:
+    ) -> torch.Tensor:
         residual = hidden_states
-
         hidden_states = self.input_layernorm(hidden_states)
-
         # Self Attention
-        attn_outputs, self_attn_weights, present_key_value = self.self_attn(
+        hidden_states, _ = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
             use_cache=use_cache,
-            position_embeddings=position_embeddings,
             cache_position=cache_position,
+            position_embeddings=position_embeddings,
             **kwargs,
         )
-        hidden_states = attn_outputs
-
         hidden_states = residual + hidden_states
 
         # Fully Connected
@@ -245,16 +238,7 @@ class Ministral3DecoderLayer(nn.Module):
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
-
-        outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (self_attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
-
-        return outputs
+        return hidden_states
 
 
 class Ministral3PreTrainedModel(PretrainedModel):
@@ -279,7 +263,7 @@ class Ministral3RotaryEmbedding(nn.Module):
         self.rope_type = self.config.rope_parameters.get("type", "default")
         
         # Compute inverse frequencies
-        inv_freq, self.attention_scaling = self.compute_default_rope_parameters(config, device=device)
+        inv_freq, self.attention_scaling = self.compute_default_rope_parameters(config, device)
 
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.register_buffer("original_inv_freq", inv_freq.clone(), persistent=False)
@@ -288,7 +272,21 @@ class Ministral3RotaryEmbedding(nn.Module):
     def compute_default_rope_parameters(
         config: Optional[Ministral3Config] = None,
         device: Optional["torch.device"] = None,
-    ) -> Tuple[torch.Tensor, float]:
+        seq_len: Optional[int] = None,
+    ) -> Tuple["torch.Tensor", float]:
+        """
+        Computes the inverse frequencies according to the original RoPE implementation
+        Args:
+            config ([`~transformers.PreTrainedConfig`]):
+                The model configuration.
+            device (`torch.device`):
+                The device to use for initialization of the inverse frequencies.
+            seq_len (`int`, *optional*):
+                The current sequence length. Unused for this type of RoPE.
+        Returns:
+            Tuple of (`torch.Tensor`, `float`), containing the inverse frequencies for the RoPE embeddings and the
+            post-processing scaling factor applied to the computed cos/sin (unused in this type of RoPE).
+        """
         rope_theta = config.rope_parameters.get("rope_theta", 1000000.0)
         dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
 
@@ -336,35 +334,30 @@ class Ministral3Model(Ministral3PreTrainedModel):
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Tuple[Tuple[torch.Tensor, torch.Tensor], ...]] = None,
+        past_key_values: Optional[Union[Cache, Tuple[Tuple[torch.Tensor, torch.Tensor], ...]]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
-    ) -> Union[Tuple, BaseModelOutputWithPast]:
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
+    ) -> BaseModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
-        past_seen_tokens = 0
-        if use_cache:
-            if past_key_values is None:
-                past_key_values = tuple([None] * len(self.layers))
-            past_seen_tokens = past_key_values[0][0].shape[2] if past_key_values[0] is not None else 0
+        if use_cache and past_key_values is None:
+            # For v4.57.3 compatibility, initialize cache as tuple of tuples
+            batch_size = inputs_embeds.shape[0]
+            past_key_values = tuple(
+                (None, None) for _ in range(config.num_hidden_layers)
+            )
 
         if cache_position is None:
+            # For v4.57.3 compatibility, get cache length from first layer
+            past_seen_tokens = 0
+            if past_key_values is not None and past_key_values[0][0] is not None:
+                past_seen_tokens = past_key_values[0][0].shape[2]
             cache_position = torch.arange(
                 past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
@@ -372,55 +365,33 @@ class Ministral3Model(Ministral3PreTrainedModel):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        causal_mask = self._update_causal_mask(attention_mask, inputs_embeds, cache_position)
+        # Create causal mask compatible with v4.57.3
+        causal_mask = None
+        if attention_mask is not None:
+            batch_size, seq_length = inputs_embeds.shape[:2]
+            causal_mask = attention_mask[:, :, None, None, :]
+            causal_mask = causal_mask.to(dtype=inputs_embeds.dtype)
+            if causal_mask.size(1) > 1:
+                causal_mask = causal_mask[:, -1:, :, :, :]
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids=position_ids)
 
-        all_hidden_states = () if output_hidden_states else None
-        all_self_attns = () if output_attentions else None
-        next_decoder_cache = () if use_cache else None
-
-        for idx, decoder_layer in enumerate(self.layers):
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-
-            past_key_value = past_key_values[idx] if past_key_values is not None else None
-
-            layer_outputs = decoder_layer(
+        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+            hidden_states = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask,
                 position_ids=position_ids,
-                past_key_value=past_key_value,
-                output_attentions=output_attentions,
+                past_key_values=past_key_values,
                 use_cache=use_cache,
                 cache_position=cache_position,
                 position_embeddings=position_embeddings,
                 **kwargs,
             )
-
-            hidden_states = layer_outputs[0]
-
-            if use_cache:
-                next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
-
-            if output_attentions:
-                all_self_attns += (layer_outputs[1],)
-
         hidden_states = self.norm(hidden_states)
-
-        if output_hidden_states:
-            all_hidden_states += (hidden_states,)
-
-        next_cache = next_decoder_cache if use_cache else None
-
-        if not return_dict:
-            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
-            past_key_values=next_cache,
-            hidden_states=all_hidden_states,
-            attentions=all_self_attns,
+            past_key_values=past_key_values if use_cache else None,
         )
 
 
@@ -440,59 +411,53 @@ class Ministral3ForCausalLM(Ministral3PreTrainedModel, GenerationMixin):
 
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
+        input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Tuple[Tuple[torch.Tensor, torch.Tensor], ...]] = None,
+        past_key_values: Optional[Union[Cache, Tuple[Tuple[torch.Tensor, torch.Tensor], ...]]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        logits_to_keep: Union[int, torch.Tensor] = 0,
         **kwargs,
-    ) -> Union[Tuple, CausalLMOutputWithPast]:
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+    ) -> CausalLMOutputWithPast:
+        r"""
+        Example:
 
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs = self.model(
+        ```python
+        >>> from transformers import AutoTokenizer, Ministral3ForCausalLM
+
+        >>> model = Ministral3ForCausalLM.from_pretrained("meta-ministral3/Ministral3-2-7B-hf")
+        >>> tokenizer = AutoTokenizer.from_pretrained("meta-ministral3/Ministral3-2-7b-hf")
+
+        >>> prompt = "Hey, are you conscious? Can you talk to me?"
+        >>> inputs = tokenizer(prompt, return_tensors="pt")
+
+        >>> # Generate
+        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
+        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+        ```"""
+        outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
             cache_position=cache_position,
             **kwargs,
         )
 
-        hidden_states = outputs[0]
-        logits = self.lm_head(hidden_states)
+        hidden_states = outputs.last_hidden_state
+        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+        logits = self.lm_head(hidden_states[:, slice_indices, :])
 
         loss = None
         if labels is not None:
-            # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            # Flatten the tokens
-            loss_fct = nn.CrossEntropyLoss()
-            shift_logits = shift_logits.view(-1, self.config.vocab_size)
-            shift_labels = shift_labels.view(-1)
-            # Enable model parallelism
-            shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
-
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            return (loss,) + output if loss is not None else output
+            loss = self.loss_function(logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs)
 
         return CausalLMOutputWithPast(
             loss=loss,
