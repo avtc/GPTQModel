@@ -13,7 +13,7 @@ from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache
 from transformers.generation import GenerationMixin
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
-from transformers.modeling_utils import PreTrainedModel
+from transformers.modeling_utils import PretrainedModel
 from .configuration_ministral3 import Ministral3Config
 
 
@@ -241,7 +241,7 @@ class Ministral3DecoderLayer(nn.Module):
         return hidden_states
 
 
-class Ministral3PreTrainedModel(PreTrainedModel):
+class Ministral3PreTrainedModel(PretrainedModel):
     config: Ministral3Config
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
