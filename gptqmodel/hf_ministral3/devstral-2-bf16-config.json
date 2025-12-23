@@ -32,11 +32,11 @@
     },
     "sliding_window": null,
     "tie_word_embeddings": false,
-    "transformers_version": "5.0.0.dev0",
+    "transformers_version": "4.57.3",
     "use_cache": true,
     "vocab_size": 131072,
     "auto_map": {
         "AutoConfig": "configuration_ministral3.Ministral3Config",
-        "AutoModelForCausalLM": "modeling_ministral3.Ministral3ForCausalLM"
+        "AutoModelForCausalLM": "modular_ministral3.Ministral3ForCausalLM"
     }
 }
