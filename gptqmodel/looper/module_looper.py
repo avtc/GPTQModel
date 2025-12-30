@@ -53,7 +53,8 @@ from ..utils.looper_helpers import (
 )
 from ..utils.model import find_modules, get_module, get_module_by_name_prefix, move_to, nested_move_to
 from ..utils.offload import offload_to_disk
-from ..utils.torch import (CPU, META, timed_gc_collect, torch_sync, tf32_high_precision_guard)
+from ..utils.torch import (CPU, META, timed_gc_collect, torch_sync, tf32_high_precision_guard, torch_empty_cache)
+from ..utils.vram import get_vram
 from .. import DEVICE_THREAD_POOL
 from .awq_processor import AWQProcessor
 from .qqq_processor import QQQProcessor
@@ -1321,6 +1322,14 @@ class ModuleLooper():
         layers, layers_prefix = get_module_by_name_prefix(self.gptq_model.model, self.gptq_model.extract_layers_node())
         region_timer = getattr(self.gptq_model, "quant_region_timer", None)
 
+        # VRAM DEBUG: Track initial state before input capture
+        log.info(f"[VRAM-DEBUG] ========== Starting Input Capture ==========")
+        torch_empty_cache()
+        for i in range(torch.cuda.device_count()):
+            allocated = torch.cuda.memory_allocated(i) / 1024**3
+            reserved = torch.cuda.memory_reserved(i) / 1024**3
+            log.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
         for p_index, processor in enumerate(self.processors):
             if not processor.verify_calibration_dataset(p_index):
                 if isinstance(processor, EoraProcessor) or\
@@ -1341,17 +1350,58 @@ class ModuleLooper():
                                             use_cache=False)
             processor.receive_input_cache(input_cache)
 
+        # VRAM DEBUG: Check memory after input capture
+        log.info(f"[VRAM-DEBUG] ========== Input Capture Complete ==========")
+        torch_empty_cache()
+        for i in range(torch.cuda.device_count()):
+            allocated = torch.cuda.memory_allocated(i) / 1024**3
+            reserved = torch.cuda.memory_reserved(i) / 1024**3
+            log.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
         # release calibration_dataset
         for processor in self.processors:
             processor.release_calibration_dataset()
 
         if self.gptq_model.quantize_config.offload_to_disk:
             log.info("Offloading base modules to disk...")
+
+            # VRAM DEBUG: Check memory before offloading
+            log.info(f"[VRAM-DEBUG] ========== Before Base Module Offload ==========")
+            torch_empty_cache()
+            for i in range(torch.cuda.device_count()):
+                allocated = torch.cuda.memory_allocated(i) / 1024**3
+                reserved = torch.cuda.memory_reserved(i) / 1024**3
+                log.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+            # Track base modules before offload
+            base_modules = self.gptq_model.get_base_modules(model=self.gptq_model.model)
+            log.info(f"[VRAM-DEBUG] Base modules to offload: {base_modules}")
+            for mod_name in base_modules[:5]:  # Log first 5
+                module, _ = get_module_by_name_prefix(self.gptq_model.model, [mod_name])
+                if module is not None:
+                    device = get_device(module)
+                    log.info(f"[VRAM-DEBUG]   - {mod_name}: device={device}")
+
             offload_to_disk(
                 model=self.gptq_model.model,
-                module=self.gptq_model.get_base_modules(model=self.gptq_model.model),
+                module=base_modules,
                 disk_path=self.gptq_model.quantize_config.offload_to_disk_path
             )
+
+            # VRAM DEBUG: Check memory after offloading
+            log.info(f"[VRAM-DEBUG] ========== After Base Module Offload ==========")
+            torch_empty_cache()
+            for i in range(torch.cuda.device_count()):
+                allocated = torch.cuda.memory_allocated(i) / 1024**3
+                reserved = torch.cuda.memory_reserved(i) / 1024**3
+                log.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+            # Track base modules after offload
+            for mod_name in base_modules[:5]:  # Log first 5
+                module, _ = get_module_by_name_prefix(self.gptq_model.model, [mod_name])
+                if module is not None:
+                    device = get_device(module)
+                    log.info(f"[VRAM-DEBUG]   - {mod_name}: device={device}")
 
         if region_timer is not None:
             region_timer.flush()
@@ -1392,6 +1442,21 @@ class ModuleLooper():
                 for part in module_path[:-1]:
                     parent = getattr(parent, part)
                 setattr(parent, module_path[-1], hooked_lm_head)
+
+        # VRAM DEBUG: Check memory before layer processing starts
+        log.info(f"[VRAM-DEBUG] ========== Starting Layer Quantization ==========")
+        torch_empty_cache()
+        for i in range(torch.cuda.device_count()):
+            allocated = torch.cuda.memory_allocated(i) / 1024**3
+            reserved = torch.cuda.memory_reserved(i) / 1024**3
+            log.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+        # Log info about first layer
+        if len(layers) > 0:
+            first_layer = layers[0]
+            log.info(f"[VRAM-DEBUG] First layer: {first_layer}")
+            first_layer_device = get_device(first_layer)
+            log.info(f"[VRAM-DEBUG] First layer device: {first_layer_device}")
 
         run_layer_stage(
             self,

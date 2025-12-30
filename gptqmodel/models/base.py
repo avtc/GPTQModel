@@ -1525,11 +1525,23 @@ class BaseQModel(nn.Module):
         with self._turtle_lock:
             turtle_model = self.turtle_model
 
+            # VRAM DEBUG: Track materialization
+            from ..utils.torch import torch_empty_cache
+            import torch
+
+            module_name = getattr(target_submodule, 'full_name', getattr(target_submodule, '__class__', {}).name) or str(type(target_submodule))
+            device_before = get_device(target_submodule)
+
             if turtle_model is None:
                 if get_device(target_submodule) != device:
                     target_submodule.to(device)
 
                 return target_submodule
+
+            # VRAM DEBUG: Log before materialization
+            if torch.cuda.is_available():
+                allocated_before = torch.cuda.memory_allocated(0) / 1024**3
+                log.info(f"[VRAM-DEBUG] shell_module_materialize: {module_name} | device_before={device_before} -> target_device={device} | VRAM_before={allocated_before:.2f}GB")
 
             module = alias_from_turtle_for_submodule(
                 target_model=self.model,
@@ -1537,6 +1549,13 @@ class BaseQModel(nn.Module):
                 target_submodule=target_submodule,
                 device=device,
             )
+
+            # VRAM DEBUG: Log after materialization
+            if torch.cuda.is_available():
+                torch_empty_cache()
+                allocated_after = torch.cuda.memory_allocated(0) / 1024**3
+                log.info(f"[VRAM-DEBUG] shell_module_materialize: {module_name} | VRAM_after={allocated_after:.2f}GB | delta={allocated_after - allocated_before:.2f}GB")
+
         self._maybe_auto_reload_after_alias(module, target_submodule)
         return module
 

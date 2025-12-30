@@ -20,7 +20,7 @@ from ..utils.device import get_device
 from ..utils.looper_helpers import device_ctx
 from ..utils.logger import setup_logger
 from ..utils.model import get_module_by_name_prefix, move_to, nested_move_to
-from ..utils.torch import CPU, META
+from ..utils.torch import CPU, META, torch_empty_cache
 
 if TYPE_CHECKING:  # pragma: no cover - import for typing only
     from .module_looper import ModuleLooper
@@ -145,6 +145,15 @@ class StageInputsCapture:
                     target_submodule=module,
                     device=cur_layer_device,
                 )
+
+        # VRAM DEBUG: Check memory after base module materialization for input capture
+        import torch
+        self.logger.info(f"[VRAM-DEBUG] ========== Input Capture: After Base Module Materialization ==========")
+        torch_empty_cache()
+        for i in range(torch.cuda.device_count()):
+            allocated = torch.cuda.memory_allocated(i) / 1024**3
+            reserved = torch.cuda.memory_reserved(i) / 1024**3
+            self.logger.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
 
         handle = layers[0].register_forward_pre_hook(store_input_hook, with_kwargs=True)
 
