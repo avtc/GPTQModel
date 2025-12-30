@@ -235,12 +235,9 @@ class StageInputsCapture:
             first_layer = layers[0]
             current_device = get_device(first_layer)
             if current_device.type == "cuda":
-                self.logger.info(f"[VRAM-DEBUG] Moving first layer back to CPU after input capture to free GPU memory")
-                # Move to CPU first, then meta (can't move directly from cuda to meta)
-                first_layer.to("cpu")
-                torch_empty_cache()
-                # Now move to meta to free all memory
-                first_layer.to(META.device)
+                self.logger.info(f"[VRAM-DEBUG] Moving first layer back to meta after input capture to free GPU memory")
+                # Move to meta to free all GPU memory
+                first_layer.to(META)
                 torch_empty_cache()
 
         result = InputCache(
