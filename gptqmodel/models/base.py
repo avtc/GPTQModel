@@ -1457,6 +1457,11 @@ class BaseQModel(nn.Module):
 
                     reload_kwargs = self._clone_model_init_kwargs(turtle_model)
                     config = turtle_model.config
+
+                    # DEBUG: Log what's in reload_kwargs to verify device_map presence
+                    log.info(f"[VRAM-DEBUG] reload_turtle_model: reload_kwargs keys = {list(reload_kwargs.keys())}")
+                    if 'device_map' in reload_kwargs:
+                        log.info(f"[VRAM-DEBUG] reload_turtle_model: device_map = {reload_kwargs['device_map']}")
                     
                     # Explicitly clear old model from GPU/CPU before loading new one
                     if hasattr(turtle_model, 'to'):
