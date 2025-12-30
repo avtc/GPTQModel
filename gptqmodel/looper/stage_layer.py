@@ -550,6 +550,52 @@ def run_layer_stage(
                             ).subtitle(subtitle).draw()
                     finally:
                         finalize_pb_local.close()
+
+                        # Base module offload after layer 0 finalize completes
+                        # This is delayed until after finalize to avoid breaking tensor sharing
+                        if layer_idx_for_callback == 0 and looper.gptq_model.quantize_config.offload_to_disk:
+                            from ..utils.model import get_module_by_name_prefix
+
+                            log.info("Offloading base modules to disk (delayed until after layer 0 finalize)...")
+
+                            # VRAM DEBUG: Check memory before offloading
+                            log.info(f"[VRAM-DEBUG] ========== Before Base Module Offload (after layer 0 finalize) ==========")
+                            torch_empty_cache()
+                            for i in range(torch.cuda.device_count()):
+                                allocated = torch.cuda.memory_allocated(i) / 1024**3
+                                reserved = torch.cuda.memory_reserved(i) / 1024**3
+                                log.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+                            # Track base modules before offload
+                            base_modules = looper.gptq_model.get_base_modules(model=looper.gptq_model.model)
+                            log.info(f"[VRAM-DEBUG] Base modules to offload: {base_modules}")
+                            for mod_name in base_modules[:5]:  # Log first 5
+                                module, _ = get_module_by_name_prefix(looper.gptq_model.model, [mod_name])
+                                if module is not None:
+                                    device = get_device(module)
+                                    log.info(f"[VRAM-DEBUG]   - {mod_name}: device={device}")
+
+                            offload_to_disk(
+                                model=looper.gptq_model.model,
+                                module=base_modules,
+                                disk_path=looper.gptq_model.quantize_config.offload_to_disk_path
+                            )
+
+                            # VRAM DEBUG: Check memory after offloading
+                            log.info(f"[VRAM-DEBUG] ========== After Base Module Offload (after layer 0 finalize) ==========")
+                            torch_empty_cache()
+                            for i in range(torch.cuda.device_count()):
+                                allocated = torch.cuda.memory_allocated(i) / 1024**3
+                                reserved = torch.cuda.memory_reserved(i) / 1024**3
+                                log.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+                            # Track base modules after offload
+                            for mod_name in base_modules[:5]:  # Log first 5
+                                module, _ = get_module_by_name_prefix(looper.gptq_model.model, [mod_name])
+                                if module is not None:
+                                    device = get_device(module)
+                                    log.info(f"[VRAM-DEBUG]   - {mod_name}: device={device}")
+
                         looper._emit_layer_complete(
                             layer_idx=layer_idx_for_callback,
                             submodule_finalized=True,
@@ -587,3 +633,4 @@ def run_layer_stage(
                         submodule_finalized=True,
                         raise_in_place=True,
                     )
+
