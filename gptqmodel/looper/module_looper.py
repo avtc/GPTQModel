@@ -1330,6 +1330,14 @@ class ModuleLooper():
             reserved = torch.cuda.memory_reserved(i) / 1024**3
             log.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
 
+        # VRAM FIX: Suspend turtle reload during input capture to preserve tensor storage sharing
+        # When turtle model reloads, cached tensors that share storage with the old model become orphaned
+        # and must allocate independent memory, effectively doubling InputCache size
+        original_turtle_threshold = getattr(self.gptq_model, '_turtle_reload_threshold_bytes', 0)
+        if self.gptq_model.quantize_config.offload_to_disk:
+            log.info(f"[VRAM-DEBUG] Suspending turtle reload during input capture (original threshold: {original_turtle_threshold/1024**3:.2f}GB)")
+            self.gptq_model._turtle_reload_threshold_bytes = float('inf')  # Effectively disable reload
+
         for p_index, processor in enumerate(self.processors):
             if not processor.verify_calibration_dataset(p_index):
                 if isinstance(processor, EoraProcessor) or\
@@ -1364,6 +1372,16 @@ class ModuleLooper():
 
         # NOTE: Base module offload moved to stage_layer.py after layer 0 completes
         # to avoid breaking tensor sharing between InputCache and intermediate computation buffers
+
+        # VRAM FIX: Restore turtle reload threshold and trigger any pending reload
+        if self.gptq_model.quantize_config.offload_to_disk:
+            log.info(f"[VRAM-DEBUG] Restoring turtle reload threshold to {original_turtle_threshold/1024**3:.2f}GB")
+            self.gptq_model._turtle_reload_threshold_bytes = original_turtle_threshold
+            # Trigger the pending reload now that input capture is done
+            # This ensures turtle model is fresh for layer quantization without breaking InputCache
+            if self.gptq_model._turtle_reload_accum_bytes >= original_turtle_threshold:
+                log.info(f"[VRAM-DEBUG] Triggering deferred turtle reload (accum={self.gptq_model._turtle_reload_accum_bytes/1024**3:.2f}GB)")
+                self.gptq_model.reload_turtle_model(source="deferred:post_input_capture")
 
         if region_timer is not None:
             region_timer.flush()
