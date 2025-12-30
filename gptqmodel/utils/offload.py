@@ -196,6 +196,16 @@ def _offload_disk_locked(module: nn.Module, name: str, disk_path: str = "."):
         return
 
     m_device = get_device(module)
+
+    # FIX: Move module from CUDA to CPU first to free VRAM immediately
+    # Then use CPU as execution_device for disk_offload so weights are loaded from disk to CPU (not GPU)
+    # This ensures GPU memory is actually freed while keeping weights accessible on CPU
+    if m_device.type == "cuda":
+        print(f"[VRAM_FIX] Moving '{name}' from {m_device} to CPU before disk_offload to ensure VRAM is freed")
+        module.to(CPU)
+        torch_empty_cache()
+        m_device = CPU  # Update m_device since we moved the module
+
     if m_device.type == "cuda":
         torch.cuda.set_device(m_device)
 
