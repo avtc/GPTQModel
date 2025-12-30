@@ -32,13 +32,6 @@ from torch import nn
 
 from ..utils.logger import setup_logger
 
-# Import accelerate utilities for hook removal
-try:
-    from accelerate.hooks import remove_hook_from_submodules, remove_hook_from_module
-    ACCELERATE_AVAILABLE = True
-except ImportError:
-    ACCELERATE_AVAILABLE = False
-
 
 # =========================
 #   ANSI color helpers
@@ -575,19 +568,6 @@ def alias_from_turtle_for_submodule(
 
     if hasattr(target_model, "tie_weights"):
         target_model.tie_weights()
-
-    # CRITICAL FIX: Remove accelerate hooks from turtle model submodule to free GPU memory
-    # When turtle model is loaded with low_cpu_mem_usage=True, accelerate attaches hooks
-    # that load weights to GPU and keep them cached there. After we copy weights to shell,
-    # we need to remove these hooks to force accelerate to release the GPU memory.
-    if ACCELERATE_AVAILABLE:
-        try:
-            # Remove hooks from the turtle submodule
-            remove_hook_from_submodules(src_sub)
-            remove_hook_from_module(src_sub, recurse=False)
-        except Exception as e:
-            # If hook removal fails, log but don't crash
-            log.debug(f"Failed to remove accelerate hooks from turtle submodule: {e}")
 
     #print("Post alias: target_submodule device summary:")
     # for n, p in target_submodule.named_parameters(recurse=True):
