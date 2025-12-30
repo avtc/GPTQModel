@@ -1458,6 +1458,37 @@ class ModuleLooper():
             first_layer_device = get_device(first_layer)
             log.info(f"[VRAM-DEBUG] First layer device: {first_layer_device}")
 
+        # DEBUG: Log all modules on cuda:0 to identify VRAM usage
+        if self.quantize_config.offload_to_disk:
+            log.info(f"[VRAM-DEBUG] ===== Modules on cuda:0 at quantization start =====")
+            cuda0_modules = []
+            total_bytes = 0
+            for name, module in self.model.named_modules():
+                # Check each parameter and buffer in the module
+                module_bytes = 0
+                has_cuda = False
+                for param_name, param in module.named_parameters(recurse=False):
+                    if hasattr(param, 'device') and param.device.type == 'cuda':
+                        has_cuda = True
+                        param_bytes = param.numel() * param.element_size()
+                        module_bytes += param_bytes
+                for buf_name, buf in module.named_buffers(recurse=False):
+                    if hasattr(buf, 'device') and buf.device.type == 'cuda':
+                        has_cuda = True
+                        buf_bytes = buf.numel() * buf.element_size()
+                        module_bytes += buf_bytes
+
+                if has_cuda:
+                    total_bytes += module_bytes
+                    cuda0_modules.append((name, module_bytes / (1024**3)))
+
+            # Sort by size and log top 20
+            cuda0_modules.sort(key=lambda x: x[1], reverse=True)
+            for name, size_gb in cuda0_modules[:20]:
+                log.info(f"[VRAM-DEBUG]   {name}: {size_gb:.2f}GB")
+            log.info(f"[VRAM-DEBUG] Total from top modules: {sum(m[1] for m in cuda0_modules[:20]):.2f}GB")
+            log.info(f"[VRAM-DEBUG] Actual allocated VRAM: {torch.cuda.memory_allocated(0) / (1024**3):.2f}GB")
+
         run_layer_stage(
             self,
             layers=layers,
