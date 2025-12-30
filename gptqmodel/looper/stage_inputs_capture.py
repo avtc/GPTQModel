@@ -228,17 +228,10 @@ class StageInputsCapture:
         self.gptq_model.pre_quantize_generate_hook_end()
         handle.remove()
 
-        # CRITICAL FIX: Move first layer back to meta after input capture to free GPU memory
-        # When offload_to_disk=True, the first layer is materialized to GPU during input capture
-        # but was never moved back, causing ~1.16GB VRAM to remain allocated
-        if self.gptq_model.quantize_config.offload_to_disk and len(layers) > 0:
-            first_layer = layers[0]
-            current_device = get_device(first_layer)
-            if current_device.type == "cuda":
-                self.logger.info(f"[VRAM-DEBUG] Moving first layer back to meta after input capture to free GPU memory")
-                # Move to meta to free all GPU memory
-                first_layer.to(META)
-                torch_empty_cache()
+        # NOTE: First layer is NOT moved to meta after input capture
+        # Moving it to meta breaks memory sharing between InputCache and the layer's forward buffers
+        # causing InputCache to hold orphaned memory allocations that can't be freed
+        # Both offload=True and offload=False now keep layer on cuda:0 for consistent memory behavior
 
         result = InputCache(
             layer_inputs=layer_inputs,
