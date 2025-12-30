@@ -231,10 +231,6 @@ class StageInputsCapture:
         # CRITICAL FIX: Move first layer back to meta after input capture to free GPU memory
         # When offload_to_disk=True, the first layer is materialized to GPU during input capture
         # but was never moved back, causing ~1.16GB VRAM to remain allocated
-        from ..utils.torch import torch_empty_cache, META
-        from ..utils.device import get_device
-        import torch
-
         if self.gptq_model.quantize_config.offload_to_disk and len(layers) > 0:
             first_layer = layers[0]
             current_device = get_device(first_layer)
