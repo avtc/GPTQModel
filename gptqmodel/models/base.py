@@ -1529,7 +1529,10 @@ class BaseQModel(nn.Module):
             from ..utils.torch import torch_empty_cache
             import torch
 
-            module_name = getattr(target_submodule, 'full_name', getattr(target_submodule, '__class__', {}).name) or str(type(target_submodule))
+            # Get module name safely - try full_name, then class __name__, then type string
+            module_name = getattr(target_submodule, 'full_name', None)
+            if module_name is None:
+                module_name = getattr(target_submodule.__class__, '__name__', str(type(target_submodule)))
             device_before = get_device(target_submodule)
 
             if turtle_model is None:
