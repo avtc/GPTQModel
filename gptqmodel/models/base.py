@@ -1424,13 +1424,13 @@ class BaseQModel(nn.Module):
 
         self._turtle_reload_accum_bytes += bytes_added
 
+        # DEBUG: Log when threshold check happens
+        module_name = getattr(target_submodule, "full_name", None) or getattr(target_submodule, "name", None) or module.__class__.__name__
+        log.info(f"[VRAM-DEBUG] _maybe_auto_reload_after_alias: module={module_name}, bytes_added={bytes_added/1024**3:.2f}GB, accum={self._turtle_reload_accum_bytes/1024**3:.2f}GB, threshold={threshold/1024**3:.2f}GB")
+
         if self._turtle_reload_accum_bytes >= threshold:
-            label = (
-                getattr(target_submodule, "full_name", None)
-                or getattr(target_submodule, "name", None)
-                or getattr(module, "full_name", None)
-                or module.__class__.__name__
-            )
+            label = module_name
+            log.info(f"[VRAM-DEBUG] THRESHOLD EXCEEDED: triggering turtle model reload for {label}")
             self.reload_turtle_model(source=f"auto:{label}")
             self._turtle_reload_accum_bytes = 0
 
