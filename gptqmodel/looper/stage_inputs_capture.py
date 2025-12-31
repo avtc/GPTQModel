@@ -73,6 +73,21 @@ class StageInputsCapture:
             )
 
         cur_layer_device = get_device(layers[0])
+
+        if cur_layer_device == META:
+            layers[0] = self.gptq_model.shell_module_materialize(
+                target_submodule=layers[0],
+                device=self.gptq_model.quantize_config.device,
+            )
+            cur_layer_device = self.gptq_model.quantize_config.device
+            self.logger.info(f"[VRAM-DEBUG] ===== AFTER MATERIALIZATION (Line 178) =====")
+            self.logger.info(f"[VRAM-DEBUG] cur_layer_device={cur_layer_device}, data_device={data_device}")            
+        else:
+            layers[0] = layers[0].to(self.gptq_model.quantize_config.device)
+            cur_layer_device = self.gptq_model.quantize_config.device
+            self.logger.info(f"[VRAM-DEBUG] ===== AFTER MATERIALIZATION (Line 180) =====")
+            self.logger.info(f"[VRAM-DEBUG] cur_layer_device={cur_layer_device}, data_device={data_device}")            
+
         data_device = cur_layer_device
         self.logger.info(f"[VRAM-DEBUG] ===== INITIAL STATE (Line 75-76) =====")
         self.logger.info(f"[VRAM-DEBUG] cur_layer_device={cur_layer_device}, data_device={data_device}")
@@ -178,19 +193,6 @@ class StageInputsCapture:
             # but the first model input embedding call we use a simple model register forwar hook
             # and wait for the first instance this callback is called
             raise STOP_FORWARD_EXCEPTION
-
-        if cur_layer_device == META:
-            layers[0] = self.gptq_model.shell_module_materialize(
-                target_submodule=layers[0],
-                device=self.gptq_model.quantize_config.device,
-            )
-            cur_layer_device = self.gptq_model.quantize_config.device
-            self.logger.info(f"[VRAM-DEBUG] ===== AFTER MATERIALIZATION (Line 178) =====")
-            self.logger.info(f"[VRAM-DEBUG] cur_layer_device={cur_layer_device}, data_device={data_device}")            
-        else:
-            layers[0] = layers[0].to(self.gptq_model.quantize_config.device)
-            self.logger.info(f"[VRAM-DEBUG] ===== AFTER MATERIALIZATION (Line 180) =====")
-            self.logger.info(f"[VRAM-DEBUG] cur_layer_device={cur_layer_device}, data_device={data_device}")            
 
         ori_outside_layer_module_devices: Dict[str, torch.device] = {}
         base_modules_list = self.gptq_model.get_base_modules(self.gptq_model.model)

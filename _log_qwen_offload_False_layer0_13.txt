@@ -1,0 +1,155 @@
+INFO  [VRAM-DEBUG] ========== Starting Input Capture ==========
+INFO  gc.collect() reclaimed 113 objects in 0.152s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  ModuleLooper: capturing layer inputs from 256 calibration batches
+INFO  [VRAM-DEBUG] ===== INITIAL STATE (Line 75-76) =====
+INFO  [VRAM-DEBUG] cur_layer_device=cpu, data_device=cpu
+INFO  [VRAM-DEBUG] quantize_config.device=DEVICE.CUDA
+INFO  [VRAM-DEBUG] ===== AFTER MATERIALIZATION (Line 180) =====
+INFO  [VRAM-DEBUG] cur_layer_device=cpu, data_device=cpu
+INFO  [VRAM-DEBUG] Base modules to materialize: ['model.embed_tokens', 'model.norm', 'model.rotary_emb']
+INFO  [VRAM-DEBUG] model.embed_tokens device before materialize: cpu
+INFO  [VRAM-DEBUG] model.norm device before materialize: cpu
+INFO  [VRAM-DEBUG] model.rotary_emb device before materialize: cpu
+INFO  [VRAM-DEBUG] ========== Input Capture: After Base Module Materialization ==========
+INFO  gc.collect() reclaimed 40 objects in 0.156s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 1.17GB, Reserved: 1.17GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] ===== INPUT CAPTURE (Batch 1) =====
+INFO  [VRAM-DEBUG] data_device=cpu, cur_layer_device=cpu
+INFO  [VRAM-DEBUG] hidden_states device=cpu
+INFO  [VRAM-DEBUG] ===== INPUT CAPTURE (Batch 2) =====
+INFO  [VRAM-DEBUG] data_device=cpu, cur_layer_device=cpu
+INFO  [VRAM-DEBUG] hidden_states device=cpu
+INFO  [VRAM-DEBUG] ===== INPUT CAPTURE (Batch 256) =====
+INFO  [VRAM-DEBUG] data_device=cpu, cur_layer_device=cpu
+INFO  [VRAM-DEBUG] hidden_states device=cpu
+INFO  [VRAM-DEBUG] ========== Input Capture: After Capture Loop (before InputCache) ==========
+INFO  gc.collect() reclaimed 40 objects in 0.157s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 1.17GB, Reserved: 1.17GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] InputCache total size: 0.00MB (0 tensors across 256 batches)
+INFO  [VRAM-DEBUG] ========== Input Capture: After InputCache Creation ==========
+INFO  gc.collect() reclaimed 40 objects in 0.166s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 1.17GB, Reserved: 1.17GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] ========== Input Capture Complete ==========
+INFO  gc.collect() reclaimed 40 objects in 0.157s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 1.17GB, Reserved: 1.17GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  +------------+-------+--------+-------+---------+--------+---------+
+INFO  | region     | count | last_s | avg_s | total_s | pct    | source  |
+INFO  +------------+-------+--------+-------+---------+--------+---------+
+INFO  | Capture inputs | 1     | 2.265  | 2.265 | 2.265   | 100.0% | cache_inputs:Qwen3MoeDecoderLayer |
+INFO  +----------------+-------+--------+-------+---------+--------+-----------------------------------+
+INFO  [VRAM-DEBUG] ========== Starting Layer Quantization ==========
+INFO  gc.collect() reclaimed 52 objects in 0.165s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 1.17GB, Reserved: 1.17GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] First layer: Qwen3MoeDecoderLayer(
+  (self_attn): Qwen3MoeAttention(
+    (q_proj): Linear(in_features=2048, out_features=4096, bias=False)
+    (k_proj): Linear(in_features=2048, out_features=512, bias=False)
+    (v_proj): Linear(in_features=2048, out_features=512, bias=False)
+    (o_proj): Linear(in_features=4096, out_features=2048, bias=False)
+    (q_norm): Qwen3MoeRMSNorm((128,), eps=1e-06)
+    (k_norm): Qwen3MoeRMSNorm((128,), eps=1e-06)
+  )
+  (mlp): Qwen3MoeSparseMoeBlock(
+    (gate): Linear(in_features=2048, out_features=128, bias=False)
+    (experts): ModuleList(
+      (0-127): 128 x Qwen3MoeMLP(
+        (gate_proj): Linear(in_features=2048, out_features=768, bias=False)
+        (up_proj): Linear(in_features=2048, out_features=768, bias=False)
+        (down_proj): Linear(in_features=768, out_features=2048, bias=False)
+        (act_fn): SiLUActivation()
+      )
+    )
+  )
+  (input_layernorm): Qwen3MoeRMSNorm((2048,), eps=1e-06)
+  (post_attention_layernorm): Qwen3MoeRMSNorm((2048,), eps=1e-06)
+)
+INFO  [VRAM-DEBUG] First layer device: cuda:0
+INFO  [VRAM-DEBUG] ========== Layer 0: Before pre_quantize ==========
+INFO  gc.collect() reclaimed 40 objects in 0.163s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 1.17GB, Reserved: 1.17GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] Layer device before pre_quantize: cuda:0
+INFO  [VRAM-DEBUG] ========== Layer 0: After pre_quantize ==========
+INFO  gc.collect() reclaimed 40 objects in 0.295s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 1.17GB, Reserved: 1.17GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] Layer device after pre_quantize: cuda:0
+INFO  [VRAM-DEBUG] Layer VRAM breakdown: total=1.16 GB
+INFO  [VRAM-DEBUG]   - self_attn.q_proj: 16.0 MB
+INFO  [VRAM-DEBUG]   - self_attn.k_proj: 2.0 MB
+INFO  [VRAM-DEBUG]   - self_attn.v_proj: 2.0 MB
+INFO  [VRAM-DEBUG]   - self_attn.o_proj: 16.0 MB
+INFO  [VRAM-DEBUG]   - self_attn.q_norm: 256 bytes
+INFO  [VRAM-DEBUG]   - self_attn.k_norm: 256 bytes
+INFO  [VRAM-DEBUG]   - mlp.gate: 512.0 KB
+INFO  [VRAM-DEBUG]   - mlp.experts.0.gate_proj: 3.0 MB
+INFO  [VRAM-DEBUG]   - mlp.experts.0.up_proj: 3.0 MB
+INFO  [VRAM-DEBUG]   - mlp.experts.0.down_proj: 3.0 MB
+INFO  [VRAM-DEBUG] ========== Layer 0: Before First Subset ==========
+INFO  [VRAM-DEBUG] Processor: tp-pre-pad, Subset: 1/4
+INFO  [VRAM-DEBUG] Subset names: ['self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj']
+INFO  gc.collect() reclaimed 40 objects in 0.162s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 1.17GB, Reserved: 1.17GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] ========== Layer 0: After First Subset ==========
+INFO  gc.collect() reclaimed 40 objects in 0.163s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 1.17GB, Reserved: 1.17GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] ========== Layer 0: Before First Subset ==========
+INFO  [VRAM-DEBUG] Processor: gptq, Subset: 1/4
+INFO  [VRAM-DEBUG] Subset names: ['self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj']
+INFO  gc.collect() reclaimed 40 objects in 0.162s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 1.17GB, Reserved: 1.17GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  gc.collect() reclaimed 40 objects in 0.164s
+INFO  +---------+-------+---------------------------+---------------+--------------+--------------+---------+---------+-------+----------+--------------+---------+
+INFO  | process | layer | module                    | feat: in, out | dtype: size  | loss         | samples | damp    | time  | fwd_time | (v)ram       | dynamic |
+INFO  +---------+-------+---------------------------+---------------+--------------+--------------+---------+---------+-------+----------+--------------+---------+
+INFO  | gptq    | 0     | self_attn.v_proj          | 2048, 512     | bf16: 2.3MB  | 0.0000000005 | 113914  | 0.01000 | 1.183 | 2.116    | cuda 1.66G, 0.6G, 0.5G, 0.5G |         |
+INFO  +---------+-------+---------------------------+---------------+--------------+--------------+---------+---------+-------+----------+------------------------------+---------+
+INFO  | gptq    | 0     | self_attn.k_proj          | 2048, 512     | bf16: 2.3MB  | 0.0000000007 | 113914  | 0.01000 | 1.180 | 2.116    | cuda 1.66G, 0.6G, 0.5G, 0.5G |         |
+INFO  +---------+-------+---------------------------+---------------+--------------+--------------+---------+---------+-------+----------+------------------------------+---------+
+INFO  | gptq    | 0     | self_attn.q_proj          | 2048, 4096    | bf16: 18.0MB | 0.0000000053 | 113914  | 0.01000 | 1.974 | 2.116    | cuda 1.66G, 0.6G, 0.5G, 0.5G |         |
+INFO  +---------+-------+---------------------------+---------------+--------------+--------------+---------+---------+-------+----------+------------------------------+---------+
+INFO  gc.collect() reclaimed 122 objects in 0.161s
+INFO  [VRAM-DEBUG] ========== Layer 0: After First Subset ==========
+INFO  gc.collect() reclaimed 1 objects in 0.162s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 1.16GB, Reserved: 1.20GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.02GB, Reserved: 0.06GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  gc.collect() reclaimed 40 objects in 0.156s
+INFO  | gptq    | 0     | self_attn.o_proj          | 4096, 2048    | bf16: 18.0MB | 0.0000000012 | 113914  | 0.01000 | 1.524 | 2.017    | cuda 1.68G, 0.86G, 0.4G, 0.4G |         |
+INFO  +---------+-------+---------------------------+---------------+--------------+--------------+---------+---------+-------+----------+-------------------------------+---------+
+INFO  gc.collect() reclaimed 44 objects in 0.167s
+INFO  gc.collect() reclaimed 0 objects in 0.166s
+INFO  | gptq    | 0     | mlp.experts.6.gate_proj   | 2048, 768     | bf16: 3.4MB  | 0.0000002999 | 113914  | 0.01000 | 1.561 | 26.442   | cuda 5.63G, 1.05G, 1.05G, 1.07G |         |
