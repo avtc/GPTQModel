@@ -183,16 +183,6 @@ class StageInputsCapture:
         base_modules_list = self.gptq_model.get_base_modules(self.gptq_model.model)
         self.logger.info(f"[VRAM-DEBUG] Base modules to materialize: {base_modules_list}")
 
-        # Check if any base modules are on meta (disk offload scenario)
-        has_meta_base_modules = False
-        for module_name in base_modules_list:
-            module, _ = get_module_by_name_prefix(self.gptq_model.model, [module_name])
-            if module is not None:
-                m_device = get_device(module)
-                if m_device == META:
-                    has_meta_base_modules = True
-                    break
-
         for module_name in base_modules_list:
             module, _ = get_module_by_name_prefix(self.gptq_model.model, [module_name])
 
@@ -204,18 +194,21 @@ class StageInputsCapture:
             ori_outside_layer_module_devices[module_name] = CPU if m_device == META else m_device
 
             if module is not None:
-                # VRAM FIX: If base module is on meta, DON'T materialize to CUDA here
-                # Let the forward pass handle device transfer. This prevents duplicate allocations
-                # that occur when materializing meta->CUDA for input capture.
+                # VRAM FIX: If base module is on meta, materialize to CPU first
+                # This prevents extra +0.50GB VRAM allocation that occurs when meta modules
+                # are materialized directly to CUDA for input capture.
+                # By materializing meta -> CPU, the forward pass will then handle CPU -> CUDA
+                # transfer using PyTorch's normal device handling, matching offload=False behavior.
                 if m_device == META:
-                    self.logger.info(f"[VRAM-DEBUG] Skipping CUDA materialization for {module_name} (on meta, will use CPU)")
-                    # Materialize to CPU instead - forward pass will move to GPU as needed
+                    self.logger.info(f"[VRAM-DEBUG] Materializing {module_name} from meta to CPU first (to avoid extra VRAM allocation)")
                     self.gptq_model.shell_module_materialize(
                         target_submodule=module,
                         device=CPU,
                     )
+                    # Note: We DON'T materialize to CUDA here. The forward pass during input capture
+                    # will automatically move the CPU tensors to GPU as needed, avoiding duplicate allocations.
                 else:
-                    # Normal materialization to CUDA
+                    # Normal materialization to CUDA for non-meta modules
                     self.gptq_model.shell_module_materialize(
                         target_submodule=module,
                         device=cur_layer_device,

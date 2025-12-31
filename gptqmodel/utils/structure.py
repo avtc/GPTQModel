@@ -524,7 +524,10 @@ def alias_from_turtle_for_submodule(
     device: torch.device,
     non_blocking: bool = False,
 ) -> torch.nn.Module:
-    assert device not in [None, torch.device("cpu"), torch.device("meta")]
+    # VRAM FIX: Allow CPU as target device to support meta->CPU materialization
+    # This prevents extra VRAM allocation when base modules on meta are materialized to CUDA
+    # by allowing them to be materialized to CPU first (matching offload=False behavior)
+    assert device not in [None, torch.device("meta")]
     # print(f"alias device = {device}")
 
     # Resolve path & source submodule (on CPU/mmap)
