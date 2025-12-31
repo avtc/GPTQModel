@@ -74,6 +74,9 @@ class StageInputsCapture:
 
         cur_layer_device = get_device(layers[0])
         data_device = cur_layer_device
+        self.logger.info(f"[VRAM-DEBUG] ===== INITIAL STATE (Line 75-76) =====")
+        self.logger.info(f"[VRAM-DEBUG] cur_layer_device={cur_layer_device}, data_device={data_device}")
+        self.logger.info(f"[VRAM-DEBUG] quantize_config.device={self.gptq_model.quantize_config.device}")        
 
         cache_forward_pb = None
         processed_rows = 0
@@ -140,6 +143,12 @@ class StageInputsCapture:
         def store_input_hook(module, args, kwargs):
             nonlocal total_cached_bytes
             batch_count[0] += 1
+            
+            # DEBUG: Log device state during input capture
+            if batch_count[0] in [1, 2, 256]:
+                self.logger.info(f"[VRAM-DEBUG] ===== INPUT CAPTURE (Batch {batch_count[0]}) =====")
+                self.logger.info(f"[VRAM-DEBUG] data_device={data_device}, cur_layer_device={cur_layer_device}")
+                self.logger.info(f"[VRAM-DEBUG] hidden_states device={kwargs.get('hidden_states', args[0] if args else None).device if kwargs.get('hidden_states') or (args and len(args) > 0) else 'N/A'}")            
 
             layer_input: List[torch.Tensor] = []
             if kwargs.get("hidden_states") is not None:
@@ -176,8 +185,12 @@ class StageInputsCapture:
                 device=self.gptq_model.quantize_config.device,
             )
             cur_layer_device = self.gptq_model.quantize_config.device
+            self.logger.info(f"[VRAM-DEBUG] ===== AFTER MATERIALIZATION (Line 178) =====")
+            self.logger.info(f"[VRAM-DEBUG] cur_layer_device={cur_layer_device}, data_device={data_device}")            
         else:
             layers[0] = layers[0].to(self.gptq_model.quantize_config.device)
+            self.logger.info(f"[VRAM-DEBUG] ===== AFTER MATERIALIZATION (Line 180) =====")
+            self.logger.info(f"[VRAM-DEBUG] cur_layer_device={cur_layer_device}, data_device={data_device}")            
 
         ori_outside_layer_module_devices: Dict[str, torch.device] = {}
         base_modules_list = self.gptq_model.get_base_modules(self.gptq_model.model)
