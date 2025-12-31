@@ -1,0 +1,44 @@
+INFO  Offloading base modules to disk (delayed until after layer 0 finalize)...
+INFO  [VRAM-DEBUG] ========== Before Base Module Offload (after layer 0 finalize) ==========
+INFO  gc.collect() reclaimed 25248 objects in 0.366s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 1.52GB, Reserved: 1.60GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.03GB, Reserved: 0.12GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.03GB, Reserved: 0.08GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.03GB, Reserved: 0.08GB
+INFO  [VRAM-DEBUG] Base modules to offload: ['model.embed_tokens', 'model.norm', 'model.rotary_emb']
+INFO  [VRAM-DEBUG]   - model.embed_tokens: device=cuda:0
+INFO  [VRAM-DEBUG]   - model.norm: device=cuda:0
+[VRAM_TRACK] Before offload: 1.52 GB allocatede=cuda:0
+[VRAM_FIX] Moving 'model.embed_tokens' from cuda:0 to CPU before disk_offload to ensure VRAM is freed░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░| 0:03:26 / 2:44:48 [1/48] 2.1%
+[VRAM_TRACK] Before disk_offload 'model.embed_tokens': 0.94 GB
+[VRAM_TRACK] After disk_offload 'model.embed_tokens': 0.94 GB, freed: 0.00 GB, meta_params: 1, meta_buffers: 0
+[VRAM_TRACK] WARNING: disk_offload freed only 0.00GB - this may indicate accelerate.disk_offload is not working properly░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░| 0:03:28 / 2:46:24 [1/48] 2.1%
+[VRAM_FIX] Moving 'model.norm' from cuda:0 to CPU before disk_offload to ensure VRAM is freed
+[VRAM_FIX] Moving 'model.rotary_emb' from cuda:0 to CPU before disk_offload to ensure VRAM is freed
+[VRAM_TRACK] After offload: 0.94 GB allocated, delta: -0.58 GB
+INFO  [VRAM-DEBUG] ========== After Base Module Offload (after layer 0 finalize) ==========
+INFO  gc.collect() reclaimed 5 objects in 0.234s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 0.94GB, Reserved: 1.02GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.03GB, Reserved: 0.12GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.03GB, Reserved: 0.08GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.03GB, Reserved: 0.08GB
+INFO  [VRAM-DEBUG]   - model.embed_tokens: device=meta
+INFO  [VRAM-DEBUG]   - model.norm: device=cpu
+INFO  [VRAM-DEBUG]   - model.rotary_emb: device=cpu
+INFO  gc.collect() reclaimed 40 objects in 0.238s
+INFO  [VRAM-DEBUG] shell_module_materialize: Qwen3MoeDecoderLayer | device_before=meta -> target_device=DEVICE.CUDA | VRAM_before=0.94GB
+INFO  gc.collect() reclaimed 5 objects in 0.237s
+INFO  [VRAM-DEBUG] shell_module_materialize: Qwen3MoeDecoderLayer | VRAM_after=2.10GB | delta=1.16GB
+INFO  [VRAM-DEBUG] _maybe_auto_reload_after_alias: module=Qwen3MoeDecoderLayer, bytes_added=1.16GB, accum=1.16GB, threshold=0.50GB
+INFO  [VRAM-DEBUG] THRESHOLD EXCEEDED: triggering turtle model reload for Qwen3MoeDecoderLayer
+INFO  [VRAM_TRACK] Before turtle model reload: 2.10 MB allocated
+INFO  [VRAM-DEBUG] reload_turtle_model: reload_kwargs keys = ['trust_remote_code', 'device_map', 'dtype', '_fast_init']
+INFO  [VRAM-DEBUG] reload_turtle_model: device_map = {'': 'cpu'}
+Loading checkpoint shards: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [00:05<00:00,  2.81it/s]
+Quantizing layer 1 of 47                       [1 of 47] ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░| 0:03:39 / 1:27:36 [2/48] 4.2%
+INFO  gc.collect() reclaimed 12 objects in 0.281s
+INFO  [VRAM_TRACK] After turtle model reload: 2.10 MB allocated, delta: 0.00 MB
+INFO  gc.collect() reclaimed 451771 objects in 0.436s
+INFO  | process | layer | module                    | feat: in, out | dtype: size  | loss         | samples | damp    | time  | fwd_time | (v)ram                          | dynamic |
+INFO  +---------+-------+---------------------------+---------------+--------------+--------------+---------+---------+-------+----------+---------------------------------+---------+
+INFO  | gptq    | 1     | self_attn.k_proj          | 2048, 512     | bf16: 2.3MB  | 0.0000000020 | 113914  | 0.01000 | 0.442 | 1.237    | cuda 2.27G, 0.67G, 0.79G, 0.67G |         |

@@ -94,12 +94,60 @@ class StageInputsCapture:
                 f"Batch 0/{cache_total_batches}"
             ).draw()
 
+        # VRAM DEBUG: Function to identify what's occupying VRAM
+        def track_vram_objects(label: str):
+            if data_device.type != "cuda":
+                return
+
+            import gc
+            import sys
+
+            # Scan all objects and find CUDA tensors
+            tensor_objects = []
+            for obj in gc.get_objects():
+                try:
+                    if torch.is_tensor(obj) and obj.is_cuda:
+                        size_mb = obj.element_size() * obj.nelement() / 1024**2
+                        if size_mb > 1:  # Only track > 1MB
+                            # Try to find parent object
+                            ref_count = sys.getrefcount(obj)
+                            tensor_objects.append((size_mb, obj.shape, obj.device, type(obj).__name__, ref_count))
+                except Exception:
+                    pass
+
+            # Group by tensor type and shape
+            from collections import defaultdict
+            groups = defaultdict(lambda: {"count": 0, "total_mb": 0.0, "shapes": []})
+
+            for size_mb, shape, device, tensor_type, ref_count in tensor_objects:
+                key = f"{tensor_type}"
+                groups[key]["count"] += 1
+                groups[key]["total_mb"] += size_mb
+                if len(groups[key]["shapes"]) < 5:  # Limit shapes shown
+                    groups[key]["shapes"].append(str(shape))
+
+            self.logger.info(f"[VRAM-DEBUG] ===== {label} =====")
+            total_tracked = 0.0
+            for tensor_type, info in sorted(groups.items(), key=lambda x: x[1]["total_mb"], reverse=True):
+                self.logger.info(f"[VRAM-DEBUG]   {tensor_type}: count={info['count']}, total={info['total_mb']:.1f}MB, shapes={info['shapes'][:3]}")
+                total_tracked += info["total_mb"]
+            self.logger.info(f"[VRAM-DEBUG]   Total tracked: {total_tracked:.1f}MB")
+
+        # VRAM DEBUG: Track tensor allocations in InputCache
+        total_cached_bytes = 0
+        batch_count = [0]  # Use list to allow modification in closure
+
         def store_input_hook(module, args, kwargs):
+            nonlocal total_cached_bytes
+            batch_count[0] += 1
+
             layer_input: List[torch.Tensor] = []
             if kwargs.get("hidden_states") is not None:
-                layer_input.append(move_to(kwargs["hidden_states"], device=data_device))
+                tensor = kwargs["hidden_states"]
+                layer_input.append(move_to(tensor, device=data_device))
             else:
-                layer_input.append(move_to(args[0], device=data_device))
+                tensor = args[0]
+                layer_input.append(move_to(tensor, device=data_device))
 
             layer_inputs.append(layer_input)
 
@@ -134,6 +182,17 @@ class StageInputsCapture:
         ori_outside_layer_module_devices: Dict[str, torch.device] = {}
         base_modules_list = self.gptq_model.get_base_modules(self.gptq_model.model)
         self.logger.info(f"[VRAM-DEBUG] Base modules to materialize: {base_modules_list}")
+
+        # Check if any base modules are on meta (disk offload scenario)
+        has_meta_base_modules = False
+        for module_name in base_modules_list:
+            module, _ = get_module_by_name_prefix(self.gptq_model.model, [module_name])
+            if module is not None:
+                m_device = get_device(module)
+                if m_device == META:
+                    has_meta_base_modules = True
+                    break
+
         for module_name in base_modules_list:
             module, _ = get_module_by_name_prefix(self.gptq_model.model, [module_name])
 
@@ -143,11 +202,24 @@ class StageInputsCapture:
             m_device = get_device(module)
             self.logger.info(f"[VRAM-DEBUG] {module_name} device before materialize: {m_device}")
             ori_outside_layer_module_devices[module_name] = CPU if m_device == META else m_device
+
             if module is not None:
-                self.gptq_model.shell_module_materialize(
-                    target_submodule=module,
-                    device=cur_layer_device,
-                )
+                # VRAM FIX: If base module is on meta, DON'T materialize to CUDA here
+                # Let the forward pass handle device transfer. This prevents duplicate allocations
+                # that occur when materializing meta->CUDA for input capture.
+                if m_device == META:
+                    self.logger.info(f"[VRAM-DEBUG] Skipping CUDA materialization for {module_name} (on meta, will use CPU)")
+                    # Materialize to CPU instead - forward pass will move to GPU as needed
+                    self.gptq_model.shell_module_materialize(
+                        target_submodule=module,
+                        device=CPU,
+                    )
+                else:
+                    # Normal materialization to CUDA
+                    self.gptq_model.shell_module_materialize(
+                        target_submodule=module,
+                        device=cur_layer_device,
+                    )
 
         # VRAM DEBUG: Check memory after base module materialization for input capture
         self.logger.info(f"[VRAM-DEBUG] ========== Input Capture: After Base Module Materialization ==========")
@@ -156,6 +228,9 @@ class StageInputsCapture:
             allocated = torch.cuda.memory_allocated(i) / 1024**3
             reserved = torch.cuda.memory_reserved(i) / 1024**3
             self.logger.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+        # Track what objects are in VRAM
+        track_vram_objects("Objects in VRAM after base module materialization")
 
         handle = layers[0].register_forward_pre_hook(store_input_hook, with_kwargs=True)
 
@@ -230,10 +305,32 @@ class StageInputsCapture:
         self.gptq_model.pre_quantize_generate_hook_end()
         handle.remove()
 
+        # VRAM DEBUG: Track what's in VRAM immediately after input capture completes
+        self.logger.info(f"[VRAM-DEBUG] ========== Input Capture: After Capture Loop (before InputCache) ==========")
+        torch_empty_cache()
+        for i in range(torch.cuda.device_count()):
+            allocated = torch.cuda.memory_allocated(i) / 1024**3
+            reserved = torch.cuda.memory_reserved(i) / 1024**3
+            self.logger.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+        track_vram_objects("Objects in VRAM after input capture loop")
+
         # NOTE: First layer is NOT moved to meta after input capture
         # Moving it to meta breaks memory sharing between InputCache and the layer's forward buffers
         # causing InputCache to hold orphaned memory allocations that can't be freed
         # Both offload=True and offload=False now keep layer on cuda:0 for consistent memory behavior
+
+        # VRAM DEBUG: Calculate exact InputCache size
+        input_cache_size_mb = 0.0
+        input_cache_tensors = 0
+        if layer_inputs:
+            for layer_input in layer_inputs:
+                if layer_input:
+                    for tensor in layer_input:
+                        if torch.is_tensor(tensor) and tensor.is_cuda:
+                            input_cache_size_mb += tensor.element_size() * tensor.nelement() / 1024**2
+                            input_cache_tensors += 1
+
+        self.logger.info(f"[VRAM-DEBUG] InputCache total size: {input_cache_size_mb:.2f}MB ({input_cache_tensors} tensors across {len(layer_inputs)} batches)")
 
         result = InputCache(
             layer_inputs=layer_inputs,
@@ -241,6 +338,15 @@ class StageInputsCapture:
             position_ids=position_ids,
             attention_masks=attention_masks,
         )
+
+        # VRAM DEBUG: Track VRAM after InputCache creation
+        self.logger.info(f"[VRAM-DEBUG] ========== Input Capture: After InputCache Creation ==========")
+        torch_empty_cache()
+        for i in range(torch.cuda.device_count()):
+            allocated = torch.cuda.memory_allocated(i) / 1024**3
+            reserved = torch.cuda.memory_reserved(i) / 1024**3
+            self.logger.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+        track_vram_objects("Objects in VRAM after InputCache creation")
 
         if timer is not None and start_time is not None:
             timer.record(
