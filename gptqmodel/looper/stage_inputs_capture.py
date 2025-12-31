@@ -194,19 +194,20 @@ class StageInputsCapture:
             ori_outside_layer_module_devices[module_name] = CPU if m_device == META else m_device
 
             if module is not None:
-                # VRAM FIX: If base module is on meta, materialize to CPU first
+                # VRAM FIX: If base module is on meta, materialize to CPU first then move to CUDA
                 # This prevents extra +0.50GB VRAM allocation that occurs when meta modules
                 # are materialized directly to CUDA for input capture.
-                # By materializing meta -> CPU, the forward pass will then handle CPU -> CUDA
-                # transfer using PyTorch's normal device handling, matching offload=False behavior.
+                # By doing meta -> CPU -> CUDA, we match offload=False behavior where
+                # base modules start on CPU and are moved to CUDA.
                 if m_device == META:
                     self.logger.info(f"[VRAM-DEBUG] Materializing {module_name} from meta to CPU first (to avoid extra VRAM allocation)")
                     self.gptq_model.shell_module_materialize(
                         target_submodule=module,
                         device=CPU,
                     )
-                    # Note: We DON'T materialize to CUDA here. The forward pass during input capture
-                    # will automatically move the CPU tensors to GPU as needed, avoiding duplicate allocations.
+                    # Now move from CPU to CUDA (matching offload=False behavior)
+                    self.logger.info(f"[VRAM-DEBUG] Moving {module_name} from CPU to CUDA")
+                    module.to(cur_layer_device)
                 else:
                     # Normal materialization to CUDA for non-meta modules
                     self.gptq_model.shell_module_materialize(
