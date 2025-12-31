@@ -1,0 +1,183 @@
+INFO  [VRAM-DEBUG] ========== Starting Input Capture ==========
+INFO  gc.collect() reclaimed 78 objects in 0.197s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] Suspending turtle reload during input capture (original threshold: 0.50GB)
+INFO  ModuleLooper: capturing layer inputs from 512 calibration batches
+INFO  [VRAM-DEBUG] shell_module_materialize: Qwen3MoeDecoderLayer | device_before=meta -> target_device=DEVICE.CUDA | VRAM_before=0.01GB
+INFO  gc.collect() reclaimed 45 objects in 0.201s
+INFO  [VRAM-DEBUG] shell_module_materialize: Qwen3MoeDecoderLayer | VRAM_after=1.17GB | delta=1.16GB
+INFO  [VRAM-DEBUG] _maybe_auto_reload_after_alias: module=Qwen3MoeDecoderLayer, bytes_added=1.16GB, accum=1.16GB, threshold=infGB
+INFO  [VRAM-DEBUG] shell_module_materialize: Embedding | device_before=meta -> target_device=DEVICE.CUDA | VRAM_before=1.17GB
+INFO  gc.collect() reclaimed 10 objects in 0.202s
+INFO  [VRAM-DEBUG] shell_module_materialize: Embedding | VRAM_after=1.75GB | delta=0.58GB
+INFO  [VRAM-DEBUG] _maybe_auto_reload_after_alias: module=Embedding, bytes_added=0.58GB, accum=1.74GB, threshold=infGB
+INFO  [VRAM-DEBUG] shell_module_materialize: Qwen3MoeRMSNorm | device_before=meta -> target_device=DEVICE.CUDA | VRAM_before=1.75GB
+INFO  gc.collect() reclaimed 10 objects in 0.201s
+INFO  [VRAM-DEBUG] shell_module_materialize: Qwen3MoeRMSNorm | VRAM_after=1.75GB | delta=0.00GB
+INFO  [VRAM-DEBUG] _maybe_auto_reload_after_alias: module=Qwen3MoeRMSNorm, bytes_added=0.00GB, accum=1.74GB, threshold=infGB
+INFO  [VRAM-DEBUG] shell_module_materialize: Qwen3MoeRotaryEmbedding | device_before=meta -> target_device=DEVICE.CUDA | VRAM_before=1.75GB
+INFO  gc.collect() reclaimed 10 objects in 0.264s
+INFO  [VRAM-DEBUG] shell_module_materialize: Qwen3MoeRotaryEmbedding | VRAM_after=1.75GB | delta=0.00GB
+INFO  [VRAM-DEBUG] _maybe_auto_reload_after_alias: module=Qwen3MoeRotaryEmbedding, bytes_added=0.00GB, accum=1.74GB, threshold=infGB
+INFO  [VRAM-DEBUG] ========== Input Capture: After Base Module Materialization ==========
+INFO  gc.collect() reclaimed 5 objects in 0.199s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 1.75GB, Reserved: 1.76GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  ModuleLooper: capturing layer inputs from 512 calibration batches
+INFO  [VRAM-DEBUG] shell_module_materialize: Embedding | device_before=cuda:0 -> target_device=cuda:0 | VRAM_before=2.72GB
+INFO  gc.collect() reclaimed 45 objects in 0.200s
+INFO  [VRAM-DEBUG] shell_module_materialize: Embedding | VRAM_after=2.72GB | delta=0.00GB
+INFO  [VRAM-DEBUG] shell_module_materialize: Qwen3MoeRMSNorm | device_before=cuda:0 -> target_device=cuda:0 | VRAM_before=2.72GB
+INFO  gc.collect() reclaimed 10 objects in 0.252s
+INFO  [VRAM-DEBUG] shell_module_materialize: Qwen3MoeRMSNorm | VRAM_after=2.72GB | delta=0.00GB
+INFO  [VRAM-DEBUG] shell_module_materialize: Qwen3MoeRotaryEmbedding | device_before=cuda:0 -> target_device=cuda:0 | VRAM_before=2.72GB
+INFO  gc.collect() reclaimed 10 objects in 0.204s
+INFO  [VRAM-DEBUG] shell_module_materialize: Qwen3MoeRotaryEmbedding | VRAM_after=2.72GB | delta=0.00GB
+INFO  [VRAM-DEBUG] ========== Input Capture: After Base Module Materialization ==========
+INFO  gc.collect() reclaimed 5 objects in 0.220s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 2.72GB, Reserved: 2.73GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] ========== Input Capture Complete ==========
+INFO  gc.collect() reclaimed 40 objects in 0.262s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 3.69GB, Reserved: 3.71GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] Restoring turtle reload threshold to 0.50GB
+INFO  [VRAM-DEBUG] Triggering deferred turtle reload (accum=1.74GB)
+INFO  [VRAM_TRACK] Before turtle model reload: 3.69 MB allocated
+INFO  [VRAM-DEBUG] reload_turtle_model: reload_kwargs keys = ['trust_remote_code', 'device_map', 'dtype', '_fast_init']
+INFO  [VRAM-DEBUG] reload_turtle_model: device_map = {'': 'cpu'}
+Loading checkpoint shards: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 16/16 [00:06<00:00,  2.43it/s]
+INFO  gc.collect() reclaimed 12 objects in 0.263s
+INFO  [VRAM_TRACK] After turtle model reload: 3.69 MB allocated, delta: 0.00 MB
+INFO  +------------+-------+--------+-------+---------+--------+---------+
+INFO  | region     | count | last_s | avg_s | total_s | pct    | source  |
+INFO  +------------+-------+--------+-------+---------+--------+---------+
+INFO  | Turtle reload | 1     | 11.043 | 11.043 | 11.043  | 62.2%  | deferred:post_input_capture |
+INFO  +---------------+-------+--------+--------+---------+--------+-----------------------------+
+INFO  | Capture inputs | 2     | 3.374  | 3.349  | 6.699   | 37.8%  | cache_inputs:Qwen3MoeDecoderLayer |
+INFO  +----------------+-------+--------+--------+---------+--------+-----------------------------------+
+INFO  [VRAM-DEBUG] ========== Starting Layer Quantization ==========
+INFO  gc.collect() reclaimed 17 objects in 0.222s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 3.69GB, Reserved: 3.71GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] First layer: Qwen3MoeDecoderLayer(
+  (self_attn): Qwen3MoeAttention(
+    (q_proj): Linear(in_features=2048, out_features=4096, bias=False)
+    (k_proj): Linear(in_features=2048, out_features=512, bias=False)
+    (v_proj): Linear(in_features=2048, out_features=512, bias=False)
+    (o_proj): Linear(in_features=4096, out_features=2048, bias=False)
+    (q_norm): Qwen3MoeRMSNorm((128,), eps=1e-06)
+    (k_norm): Qwen3MoeRMSNorm((128,), eps=1e-06)
+  )
+  (mlp): Qwen3MoeSparseMoeBlock(
+    (gate): Linear(in_features=2048, out_features=128, bias=False)
+    (experts): ModuleList(
+      (0-127): 128 x Qwen3MoeMLP(
+        (gate_proj): Linear(in_features=2048, out_features=768, bias=False)
+        (up_proj): Linear(in_features=2048, out_features=768, bias=False)
+        (down_proj): Linear(in_features=768, out_features=2048, bias=False)
+        (act_fn): SiLUActivation()
+      )
+    )
+  )
+  (input_layernorm): Qwen3MoeRMSNorm((2048,), eps=1e-06)
+  (post_attention_layernorm): Qwen3MoeRMSNorm((2048,), eps=1e-06)
+)
+INFO  [VRAM-DEBUG] First layer device: cuda:0
+INFO  [VRAM-DEBUG] ===== Modules on cuda:0 at quantization start =====
+INFO  [VRAM-DEBUG]   model.embed_tokens: 0.58GB
+INFO  [VRAM-DEBUG]   model.layers.0.self_attn.q_proj: 0.02GB
+INFO  [VRAM-DEBUG]   model.layers.0.self_attn.o_proj: 0.02GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.0.gate_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.0.up_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.0.down_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.1.gate_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.1.up_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.1.down_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.2.gate_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.2.up_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.2.down_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.3.gate_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.3.up_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.3.down_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.4.gate_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.4.up_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.4.down_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.5.gate_proj: 0.00GB
+INFO  [VRAM-DEBUG]   model.layers.0.mlp.experts.5.up_proj: 0.00GB
+INFO  [VRAM-DEBUG] Total from top modules: 0.66GB
+INFO  [VRAM-DEBUG] Actual allocated VRAM: 3.69GB
+INFO  [VRAM-DEBUG] ========== Layer 0: Before pre_quantize ==========
+INFO  gc.collect() reclaimed 45 objects in 0.214s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 3.69GB, Reserved: 3.71GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] Layer device before pre_quantize: cuda:0
+INFO  [VRAM-DEBUG] ========== Layer 0: After pre_quantize ==========
+INFO  gc.collect() reclaimed 40 objects in 0.216s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 3.69GB, Reserved: 3.71GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] Layer device after pre_quantize: cuda:0
+INFO  [VRAM-DEBUG] Layer VRAM breakdown: total=1.16 GB
+INFO  [VRAM-DEBUG]   - self_attn.q_proj: 16.0 MB
+INFO  [VRAM-DEBUG]   - self_attn.k_proj: 2.0 MB
+INFO  [VRAM-DEBUG]   - self_attn.v_proj: 2.0 MB
+INFO  [VRAM-DEBUG]   - self_attn.o_proj: 16.0 MB
+INFO  [VRAM-DEBUG]   - self_attn.q_norm: 256 bytes
+INFO  [VRAM-DEBUG]   - self_attn.k_norm: 256 bytes
+INFO  [VRAM-DEBUG]   - mlp.gate: 512.0 KB
+INFO  [VRAM-DEBUG]   - mlp.experts.0.gate_proj: 3.0 MB
+INFO  [VRAM-DEBUG]   - mlp.experts.0.up_proj: 3.0 MB
+INFO  [VRAM-DEBUG]   - mlp.experts.0.down_proj: 3.0 MB
+INFO  [VRAM-DEBUG] ========== Layer 0: Before First Subset ==========
+INFO  [VRAM-DEBUG] Processor: tp-pre-pad, Subset: 1/4
+INFO  [VRAM-DEBUG] Subset names: ['self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj']
+INFO  gc.collect() reclaimed 40 objects in 0.213s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 3.69GB, Reserved: 3.71GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] ========== Layer 0: After First Subset ==========
+INFO  gc.collect() reclaimed 41 objects in 0.212s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 3.69GB, Reserved: 3.71GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] ========== Layer 0: Before First Subset ==========
+INFO  [VRAM-DEBUG] Processor: gptq, Subset: 1/4
+INFO  [VRAM-DEBUG] Subset names: ['self_attn.q_proj', 'self_attn.k_proj', 'self_attn.v_proj']
+INFO  gc.collect() reclaimed 40 objects in 0.202s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 3.69GB, Reserved: 3.71GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 0.01GB, Reserved: 0.02GB
+INFO  +---------+-------+---------------------------+---------------+--------------+--------------+---------+---------+-------+----------+--------------+---------+
+INFO  | process | layer | module                    | feat: in, out | dtype: size  | loss         | samples | damp    | time  | fwd_time | (v)ram       | dynamic |
+INFO  +---------+-------+---------------------------+---------------+--------------+--------------+---------+---------+-------+----------+--------------+---------+
+INFO  | gptq    | 0     | self_attn.v_proj          | 2048, 512     | bf16: 2.3MB  | 0.0000000003 | 224482  | 0.01000 | 1.000 | 5.942    | cuda 4.59G, 1.77G, 1.75G, 1.74G |         |
+INFO  +---------+-------+---------------------------+---------------+--------------+--------------+---------+---------+-------+----------+---------------------------------+---------+
+INFO  | gptq    | 0     | self_attn.k_proj          | 2048, 512     | bf16: 2.3MB  | 0.0000000004 | 224482  | 0.01000 | 1.659 | 5.942    | cuda 4.59G, 1.77G, 1.75G, 1.74G |         |
+INFO  +---------+-------+---------------------------+---------------+--------------+--------------+---------+---------+-------+----------+---------------------------------+---------+
+INFO  | gptq    | 0     | self_attn.q_proj          | 2048, 4096    | bf16: 18.0MB | 0.0000000027 | 224482  | 0.01000 | 1.763 | 5.942    | cuda 4.59G, 1.77G, 1.75G, 1.74G |         |
+INFO  +---------+-------+---------------------------+---------------+--------------+--------------+---------+---------+-------+----------+---------------------------------+---------+
+INFO  [VRAM-DEBUG] ========== Layer 0: After First Subset ==========
+INFO  gc.collect() reclaimed 166 objects in 0.238s
+INFO  [VRAM-DEBUG] cuda:0 - Allocated: 3.68GB, Reserved: 3.75GB
+INFO  [VRAM-DEBUG] cuda:1 - Allocated: 0.01GB, Reserved: 0.04GB
+INFO  [VRAM-DEBUG] cuda:2 - Allocated: 0.01GB, Reserved: 0.04GB
+INFO  [VRAM-DEBUG] cuda:3 - Allocated: 1.17GB, Reserved: 1.17GB
+INFO  | gptq    | 0     | self_attn.o_proj          | 4096, 2048    | bf16: 18.0MB | 0.0000000006 | 224482  | 0.01000 | 0.884 | 4.011    | cuda 5.18G, 1.83G, 1.81G, 3.18G |         |

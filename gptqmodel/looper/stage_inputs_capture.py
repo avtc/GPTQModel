@@ -132,13 +132,16 @@ class StageInputsCapture:
             layers[0] = layers[0].to(self.gptq_model.quantize_config.device)
 
         ori_outside_layer_module_devices: Dict[str, torch.device] = {}
-        for module_name in self.gptq_model.get_base_modules(self.gptq_model.model):
+        base_modules_list = self.gptq_model.get_base_modules(self.gptq_model.model)
+        self.logger.info(f"[VRAM-DEBUG] Base modules to materialize: {base_modules_list}")
+        for module_name in base_modules_list:
             module, _ = get_module_by_name_prefix(self.gptq_model.model, [module_name])
 
             if module is None:
                 continue
 
             m_device = get_device(module)
+            self.logger.info(f"[VRAM-DEBUG] {module_name} device before materialize: {m_device}")
             ori_outside_layer_module_devices[module_name] = CPU if m_device == META else m_device
             if module is not None:
                 self.gptq_model.shell_module_materialize(
@@ -147,7 +150,6 @@ class StageInputsCapture:
                 )
 
         # VRAM DEBUG: Check memory after base module materialization for input capture
-        import torch
         self.logger.info(f"[VRAM-DEBUG] ========== Input Capture: After Base Module Materialization ==========")
         torch_empty_cache()
         for i in range(torch.cuda.device_count()):
