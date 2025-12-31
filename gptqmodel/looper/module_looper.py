@@ -1383,6 +1383,28 @@ class ModuleLooper():
                 log.info(f"[VRAM-DEBUG] Triggering deferred turtle reload (accum={self.gptq_model._turtle_reload_accum_bytes/1024**3:.2f}GB)")
                 self.gptq_model.reload_turtle_model(source="deferred:post_input_capture")
 
+            # VRAM FIX: After input capture, we need to clean up base modules that were materialized
+            # for the capture process. When offload_to_disk=True, base modules (embed_tokens, norm, rotary_emb)
+            # are materialized from meta -> CUDA and stay there throughout the capture loop.
+            # This causes two VRAM issues:
+            # 1. Base modules themselves consume VRAM (embed_tokens: ~0.58GB)
+            # 2. PyTorch's caching allocator pools intermediate allocations from 256 forward passes (~0.50GB)
+            # By moving base modules back to CPU and clearing cached allocator memory,
+            # we match the offload=False VRAM baseline (1.17GB instead of 2.25GB).
+            log.info(f"[VRAM-DEBUG] Cleaning up base modules after input capture to reduce VRAM...")
+            base_modules = self.gptq_model.get_base_modules(self.gptq_model.model)
+            for module_name in base_modules:
+                module, _ = get_module_by_name_prefix(self.gptq_model.model, [module_name])
+                if module is not None:
+                    device = get_device(module)
+                    if device.type == 'cuda':
+                        log.info(f"[VRAM-DEBUG] Moving {module_name} from {device} to CPU to free {torch.cuda.memory_allocated(device.index) / 1024**3:.2f}GB")
+                        move_to(module, device=CPU)
+            
+            # Force garbage collection and clear CUDA allocator cache to free pooled intermediate allocations
+            torch_empty_cache()
+            log.info(f"[VRAM-DEBUG] After base module cleanup, cuda:0 allocated: {torch.cuda.memory_allocated(0) / 1024**3:.2f}GB")
+
         if region_timer is not None:
             region_timer.flush()
 
