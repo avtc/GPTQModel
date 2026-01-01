@@ -74,22 +74,13 @@ class StageInputsCapture:
 
         cur_layer_device = get_device(layers[0])
 
-        if cur_layer_device == META:
-            layers[0] = self.gptq_model.shell_module_materialize(
-                target_submodule=layers[0],
-                device=self.gptq_model.quantize_config.device,
-            )
-            cur_layer_device = self.gptq_model.quantize_config.device
-            self.logger.info(f"[VRAM-DEBUG] ===== AFTER MATERIALIZATION (Line 178) =====")
-            self.logger.info(f"[VRAM-DEBUG] cur_layer_device={cur_layer_device}, data_device={data_device}")            
-        else:
-            layers[0] = layers[0].to(self.gptq_model.quantize_config.device)
-            cur_layer_device = self.gptq_model.quantize_config.device
-            self.logger.info(f"[VRAM-DEBUG] ===== AFTER MATERIALIZATION (Line 180) =====")
-            self.logger.info(f"[VRAM-DEBUG] cur_layer_device={cur_layer_device}, data_device={data_device}")            
+        layers[0] = self.gptq_model.shell_module_materialize(
+            target_submodule=layers[0],
+            device=self.gptq_model.quantize_config.device,
+        )
 
         data_device = cur_layer_device
-        self.logger.info(f"[VRAM-DEBUG] ===== INITIAL STATE (Line 75-76) =====")
+        self.logger.info(f"[VRAM-DEBUG] ===== AFTER MATERIALIZATION (Line 178) =====")
         self.logger.info(f"[VRAM-DEBUG] cur_layer_device={cur_layer_device}, data_device={data_device}")
         self.logger.info(f"[VRAM-DEBUG] quantize_config.device={self.gptq_model.quantize_config.device}")        
 
@@ -196,7 +187,7 @@ class StageInputsCapture:
 
         ori_outside_layer_module_devices: Dict[str, torch.device] = {}
         base_modules_list = self.gptq_model.get_base_modules(self.gptq_model.model)
-        self.logger.info(f"[VRAM-DEBUG] Base modules to materialize: {base_modules_list}")
+        self.logger.info(f"[VRAM-DEBUG] Base modules to materialize: {base_modules_list}, cur_layer_device: {cur_layer_device}")
 
         for module_name in base_modules_list:
             module, _ = get_module_by_name_prefix(self.gptq_model.model, [module_name])
@@ -207,28 +198,10 @@ class StageInputsCapture:
             m_device = get_device(module)
             self.logger.info(f"[VRAM-DEBUG] {module_name} device before materialize: {m_device}")
             ori_outside_layer_module_devices[module_name] = CPU if m_device == META else m_device
-
-            if module is not None:
-                # VRAM FIX: If base module is on meta, materialize to CPU first then move to CUDA
-                # This prevents extra +0.50GB VRAM allocation that occurs when meta modules
-                # are materialized directly to CUDA for input capture.
-                # By doing meta -> CPU -> CUDA, we match offload=False behavior where
-                # base modules start on CPU and are moved to CUDA.
-                if m_device == META:
-                    self.logger.info(f"[VRAM-DEBUG] Materializing {module_name} from meta to CPU first (to avoid extra VRAM allocation)")
-                    self.gptq_model.shell_module_materialize(
-                        target_submodule=module,
-                        device=CPU,
-                    )
-                    # Now move from CPU to CUDA (matching offload=False behavior)
-                    self.logger.info(f"[VRAM-DEBUG] Moving {module_name} from CPU to CUDA")
-                    module.to(cur_layer_device)
-                else:
-                    # Normal materialization to CUDA for non-meta modules
-                    self.gptq_model.shell_module_materialize(
-                        target_submodule=module,
-                        device=cur_layer_device,
-                    )
+            self.gptq_model.shell_module_materialize(
+                target_submodule=module,
+                device=cur_layer_device,
+            )
 
         # VRAM DEBUG: Check memory after base module materialization for input capture
         self.logger.info(f"[VRAM-DEBUG] ========== Input Capture: After Base Module Materialization ==========")
