@@ -1322,22 +1322,6 @@ class ModuleLooper():
         layers, layers_prefix = get_module_by_name_prefix(self.gptq_model.model, self.gptq_model.extract_layers_node())
         region_timer = getattr(self.gptq_model, "quant_region_timer", None)
 
-        # VRAM DEBUG: Track initial state before input capture
-        log.info(f"[VRAM-DEBUG] ========== Starting Input Capture ==========")
-        torch_empty_cache()
-        for i in range(torch.cuda.device_count()):
-            allocated = torch.cuda.memory_allocated(i) / 1024**3
-            reserved = torch.cuda.memory_reserved(i) / 1024**3
-            log.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
-
-        # VRAM FIX: Suspend turtle reload during input capture to preserve tensor storage sharing
-        # When turtle model reloads, cached tensors that share storage with the old model become orphaned
-        # and must allocate independent memory, effectively doubling InputCache size
-        original_turtle_threshold = getattr(self.gptq_model, '_turtle_reload_threshold_bytes', 0)
-        if self.gptq_model.quantize_config.offload_to_disk:
-            log.info(f"[VRAM-DEBUG] Suspending turtle reload during input capture (original threshold: {original_turtle_threshold/1024**3:.2f}GB)")
-            self.gptq_model._turtle_reload_threshold_bytes = float('inf')  # Effectively disable reload
-
         for p_index, processor in enumerate(self.processors):
             if not processor.verify_calibration_dataset(p_index):
                 if isinstance(processor, EoraProcessor) or\
@@ -1358,52 +1342,18 @@ class ModuleLooper():
                                             use_cache=False)
             processor.receive_input_cache(input_cache)
 
-        # VRAM DEBUG: Check memory after input capture
-        log.info(f"[VRAM-DEBUG] ========== Input Capture Complete ==========")
-        torch_empty_cache()
-        for i in range(torch.cuda.device_count()):
-            allocated = torch.cuda.memory_allocated(i) / 1024**3
-            reserved = torch.cuda.memory_reserved(i) / 1024**3
-            log.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
-
         # release calibration_dataset
         for processor in self.processors:
             processor.release_calibration_dataset()
 
-        # NOTE: Base module offload moved to stage_layer.py after layer 0 completes
-        # to avoid breaking tensor sharing between InputCache and intermediate computation buffers
-
-        # VRAM FIX: Restore turtle reload threshold and trigger any pending reload
+        # offload base modules
         if self.gptq_model.quantize_config.offload_to_disk:
-            log.info(f"[VRAM-DEBUG] Restoring turtle reload threshold to {original_turtle_threshold/1024**3:.2f}GB")
-            self.gptq_model._turtle_reload_threshold_bytes = original_turtle_threshold
-            # Trigger the pending reload now that input capture is done
-            # This ensures turtle model is fresh for layer quantization without breaking InputCache
-            if self.gptq_model._turtle_reload_accum_bytes >= original_turtle_threshold:
-                log.info(f"[VRAM-DEBUG] Triggering deferred turtle reload (accum={self.gptq_model._turtle_reload_accum_bytes/1024**3:.2f}GB)")
-                self.gptq_model.reload_turtle_model(source="deferred:post_input_capture")
-
-            # VRAM FIX: After input capture, we need to clean up base modules that were materialized
-            # for the capture process. When offload_to_disk=True, base modules (embed_tokens, norm, rotary_emb)
-            # are materialized from meta -> CUDA and stay there throughout the capture loop.
-            # This causes two VRAM issues:
-            # 1. Base modules themselves consume VRAM (embed_tokens: ~0.58GB)
-            # 2. PyTorch's caching allocator pools intermediate allocations from 256 forward passes (~0.50GB)
-            # By moving base modules back to CPU and clearing cached allocator memory,
-            # we match the offload=False VRAM baseline (1.17GB instead of 2.25GB).
-            log.info(f"[VRAM-DEBUG] Cleaning up base modules after input capture to reduce VRAM...")
-            base_modules = self.gptq_model.get_base_modules(self.gptq_model.model)
-            for module_name in base_modules:
-                module, _ = get_module_by_name_prefix(self.gptq_model.model, [module_name])
-                if module is not None:
-                    device = get_device(module)
-                    if device.type == 'cuda':
-                        log.info(f"[VRAM-DEBUG] Moving {module_name} from {device} to CPU to free {torch.cuda.memory_allocated(device.index) / 1024**3:.2f}GB")
-                        move_to(module, device=CPU)
-            
-            # Force garbage collection and clear CUDA allocator cache to free pooled intermediate allocations
-            torch_empty_cache()
-            log.info(f"[VRAM-DEBUG] After base module cleanup, cuda:0 allocated: {torch.cuda.memory_allocated(0) / 1024**3:.2f}GB")
+            base_modules = self.gptq_model.get_base_modules(model=self.gptq_model.model)
+            offload_to_disk(
+                model=self.gptq_model.model,
+                module=base_modules,
+                disk_path=self.gptq_model.quantize_config.offload_to_disk_path
+            )
 
         if region_timer is not None:
             region_timer.flush()
@@ -1444,52 +1394,6 @@ class ModuleLooper():
                 for part in module_path[:-1]:
                     parent = getattr(parent, part)
                 setattr(parent, module_path[-1], hooked_lm_head)
-
-        # VRAM DEBUG: Check memory before layer processing starts
-        log.info(f"[VRAM-DEBUG] ========== Starting Layer Quantization ==========")
-        torch_empty_cache()
-        for i in range(torch.cuda.device_count()):
-            allocated = torch.cuda.memory_allocated(i) / 1024**3
-            reserved = torch.cuda.memory_reserved(i) / 1024**3
-            log.info(f"[VRAM-DEBUG] cuda:{i} - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
-
-        # Log info about first layer
-        if len(layers) > 0:
-            first_layer = layers[0]
-            log.info(f"[VRAM-DEBUG] First layer: {first_layer}")
-            first_layer_device = get_device(first_layer)
-            log.info(f"[VRAM-DEBUG] First layer device: {first_layer_device}")
-
-        # DEBUG: Log all modules on cuda:0 to identify VRAM usage
-        if self.gptq_model.quantize_config.offload_to_disk:
-            log.info(f"[VRAM-DEBUG] ===== Modules on cuda:0 at quantization start =====")
-            cuda0_modules = []
-            total_bytes = 0
-            for name, module in self.gptq_model.model.named_modules():
-                # Check each parameter and buffer in the module
-                module_bytes = 0
-                has_cuda = False
-                for param_name, param in module.named_parameters(recurse=False):
-                    if hasattr(param, 'device') and param.device.type == 'cuda':
-                        has_cuda = True
-                        param_bytes = param.numel() * param.element_size()
-                        module_bytes += param_bytes
-                for buf_name, buf in module.named_buffers(recurse=False):
-                    if hasattr(buf, 'device') and buf.device.type == 'cuda':
-                        has_cuda = True
-                        buf_bytes = buf.numel() * buf.element_size()
-                        module_bytes += buf_bytes
-
-                if has_cuda:
-                    total_bytes += module_bytes
-                    cuda0_modules.append((name, module_bytes / (1024**3)))
-
-            # Sort by size and log top 20
-            cuda0_modules.sort(key=lambda x: x[1], reverse=True)
-            for name, size_gb in cuda0_modules[:20]:
-                log.info(f"[VRAM-DEBUG]   {name}: {size_gb:.2f}GB")
-            log.info(f"[VRAM-DEBUG] Total from top modules: {sum(m[1] for m in cuda0_modules[:20]):.2f}GB")
-            log.info(f"[VRAM-DEBUG] Actual allocated VRAM: {torch.cuda.memory_allocated(0) / (1024**3):.2f}GB")
 
         run_layer_stage(
             self,

@@ -1424,13 +1424,8 @@ class BaseQModel(nn.Module):
 
         self._turtle_reload_accum_bytes += bytes_added
 
-        # DEBUG: Log when threshold check happens
-        module_name = getattr(target_submodule, "full_name", None) or getattr(target_submodule, "name", None) or module.__class__.__name__
-        log.info(f"[VRAM-DEBUG] _maybe_auto_reload_after_alias: module={module_name}, bytes_added={bytes_added/1024**3:.2f}GB, accum={self._turtle_reload_accum_bytes/1024**3:.2f}GB, threshold={threshold/1024**3:.2f}GB")
-
         if self._turtle_reload_accum_bytes >= threshold:
-            label = module_name
-            log.info(f"[VRAM-DEBUG] THRESHOLD EXCEEDED: triggering turtle model reload for {label}")
+            label = getattr(target_submodule, "full_name", None) or getattr(target_submodule, "name", None) or module.__class__.__name__
             self.reload_turtle_model(source=f"auto:{label}")
             self._turtle_reload_accum_bytes = 0
 
@@ -1438,11 +1433,6 @@ class BaseQModel(nn.Module):
         if self.quantize_config.offload_to_disk is False:
             return
 
-        # Log VRAM before turtle reload
-        if torch.cuda.is_available():
-            vram_before = torch.cuda.memory_allocated() / 1024**3  # Convert to MB
-            log.info(f"[VRAM_TRACK] Before turtle model reload: {vram_before:.2f} MB allocated")
-        
         timer = getattr(self, "quant_region_timer", None)
         timing_ctx = timer.measure("model_reload", source=source) if timer else nullcontext()
 
@@ -1457,42 +1447,6 @@ class BaseQModel(nn.Module):
 
                     reload_kwargs = self._clone_model_init_kwargs(turtle_model)
                     config = turtle_model.config
-
-                    # DEBUG: Log what's in reload_kwargs to verify device_map presence
-                    log.info(f"[VRAM-DEBUG] reload_turtle_model: reload_kwargs keys = {list(reload_kwargs.keys())}")
-                    if 'device_map' in reload_kwargs:
-                        log.info(f"[VRAM-DEBUG] reload_turtle_model: device_map = {reload_kwargs['device_map']}")
-                    
-                    # Explicitly clear old model from GPU/CPU before loading new one
-                    if hasattr(turtle_model, 'to'):
-                        try:
-                            # For very large models that don't fit in CPU, we need to be more careful
-                            # First check if model has any parts on CUDA that we can safely clear
-                            has_cuda_tensors = False
-                            for param in turtle_model.parameters():
-                                if param.device.type == 'cuda':
-                                    has_cuda_tensors = True
-                                    break
-                            
-                            if has_cuda_tensors:
-                                # Move CUDA tensors to CPU first, but handle potential OOM
-                                try:
-                                    # Try moving to CPU - this might fail for very large models
-                                    turtle_model.to('cpu')
-                                except Exception as cpu_move_error:
-                                    log.warning(f"[VRAM_TRACK] Cannot move turtle model to CPU (model too large): {cpu_move_error}")
-                                    # For very large models, we'll try a more targeted cleanup
-                                    # Clear CUDA tensors directly without CPU migration
-                                    for param in turtle_model.parameters():
-                                        if param.device.type == 'cuda':
-                                            param.data = torch.empty_like(param.data, device='meta')
-                            
-                            # Clear CUDA cache regardless of whether we could move to CPU
-                            torch_empty_cache()
-                        except Exception as e:
-                            log.warning(f"[VRAM_TRACK] Failed to clear turtle model: {e}")
-                    
-                    # Delete reference to old model to free memory
                     del turtle_model
 
                     new_model = loader.from_pretrained(
@@ -1510,15 +1464,6 @@ class BaseQModel(nn.Module):
                 DEVICE_THREAD_POOL.submit("model_loader:cpu", _do_reload).result()
             finally:
                 reload_spinner.close()
-                
-                # Log VRAM after turtle reload and clear cache aggressively for large models
-                try:
-                    torch_empty_cache()
-                except Exception as cache_error:
-                    log.warning(f"[VRAM_TRACK] Cache clear failed: {cache_error}")
-                
-                vram_after = torch.cuda.memory_allocated() / 1024**3  # Convert to MB
-                log.info(f"[VRAM_TRACK] After turtle model reload: {vram_after:.2f} MB allocated, delta: {vram_after - vram_before:.2f} MB")
 
     # transfer actually materizlied module from turtle (real) to shell
     def shell_module_materialize(
@@ -1530,15 +1475,10 @@ class BaseQModel(nn.Module):
         with self._turtle_lock:
             turtle_model = self.turtle_model
 
-            # VRAM DEBUG: Track materialization
-            from ..utils.torch import torch_empty_cache
-            import torch
-
             # Get module name safely - try full_name, then class __name__, then type string
             module_name = getattr(target_submodule, 'full_name', None)
             if module_name is None:
                 module_name = getattr(target_submodule.__class__, '__name__', str(type(target_submodule)))
-            device_before = get_device(target_submodule)
 
             if turtle_model is None:
                 if get_device(target_submodule) != device:
@@ -1546,23 +1486,12 @@ class BaseQModel(nn.Module):
 
                 return target_submodule
 
-            # VRAM DEBUG: Log before materialization
-            if torch.cuda.is_available():
-                allocated_before = torch.cuda.memory_allocated(0) / 1024**3
-                log.info(f"[VRAM-DEBUG] shell_module_materialize: {module_name} | device_before={device_before} -> target_device={device} | VRAM_before={allocated_before:.2f}GB")
-
             module = alias_from_turtle_for_submodule(
                 target_model=self.model,
                 turtle_model=turtle_model,
                 target_submodule=target_submodule,
                 device=device,
             )
-
-            # VRAM DEBUG: Log after materialization
-            if torch.cuda.is_available():
-                torch_empty_cache()
-                allocated_after = torch.cuda.memory_allocated(0) / 1024**3
-                log.info(f"[VRAM-DEBUG] shell_module_materialize: {module_name} | VRAM_after={allocated_after:.2f}GB | delta={allocated_after - allocated_before:.2f}GB")
 
         self._maybe_auto_reload_after_alias(module, target_submodule)
         return module

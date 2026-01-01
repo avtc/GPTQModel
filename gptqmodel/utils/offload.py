@@ -31,7 +31,6 @@ _OFFLOAD_LOCK = threading.Lock()
 
 
 _SMALL_MODULE_OFFLOAD_BYTES = 4 * 1024  # Skip disk writes for <4KB payloads
-_OFFLOAD_MODULE_LOG = 50 * 1024 ** 2   # Skip disk writes for <50MB payloads
 
 
 # Patch fix thread unsafe accelerate.utils.modeling.clear_device_cache
@@ -141,11 +140,6 @@ def _offload_to_disk_impl(module: List[str] | nn.Module, model: nn.Module, disk_
     assert module is not None
     assert model is not None
 
-    # Track VRAM before offloading
-    if torch.cuda.is_available():
-        vram_before = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
-        print(f"[VRAM_TRACK] Before offload: {vram_before:.2f} GB allocated")
-
     #with _OFFLOAD_LOCK:
     with _OFFLOAD_LOCK:  # Re-enable thread lock for safety
         if isinstance(module, List):
@@ -168,11 +162,6 @@ def _offload_to_disk_impl(module: List[str] | nn.Module, model: nn.Module, disk_
 
             _offload_disk(module=module, name=full_name, disk_path=disk_path)
     
-    # Track VRAM after offloading
-    if torch.cuda.is_available():
-        vram_after = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
-        print(f"[VRAM_TRACK] After offload: {vram_after:.2f} GB allocated, delta: {vram_after - vram_before:.2f} GB")
-
     if hasattr(module, "config") and getattr(module.config,
                                              "tie_word_embeddings", False):
         module.tie_weights()  # makes lm_head.weight point to embed_tokens.weight again after offload
@@ -196,15 +185,6 @@ def _offload_disk_locked(module: nn.Module, name: str, disk_path: str = "."):
         return
 
     m_device = get_device(module)
-
-    # FIX: Move module from CUDA to CPU first to free VRAM immediately
-    # Then use CPU as execution_device for disk_offload so weights are loaded from disk to CPU (not GPU)
-    # This ensures GPU memory is actually freed while keeping weights accessible on CPU
-    if m_device.type == "cuda":
-        print(f"[VRAM_FIX] Moving '{name}' from {m_device} to CPU before disk_offload to ensure VRAM is freed")
-        module.to(CPU)
-        torch_empty_cache()
-        m_device = CPU  # Update m_device since we moved the module
 
     if m_device.type == "cuda":
         torch.cuda.set_device(m_device)
@@ -232,54 +212,12 @@ def _offload_disk_locked(module: nn.Module, name: str, disk_path: str = "."):
     _prepare_offload_directory(module_offload_dir)
     _bundle_module_state_dict(module, module_offload_dir)
 
-    # Track VRAM before disk offload
-    if total_bytes >= _OFFLOAD_MODULE_LOG and torch.cuda.is_available():
-        vram_before_offload = torch.cuda.memory_allocated() / 1024**3
-        print(f"[VRAM_TRACK] Before disk_offload '{name}': {vram_before_offload:.2f} GB")
-
     _ = disk_offload(
         module,
         offload_dir=module_offload_dir,
         offload_buffers=True,
         execution_device=m_device,
     )
-    
-    # Force cleanup and verification after disk_offload
-    if total_bytes >= _OFFLOAD_MODULE_LOG and torch.cuda.is_available():
-        # Check if disk_offload actually worked by verifying tensors are moved to meta
-        meta_params = 0
-        meta_buffers = 0
-        for param in module.parameters():
-            if hasattr(param, 'device') and param.device.type == 'meta':
-                meta_params += 1
-        for buffer in module.buffers():
-            if hasattr(buffer, 'device') and buffer.device.type == 'meta':
-                meta_buffers += 1
-        
-        # Force aggressive cleanup
-        torch_empty_cache()
-        
-        # Measure memory state after cleanup
-        vram_after_offload = torch.cuda.memory_allocated() / 1024**3
-        freed_gb = vram_before_offload - vram_after_offload
-        print(f"[VRAM_TRACK] After disk_offload '{name}': {vram_after_offload:.2f} GB, freed: {freed_gb:.2f} GB, meta_params: {meta_params}, meta_buffers: {meta_buffers}")
-        
-        # Additional debugging: check if any tensors are still on CUDA
-        cuda_params = 0
-        cuda_buffers = 0
-        for param in module.parameters():
-            if hasattr(param, 'device') and param.device.type == 'cuda':
-                cuda_params += 1
-        for buffer in module.buffers():
-            if hasattr(buffer, 'device') and buffer.device.type == 'cuda':
-                cuda_buffers += 1
-        
-        if cuda_params > 0 or cuda_buffers > 0:
-            print(f"[VRAM_TRACK] WARNING: {cuda_params} params and {cuda_buffers} buffers still on CUDA after disk_offload!")
-        
-        # If very little VRAM was freed, there might be a problem with accelerate
-        if freed_gb <= 0.01:  # Less than 10MB freed indicates a problem
-            print(f"[VRAM_TRACK] WARNING: disk_offload freed only {freed_gb:.2f}GB - this may indicate accelerate.disk_offload is not working properly")
 
     # print("offload_disk: list item tree")
     # print_module_tree(module)
@@ -420,11 +358,6 @@ def undo_offload_to_disk(
     Returns:
         The same `module`, now "de-offloaded".
     """
-    # Track VRAM before undo offload
-    if torch.cuda.is_available():
-        vram_before = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
-        print(f"[VRAM_TRACK] Before undo offload: {vram_before:.2f} GB allocated")
-
     #with _OFFLOAD_LOCK:
     with _OFFLOAD_LOCK:  # Re-enable thread lock for safety
         # Track candidate offload dirs if user asks to delete them later.
@@ -477,10 +410,5 @@ def undo_offload_to_disk(
             for d in sorted(offload_dirs):
                 with contextlib.suppress(Exception):
                     shutil.rmtree(d, ignore_errors=True)
-    
-    # Track VRAM after undo offload
-    if torch.cuda.is_available():
-        vram_after = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
-        print(f"[VRAM_TRACK] After undo offload: {vram_after:.2f} GB allocated, delta: {vram_after - vram_before:.2f} GB")
 
     return module
