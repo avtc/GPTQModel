@@ -518,6 +518,14 @@ def run_subset_stage(
                 dev for dev in looper._quant_devices
                 if dev is not None and getattr(dev, "type", None) != "cpu"
             ]
+            
+            # Distribute self_attn to cuda:1 and mlp to cuda:2
+            for module_name in subset.keys():
+                if ".self_attn." in module_name:
+                    forward_device_map[module_name] = torch.device("cuda:1")
+                elif ".mlp." in module_name:
+                    forward_device_map[module_name] = torch.device("cuda:2")
+            
             if len(devices) > 1 and expert_groups:
                 assignable_group_keys: List[str] = []
                 for group_key, module_names in expert_groups.items():
