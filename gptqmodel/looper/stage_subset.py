@@ -505,10 +505,10 @@ def run_subset_stage(
         # Distribute self_attn to cuda:1 and mlp to cuda:2
         for module_name in subset.keys():
             logger.info(f"BALANCED VRAM: Checking module {module_name}")
-            if ".self_attn." in module_name:
+            if module_name.startswith("self_attn."):
                 forward_device_map[module_name] = torch.device("cuda:1")
                 logger.info(f"BALANCED VRAM: Assigning {module_name} to cuda:1 (self_attn)")
-            elif ".mlp." in module_name:
+            elif module_name.startswith("mlp."):
                 forward_device_map[module_name] = torch.device("cuda:2")
                 logger.info(f"BALANCED VRAM: Assigning {module_name} to cuda:2 (mlp)")
         
