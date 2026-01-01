@@ -220,6 +220,7 @@ class HookedLinear(torch.nn.Linear):
 
         self.forward_hook = None
         self.forward_hook_last = False
+        self.module_name = None  # For logging purposes
 
     @staticmethod
     def from_linear(linear: torch.nn.Linear):
@@ -232,6 +233,11 @@ class HookedLinear(torch.nn.Linear):
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         original_device = input.device
         target_device = self.weight.data.device
+        
+        # Log module placement
+        module_name = getattr(self, "module_name", getattr(self, "full_name", getattr(self, "name", "unknown")))
+        log.info(f"HookedLinear forward: module='{module_name}' weight_device={target_device} input_device={original_device}")
+        
         if original_device != target_device:
             input = input.to(device=target_device)
         output = super().forward(input)

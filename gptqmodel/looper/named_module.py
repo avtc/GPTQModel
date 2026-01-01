@@ -30,6 +30,10 @@ class NamedModule(torch.nn.Module):
         self.full_name = full_name  # full dotted path inside model
         self.layer_index = layer_index  # layer index for repeated blocks
         self._parent_lock = get_parent_lock(full_name)
+        
+        # Set module_name on HookedLinear for logging purposes
+        if hasattr(module, 'module_name') and module.module_name is None:
+            module.module_name = full_name
 
         # persistent work state for named module (used by some LoopProcessors)
         # store all `processed()` work state/data/result here

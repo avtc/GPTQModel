@@ -523,8 +523,10 @@ def run_subset_stage(
             for module_name in subset.keys():
                 if ".self_attn." in module_name:
                     forward_device_map[module_name] = torch.device("cuda:1")
+                    logger.info(f"BALANCED VRAM: Assigning {module_name} to cuda:1 (self_attn)")
                 elif ".mlp." in module_name:
                     forward_device_map[module_name] = torch.device("cuda:2")
+                    logger.info(f"BALANCED VRAM: Assigning {module_name} to cuda:2 (mlp)")
             
             if len(devices) > 1 and expert_groups:
                 assignable_group_keys: List[str] = []
