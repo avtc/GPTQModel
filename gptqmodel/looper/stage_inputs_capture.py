@@ -79,8 +79,9 @@ class StageInputsCapture:
             device=self.gptq_model.quantize_config.device,
         )
 
+        cur_layer_device = self.gptq_model.quantize_config.device
         data_device = cur_layer_device
-        self.logger.info(f"[VRAM-DEBUG] ===== AFTER MATERIALIZATION (Line 178) =====")
+        self.logger.info(f"[VRAM-DEBUG] ===== AFTER MATERIALIZATION =====")
         self.logger.info(f"[VRAM-DEBUG] cur_layer_device={cur_layer_device}, data_device={data_device}")
         self.logger.info(f"[VRAM-DEBUG] quantize_config.device={self.gptq_model.quantize_config.device}")        
 
