@@ -492,28 +492,6 @@ def run_subset_stage(
     moe_modules_set = set(moe_module_names)
     is_moe_subset = len(moe_module_names) >= looper._moe_subset_threshold
 
-    # BALANCED VRAM: Distribute self_attn to cuda:1 and mlp to cuda:2 (applies to all models)
-    logger.info(f"VRAM Strategy: {looper._vram_strategy}, Subset keys: {list(subset.keys())}")
-    if looper._vram_strategy == VRAMStrategy.BALANCED:
-        logger.info("BALANCED VRAM: Distributing modules across GPUs")
-        devices = [
-            dev for dev in looper._quant_devices
-            if dev is not None and getattr(dev, "type", None) != "cpu"
-        ]
-        logger.info(f"BALANCED VRAM: Available devices: {devices}")
-        
-        # Distribute self_attn to cuda:1 and mlp to cuda:2
-        for module_name in subset.keys():
-            logger.info(f"BALANCED VRAM: Checking module {module_name}")
-            if module_name.startswith("self_attn."):
-                forward_device_map[module_name] = torch.device("cuda:1")
-                logger.info(f"BALANCED VRAM: Assigning {module_name} to cuda:1 (self_attn)")
-            elif module_name.startswith("mlp."):
-                forward_device_map[module_name] = torch.device("cuda:2")
-                logger.info(f"BALANCED VRAM: Assigning {module_name} to cuda:2 (mlp)")
-        
-        logger.info(f"BALANCED VRAM: Final forward_device_map: {forward_device_map}")
-
     if is_moe_subset:
         expert_groups: Dict[str, List[str]] = {}
         combined_names: List[str] = list(subset.keys())
@@ -540,7 +518,6 @@ def run_subset_stage(
                 dev for dev in looper._quant_devices
                 if dev is not None and getattr(dev, "type", None) != "cpu"
             ]
-            
             if len(devices) > 1 and expert_groups:
                 assignable_group_keys: List[str] = []
                 for group_key, module_names in expert_groups.items():
