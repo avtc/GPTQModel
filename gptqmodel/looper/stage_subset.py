@@ -20,7 +20,7 @@ from .. import DEBUG_ON, DEVICE_THREAD_POOL
 from ..looper.gptq_processor import GPTQProcessor
 from ..looper.loop_processor import LoopProcessor
 from ..looper.named_module import NamedModule
-from ..quantization.config import VramStrategy, GcMode
+from ..quantization.config import VramStrategy, GcMode, ExpertsRoutingBypass
 from ..utils.device import get_device
 from ..utils.logger import setup_logger
 from ..utils.torch import torch_empty_cache, torch_sync
@@ -584,8 +584,10 @@ def run_subset_stage(
             forward_row_counts.extend([1] * (batch_count - len(forward_row_counts)))
     
     # Check for MoE batching
-    moe_bypass_router_experts_batch_size = looper.gptq_model.quantize_config.moe_bypass_router_experts_batch_size
-    batching_enabled = is_moe_subset and moe_bypass_router_experts_batch_size is not None and moe_bypass_router_experts_batch_size > 0
+    # batch_size is only available when using ExpertsRoutingBypass routing strategy
+    moe_routing = looper.gptq_model.quantize_config.moe
+    batch_size = moe_routing.routing.batch_size if isinstance(moe_routing.routing, ExpertsRoutingBypass) else None
+    batching_enabled = is_moe_subset and batch_size is not None and batch_size > 0
     
     processed_results = {}
     
@@ -605,7 +607,7 @@ def run_subset_stage(
         sorted_group_keys = sorted(expert_groups.keys())
         
         # Chunk the group keys (experts)
-        group_chunks = [sorted_group_keys[i:i + moe_bypass_router_experts_batch_size] for i in range(0, len(sorted_group_keys), moe_bypass_router_experts_batch_size)]
+        group_chunks = [sorted_group_keys[i:i + batch_size] for i in range(0, len(sorted_group_keys), batch_size)]
         
         # If there are non-expert modules in a MoE subset (unlikely but possible), 
         # add them as a separate chunk or merge them. For safety, let's treat them as their own batch or append to first?
@@ -620,7 +622,7 @@ def run_subset_stage(
 
         logger.info(
             f"MoE Expert Batching Enabled: Splitting {len(expert_groups)} experts into {len(group_chunks)} batches "
-            f"(batch_size={moe_bypass_router_experts_batch_size})."
+            f"(batch_size={batch_size})."
         )
 
         all_chunks_modules = []

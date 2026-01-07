@@ -389,7 +389,11 @@ class ExpertsRoutingOverride(BaseMoERouting):
 # This ensures all experts receive sufficient calibration samples but increases quantization time
 @dataclass
 class ExpertsRoutingBypass(BaseMoERouting):
-    pass
+    # Number of experts to process in a single batch to reduce VRAM pressure during quantization
+    batch_size: Optional[int] = field(
+        default=None,
+        metadata={"help": "Number of experts to process in a single batch during MoE quantization"}
+    )
 
 
 @dataclass
@@ -701,13 +705,14 @@ class QuantizeConfig():
 
     moe: MoEConfig = field(
         default=None,
-        metadata={"help": "Mixture-of-Experts (MoE) configuration, including routing strategy and related overrides."}
-    )
-
-    # MoE quantization: process experts in batches to reduce VRAM pressure
-    moe_bypass_router_experts_batch_size: Optional[int] = field(
-        default=None,
-        metadata={"help": "Number of experts to process in a single batch during MoE quantization"}
+        metadata={"help": "Mixture-of-Experts (MoE) configuration for routing strategy and expert batching. "
+                  "Example with bypass routing (forward all data to each expert): "
+                  "moe=MoEConfig(routing=ExpertsRoutingBypass(batch_size=None)) - processes all experts in one batch (default). "
+                  "moe=MoEConfig(routing=ExpertsRoutingBypass(batch_size=4)) - processes 4 experts at a time to reduce VRAM pressure. "
+                  "Example with routing override (limit experts per token): "
+                  "moe=MoEConfig(routing=ExpertsRoutingOverride(num_experts_per_tok=2)). "
+                  "Example to forward to all experts: "
+                  "moe=MoEConfig(routing=ExpertsRoutingOverride(num_experts_per_tok='all'))"}
     )
 
     # Works faster than data parallel with some configurations
