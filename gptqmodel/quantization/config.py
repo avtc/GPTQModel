@@ -715,7 +715,7 @@ class QuantizeConfig():
                   "moe=MoEConfig(routing=ExpertsRoutingOverride(num_experts_per_tok='all'))"}
     )
 
-    # Works faster than data parallel with some configurations
+    # Works faster with some configurations when disabled
     auto_forward_data_parallel: bool = field(
         default=True,
         metadata={"help": "When multi-gpu is detected, we may data clone modules to each gpu for data parallelism "
