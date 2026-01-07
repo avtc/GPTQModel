@@ -42,7 +42,7 @@ from ..nn_modules.qlinear import BaseQuantLinear
 from ..nn_modules.qlinear.lookahead import configure_default_lookahead
 from ..nn_modules.qlinear.torch import TorchQuantLinear
 from ..quantization import QuantizeConfig
-from ..quantization.config import FORMAT, METHOD, QUANTIZE_BLACK_LIST, VRAMStrategy, dynamic_get
+from ..quantization.config import FORMAT, METHOD, QUANTIZE_BLACK_LIST, VramStrategy, GcMode, dynamic_get
 from ..quantization.rotation.rotation import fuse_layer_norms, rotate_model
 from ..utils.backend import BACKEND
 from ..utils.calibration import prepare_calibration_dataset
@@ -51,7 +51,6 @@ from ..utils.hf import autofix_hf_model_config
 from ..utils.importer import select_quant_linear
 from ..utils.logger import QuantizationRegionTimer, setup_logger
 from ..utils.model import MODALITY, find_modules, get_module_by_name_prefix, move_to
-from ..utils.offload import offload_to_disk
 from ..utils.structure import alias_from_turtle_for_submodule
 from ..utils.torch import TORCH_HAS_COMPILE, torch_compile
 from ._const import (
@@ -160,8 +159,10 @@ class BaseQModel(nn.Module):
 
     # some models require trust_remove_code = True (dbrx_converted)
     require_trust_remote_code = None
-    # some models require transformer version(internalm require '<=4.42.2')
-    require_pkgs_version: Optional[List[str]] = None
+
+    # some models require extra python packages and/or specific version of pkgs such as transformer version(internalm require '<=4.42.2')
+    require_pkgs: Optional[List[str]] = None
+
     # some models require a specific dtype, such as float16
     require_dtype: Optional[str|torch.dtype] = None
     require_fast_init: bool = True
@@ -182,7 +183,7 @@ class BaseQModel(nn.Module):
     require_monkeypatch = False
 
     # VRAM strategy support list
-    supported_vram_strategies: List[VRAMStrategy] = [VRAMStrategy.EXCLUSIVE, VRAMStrategy.BALANCED]
+    supported_vram_strategies: List[VramStrategy] = [VramStrategy.EXCLUSIVE, VramStrategy.BALANCED]
 
     # some models have broken attention mask codes so we need to only use batch 1 with no masks
     support_batch_quantize = True
@@ -218,7 +219,7 @@ class BaseQModel(nn.Module):
         self,
         model: PreTrainedModel,
         quantized: bool,
-        quantize_config: QuantizeConfig,
+        quantize_config: Optional[QuantizeConfig],
         tokenizer: Optional[PreTrainedTokenizerBase] = None,
         qlinear_kernel: nn.Module = None,
         load_quantized_model: bool = False,
@@ -230,15 +231,16 @@ class BaseQModel(nn.Module):
     ):
         super().__init__()
 
-        quant_method = quantize_config.quant_method
-        # override module_tree if need
-        if self.module_tree_overrides is not None and self.module_tree_overrides.get(quant_method) is not None:
-            log.info(f'Module Tree: overridden by METHOD.{quant_method.upper()}')
-            # setting cls.module_tree
-            type(self).module_tree = apply_module_tree_override(self.module_tree, self.module_tree_overrides[quant_method])
+        if quantize_config:
+            quant_method = quantize_config.quant_method
+            # override module_tree if need
+            if self.module_tree_overrides is not None and self.module_tree_overrides.get(quant_method) is not None:
+                log.info(f'Module Tree: overridden by METHOD.{quant_method.upper()}')
+                # setting cls.module_tree
+                type(self).module_tree = apply_module_tree_override(self.module_tree, self.module_tree_overrides[quant_method])
 
-        if type(self).module_tree is None:
-            type(self).module_tree = self._auto_detect_module_tree(model, quant_method)
+            if type(self).module_tree is None:
+                type(self).module_tree = self._auto_detect_module_tree(model, quant_method)
 
         # If module_tree is still None after auto-detection, raise an error indicating unsupported model type
         if type(self).module_tree is None:
@@ -295,7 +297,7 @@ class BaseQModel(nn.Module):
         from ..adapter.adapter import Lora
 
         # check adapter load and print info so users knows lora(s) are applied
-        if isinstance(self.quantize_config.adapter, Lora):
+        if quantize_config and isinstance(self.quantize_config.adapter, Lora):
             loaded_loras = 0
             qmodules = find_modules(self.model, layers=[BaseQuantLinear])
             for name, m in qmodules.items():
@@ -622,6 +624,48 @@ class BaseQModel(nn.Module):
         calibration_data_min_length: int = 10,
         calibration_concat_separator: Optional[str] = None,
     ) -> Dict[str, List[Dict[str, str]]]:
+        import sys
+        import traceback
+
+        try:
+            return self.quantize_core(
+                calibration=calibration,
+                calibration_concat_size=calibration_concat_size,
+                calibration_sort=calibration_sort,
+                batch_size=batch_size,
+                tokenizer=tokenizer,
+                backend=backend,
+                adapter=adapter,
+                adapter_calibration_dataset=adapter_calibration_dataset,
+                calibration_data_min_length=calibration_data_min_length,
+                calibration_concat_separator=calibration_concat_separator,
+            )
+        except Exception:
+            # TODO: this is workaround for the overwritten of the last line of the trace
+            # on quantization crash, originally caused by logbar progress bar (probably)
+            traceback.print_exc()
+            print()
+            sys.exit(1)
+
+    def quantize_core(
+        self,
+        calibration: Union[List[Dict[str, Union[List[int], torch.LongTensor]]], List[str], List[int]],
+        # Setting a fixed calibration_dataset_concat_size may improve the performance of the quantized model.
+        calibration_concat_size: Optional[int] = None,
+        calibration_sort: Optional[str] = "desc",  # valid values are asc, desc, shuffle
+        batch_size: int = 1,
+        tokenizer: Optional[PreTrainedTokenizerBase] = None,
+        backend: Optional[BACKEND] = BACKEND.AUTO,
+        # eora adapter generation needs config Lora(rank=1, path='lora.safetensors')
+        adapter: Adapter = None,
+        adapter_calibration_dataset: Union[List[Dict[str, Union[List[int], torch.LongTensor]]], List[str], List[int]] = None,
+        # minimum length of calibration data, default is 10
+        calibration_data_min_length: int = 10,
+        calibration_concat_separator: Optional[str] = None,
+    ) -> Dict[str, List[Dict[str, str]]]:
+        if self.quantize_config is None or not isinstance(self.quantize_config, QuantizeConfig):
+            raise AttributeError("`quantize_config` must be not None")
+
         if self.quantized:
             raise EnvironmentError("quantize() is called a model that is already quantized")
 
@@ -797,7 +841,7 @@ class BaseQModel(nn.Module):
                 GPTQProcessor(**args),
             ]
 
-        if self.quantize_config.gptaq is True:
+        if self.quantize_config.gptaq is not None:
             from ..looper.native_processor import NativeProcessor
 
             # During the deepcopy process, self.prepare_dataset will be deeply copied along with self. However,
@@ -828,14 +872,14 @@ class BaseQModel(nn.Module):
         # prepare processor worker (looper)
         module_looper = ModuleLooper(self, processors=processors)
 
-        # When vram_opt_memory_cleanup_on_stage_end=True, disable auto-gc for the whole quantization process
+        # When gc_mode=ON_STAGE_END, disable auto-gc for the whole quantization process
         # to prevent interference with manual cleanups performed at stage ends
-        gc_context = DEVICE_THREAD_POOL.no_auto_gc() if self.quantize_config.vram_opt_memory_cleanup_on_stage_end else nullcontext()
+        gc_context = DEVICE_THREAD_POOL.no_auto_gc() if self.quantize_config.gc_mode == GcMode.ON_STAGE_END else nullcontext()
         
         with gc_context:
             result = module_looper.loop(
                 backend=backend,
-                fail_safe=self.quantize_config.fail_safe,
+                failsafe=self.quantize_config.failsafe,
             )
 
         timer = getattr(self, "quant_region_timer", None)
@@ -1093,7 +1137,9 @@ class BaseQModel(nn.Module):
 
     def pre_quantize_generate_hook_end(self):
         if self.quantize_config.offload_to_disk:
-            offload_to_disk(model=self.model, module=self.get_base_modules(model=self.model), disk_path=self.quantize_config.offload_to_disk_path)
+            # This hook is now disabled as it's handled by the ModuleLooper after input capture.
+            # offload_to_disk(model=self.model, module=self.get_base_modules(model=self.model), disk_path=self.quantize_config.offload_to_disk_path)
+            pass
 
     def lm_head_pre_quantize_generate_hook(self, inputs: List[List[torch.tensor]]) -> List[List[torch.tensor]]:
         if self.pre_lm_head_norm_module:
@@ -1334,7 +1380,7 @@ class BaseQModel(nn.Module):
         if not getattr(self.quantize_config, "offload_to_disk", False):
             return 0
 
-        default_bytes = 512 * 1024 ** 3 #512MB
+        default_bytes = 512 * 1024 ** 2 #512MB
         raw = os.getenv("GPTQMODEL_RELOAD_THRESHOLD")
         if raw is None or raw.strip() == "":
             return default_bytes

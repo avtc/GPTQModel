@@ -18,7 +18,6 @@ from ...utils.backend import BACKEND
 from ...utils.logger import setup_logger
 from ...utils.rocm import IS_ROCM
 
-
 qqq_import_exception = None
 try:
     import gptqmodel_qqq_kernels
@@ -26,6 +25,7 @@ except ImportError as e:
     qqq_import_exception = str(e)
 
 log = setup_logger()
+
 
 def mul(
     A, B, C, D, s1, s2, s3, workspace, thread_k=-1, thread_n=-1, sms=-1, max_par=16
@@ -84,11 +84,6 @@ class QQQQuantLinear(BaseQuantLinear):
         adapter: Adapter = None,
         register_buffers: bool = True,
         **kwargs):
-        if qqq_import_exception is not None:
-            raise ValueError(
-                f"Trying to use the QQQ backend but could not import the kernel cpp extension with the following error: {qqq_import_exception}. Please manually reinstall and recompile package as QQQ kernel extension is not part of prebuilt wheels."
-            )
-
         self.tile = 16
         self.max_par = 16
 
@@ -207,10 +202,13 @@ class QQQQuantLinear(BaseQuantLinear):
     #     super().optimize()
 
     @classmethod
-    def validate(cls, **args) -> Tuple[bool, Optional[Exception]]:
+    def validate_once(cls) -> Tuple[bool, Optional[Exception]]:
         if qqq_import_exception is not None:
             return False, ImportError(qqq_import_exception)
+        return True, None
 
+    @classmethod
+    def validate(cls, **args) -> Tuple[bool, Optional[Exception]]:
         in_features = args.get("in_features")
         out_features = args.get("out_features")
         if in_features and out_features and not any(

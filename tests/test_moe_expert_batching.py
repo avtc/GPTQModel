@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import MagicMock, patch, call
+from gptqmodel.quantization.config import GcMode
 import torch
 from gptqmodel.looper.stage_subset import run_subset_stage, SubsetStageResult
 
@@ -19,8 +20,8 @@ class TestMoEExpertBatching(unittest.TestCase):
         
         # Setup config
         self.looper.gptq_model.quantize_config.moe_bypass_router_experts_batch_size = None
-        self.looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end = False
-        self.looper.gptq_model.quantize_config.force_subset_forward_serial = False
+        self.looper.gptq_model.quantize_config.gc_mode = GcMode.ON_STAGE_END
+        self.looper.gptq_model.quantize_config.auto_forward_data_parallel = True
         
         # Setup mocks
         self.looper._is_attention_module_name.return_value = False
@@ -73,7 +74,7 @@ class TestMoEExpertBatching(unittest.TestCase):
             subset_index=0,
             subset_total=1,
             full=self.full,
-            fail_safe=False,
+            failsafe=False,
             shared_kv_cache_dict=self.shared_kv_cache_dict,
             pb=self.pb
         )
@@ -85,7 +86,7 @@ class TestMoEExpertBatching(unittest.TestCase):
     def test_expert_batching(self, mock_empty_cache):
         # Enable batching
         self.looper.gptq_model.quantize_config.moe_bypass_router_experts_batch_size = 2
-        self.looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end = True
+        self.looper.gptq_model.quantize_config.gc_mode = GcMode.ON_STAGE_END
         
         self.looper._run_forward_batches.return_value = [torch.tensor([1.0])]
         self.looper._resolve_batch_total.return_value = 1
@@ -138,7 +139,7 @@ class TestMoEExpertBatching(unittest.TestCase):
             subset_index=0,
             subset_total=1,
             full=self.full,
-            fail_safe=False,
+            failsafe=False,
             shared_kv_cache_dict=self.shared_kv_cache_dict,
             pb=self.pb
         )

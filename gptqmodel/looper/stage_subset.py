@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
@@ -19,7 +20,7 @@ from .. import DEBUG_ON, DEVICE_THREAD_POOL
 from ..looper.gptq_processor import GPTQProcessor
 from ..looper.loop_processor import LoopProcessor
 from ..looper.named_module import NamedModule
-from ..quantization.config import VRAMStrategy
+from ..quantization.config import VramStrategy, GcMode
 from ..utils.device import get_device
 from ..utils.logger import setup_logger
 from ..utils.torch import torch_empty_cache, torch_sync
@@ -61,7 +62,7 @@ def _run_single_subset_pass(
     subset_index: int,
     subset_total: int,
     full,
-    fail_safe: bool,
+    failsafe,
     shared_kv_cache_dict: Dict[int, torch.Tensor],
     pb,
     logger,
@@ -238,8 +239,6 @@ def _run_single_subset_pass(
             source=forward_source,
         )
 
-    pb.title(layer_title).subtitle("").draw()
-
     for h in handle:
         # Detach temporary hooks to avoid leaking state into future passes.
         h.remove()
@@ -251,25 +250,37 @@ def _run_single_subset_pass(
             subset[name].forward_hook = None
             subset[name].forward_hook_last = False
 
-    if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
+    if looper.gptq_model.quantize_config.gc_mode == GcMode.ON_STAGE_END:
         torch_sync()
         torch_empty_cache()
 
     moe_skip_modules = []
+    failsafe_enabled = failsafe is not None
     if isinstance(processor, GPTQProcessor):
         for name in subset:
             # Skip MoE experts that never fired; they likely lacked calibration
             # traffic and would produce invalid statistics.
             if processor.tasks[name].fwd_counter == 0:
-                logger.error(f"`{name}` was not invoked, if it is a MoE module, it may lack sufficient calibration data routed to it.")
+                # only log for moe if `failsafe` is not enabled
+                if not failsafe_enabled:
+                    logger.error(
+                        f"`{name}` was not invoked, if it is a MoE module, it may lack sufficient calibration data routed to it. "
+                        f"Please enable and use `failsafe` config option."
+                    )
                 moe_skip_modules.append(name)
 
-        if not fail_safe:
+        if not failsafe_enabled:
             for name in moe_skip_modules:
-                subset.pop(name)
+                skipped_module = subset.pop(name)
                 task_map = getattr(processor, "tasks", None)
                 if task_map is not None:
                     task_map.pop(name, None)
+
+                # No calibration data was routed to these MoE expert modules.
+                # We skip quantization them and record them in `qcfg.dynamic` as dynamically excluded modules.
+                if processor.qcfg.dynamic is None:
+                    processor.qcfg.dynamic = {}
+                processor.qcfg.dynamic[f"-:{re.escape(skipped_module.full_name)}"] = {}
 
     quant_target_devices: Dict[str, torch.device] = {}
     for name, named_module in subset.items():
@@ -382,10 +393,13 @@ def _run_single_subset_pass(
         # Collect results in submission order so the final subset map preserves
         # deterministic iteration for downstream consumers.
         name, named_module = fut.result()
+        if isinstance(named_module, NamedModule) and named_module.state.get("capture_only"):
+            # Capture-only modules should not be finalized or offloaded.
+            continue
         processed_subset[name] = named_module
     torch_sync()
 
-    if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
+    if looper.gptq_model.quantize_config.gc_mode == GcMode.ON_STAGE_END:
         torch_empty_cache()
 
     if subset_event_cb:
@@ -413,7 +427,7 @@ def run_subset_stage(
     subset_index: int,
     subset_total: int,
     full,
-    fail_safe: bool,
+    failsafe: bool,
     shared_kv_cache_dict: Dict[int, torch.Tensor],
     pb,
     log=None,
@@ -436,7 +450,7 @@ def run_subset_stage(
         layers_prefix=layers_prefix,
         names=subset_names,
         processor=processor,
-        fail_safe=fail_safe,
+        failsafe=failsafe,
         layer_module=module,
     )
 
@@ -513,7 +527,7 @@ def run_subset_stage(
         for name, named_module in subset.items():
             setattr(named_module, "moe_enabled", name in moe_modules_set)
 
-        if looper._vram_strategy == VRAMStrategy.BALANCED:
+        if looper._vram_strategy == VramStrategy.BALANCED:
             devices = [
                 dev for dev in looper._quant_devices
                 if dev is not None and getattr(dev, "type", None) != "cpu"
@@ -522,6 +536,7 @@ def run_subset_stage(
                 assignable_group_keys: List[str] = []
                 for group_key, module_names in expert_groups.items():
                     suffixes = {name.rsplit(".", 1)[-1] for name in module_names}
+                    # TODO: Need to make this configuratble and not static string based. Some moe use wN naming.
                     if {"gate_proj", "up_proj"}.issubset(suffixes) or {"w1", "w3"}.issubset(suffixes):
                         assignable_group_keys.append(group_key)
 
@@ -535,7 +550,7 @@ def run_subset_stage(
                         for module_name in expert_groups[group_key]:
                             forward_device_map[module_name] = target_device
 
-        subset_forward_serial = looper._vram_strategy == VRAMStrategy.BALANCED
+        subset_forward_serial = looper._vram_strategy == VramStrategy.BALANCED
         if subset_forward_serial:
             active_group_count = len(moe_group_keys_all)
             if active_group_count == 0:
@@ -546,7 +561,7 @@ def run_subset_stage(
         for named_module in subset.values():
             setattr(named_module, "moe_enabled", False)
 
-    subset_forward_serial = subset_forward_serial or looper.gptq_model.quantize_config.force_subset_forward_serial
+    subset_forward_serial = subset_forward_serial or not looper.gptq_model.quantize_config.auto_forward_data_parallel
 
     # Prepare Loop Parameters
     
@@ -645,7 +660,7 @@ def run_subset_stage(
                 subset_index=subset_index,
                 subset_total=subset_total,
                 full=full,
-                fail_safe=fail_safe,
+                failsafe=failsafe,
                 shared_kv_cache_dict=shared_kv_cache_dict,
                 pb=pb,
                 logger=logger,
@@ -663,7 +678,7 @@ def run_subset_stage(
             processed_results.update(chunk_result)
             
             # Force cleanup between chunks
-            if looper.gptq_model.quantize_config.vram_opt_memory_cleanup_on_stage_end:
+            if looper.gptq_model.quantize_config.gc_mode == GcMode.ON_STAGE_END:
                  torch_empty_cache()
     
         # If processor.fwd_after_process is False, stage_layer won't run replay.
@@ -688,7 +703,7 @@ def run_subset_stage(
                 subset_index=subset_index,
                 subset_total=subset_total,
                 full=full,
-                fail_safe=fail_safe,
+                failsafe=failsafe,
                 shared_kv_cache_dict=shared_kv_cache_dict,
                 pb=pb,
                 logger=logger,
@@ -726,7 +741,7 @@ def run_subset_stage(
             subset_index=subset_index,
             subset_total=subset_total,
             full=full,
-            fail_safe=fail_safe,
+            failsafe=failsafe,
             shared_kv_cache_dict=shared_kv_cache_dict,
             pb=pb,
             logger=logger,

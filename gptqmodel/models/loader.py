@@ -25,7 +25,6 @@ else:
 
 from packaging.version import InvalidVersion, Version
 from transformers import AutoConfig, AutoTokenizer, PretrainedConfig
-from transformers.modeling_utils import no_init_weights
 from transformers.utils import is_flash_attn_2_available
 from transformers.utils.generic import ContextManagers
 
@@ -34,6 +33,7 @@ from ..nn_modules.qlinear.exllamav2 import ExllamaV2QuantLinear
 from ..quantization import QuantizeConfig
 from ..quantization.config import FORMAT, METHOD, MIN_VERSION_WITH_V2
 from ..utils.backend import BACKEND
+from ..utils.hf import no_init_weights
 from ..utils.importer import auto_select_device, normalize_device_device_map, select_quant_linear
 from ..utils.inspect import safe_kwargs_call
 from ..utils.logger import setup_logger
@@ -135,6 +135,49 @@ def ModelLoader(cls):
         import torch._dynamo
         torch._dynamo.disable()
 
+        model_local_path = get_model_local_path(pretrained_model_id_or_path, **model_init_kwargs)
+
+        model_init_kwargs["trust_remote_code"] = trust_remote_code
+
+        config = AutoConfig.from_pretrained(model_local_path, **model_init_kwargs)
+
+        atten_impl = model_init_kwargs.get("attn_implementation", None)
+
+        if atten_impl is not None and atten_impl != "auto":
+            log.info(f"Loader: overriding attn_implementation in config to `{atten_impl}`")
+            config._attn_implementation = atten_impl
+
+        if cls.require_dtype:
+            dtype = cls.require_dtype
+
+        if isinstance(dtype, torch.dtype) and getattr(config, "torch_dtype", None) != dtype:
+            # Align config metadata with the dtype we will materialize weights in.
+            config.torch_dtype = dtype
+
+        tokenizer = AutoTokenizer.from_pretrained(pretrained_model_id_or_path, trust_remote_code=trust_remote_code)
+
+        if quantize_config is None:
+            model_init_kwargs["device_map"] =device_map if device_map else "auto"
+            model_init_kwargs["dtype"] = dtype
+            # Load a non-quantized model, but do not perform quantization. For example, for evaluation.
+            model = cls.loader.from_pretrained(model_local_path, config=config, **model_init_kwargs)
+            model._model_init_kwargs = model_init_kwargs
+            print_module_tree(model=model)
+
+            turtle_model = None
+
+            instance = cls(
+                model,
+                turtle_model=turtle_model,
+                quantized=False,
+                quantize_config=quantize_config,
+                tokenizer=tokenizer,
+                trust_remote_code=trust_remote_code,
+                model_local_path=model_local_path,
+            )
+
+            return instance
+
         load_start = time.perf_counter()
 
         # non-quantized models are always loaded into cpu
@@ -158,9 +201,7 @@ def ModelLoader(cls):
                 f"{pretrained_model_id_or_path} requires trust_remote_code=True. Please set trust_remote_code=True to load this model."
             )
 
-        check_versions(cls, cls.require_pkgs_version)
-
-        model_local_path = get_model_local_path(pretrained_model_id_or_path, **model_init_kwargs)
+        check_versions(cls, cls.require_pkgs)
 
         def skip(*args, **kwargs):
             pass
@@ -169,32 +210,15 @@ def ModelLoader(cls):
         torch.nn.init.uniform_ = skip
         torch.nn.init.normal_ = skip
 
-        model_init_kwargs["trust_remote_code"] = trust_remote_code
-
-        config = AutoConfig.from_pretrained(model_local_path, **model_init_kwargs)
-
-        atten_impl = model_init_kwargs.get("attn_implementation", None)
-
-        if atten_impl is not None and atten_impl != "auto":
-            log.info(f"Loader: overriding attn_implementation in config to `{atten_impl}`")
-            config._attn_implementation = atten_impl
-
         # normalize and auto select quantization device is not passed
         if quantize_config.device is None:
             quantize_config.device = auto_select_device(None, None)
         else:
             quantize_config.device = normalize_device(quantize_config.device)
 
-        if cls.require_dtype:
-            dtype = cls.require_dtype
-
         if dtype is None or dtype == "auto" or not isinstance(dtype, torch.dtype):
             # TODO FIX ME for `dynamic`, non-quantized modules should be in native type
             dtype = auto_dtype(config=config, device=quantize_config.device, quant_inference=False)
-
-        if isinstance(dtype, torch.dtype) and getattr(config, "torch_dtype", None) != dtype:
-            # Align config metadata with the dtype we will materialize weights in.
-            config.torch_dtype = dtype
 
         # enforce some values despite user specified
         # non-quantized models are always loaded into cpu
@@ -257,8 +281,6 @@ def ModelLoader(cls):
         model.eval()
         turtle_model.eval() if turtle_model is not None else None
 
-        tokenizer = AutoTokenizer.from_pretrained(pretrained_model_id_or_path, trust_remote_code=trust_remote_code)
-
         instance = cls(
             model,
             turtle_model=turtle_model,
@@ -311,18 +333,13 @@ def ModelLoader(cls):
             # to optimize vllm inference, set an environment variable 'VLLM_ATTENTION_BACKEND' to 'FLASHINFER'.
             os.environ['VLLM_ATTENTION_BACKEND'] = 'FLASHINFER'
 
-        if backend == BACKEND.TRITON:
-            from ..nn_modules.qlinear.tritonv2 import TRITON_AVAILABLE, TRITON_INSTALL_HINT
-            if not TRITON_AVAILABLE:
-                raise ValueError(TRITON_INSTALL_HINT)
-
         """load quantized model from local disk"""
         if cls.require_trust_remote_code and not trust_remote_code:
             raise ValueError(
                 f"{model_id_or_path} requires trust_remote_code=True. Please set trust_remote_code=True to load this model."
             )
 
-        check_versions(cls, cls.require_pkgs_version)
+        check_versions(cls, cls.require_pkgs)
 
         model_local_path = get_model_local_path(model_id_or_path, **kwargs)
 

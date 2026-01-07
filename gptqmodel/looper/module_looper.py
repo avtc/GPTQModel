@@ -21,7 +21,7 @@ import time
 import logging
 from concurrent.futures import as_completed
 from contextlib import nullcontext
-from typing import Any, Dict, List, NamedTuple, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, NamedTuple, Optional, TYPE_CHECKING, Union, Tuple
 
 import torch
 import torch.nn as nn
@@ -37,12 +37,13 @@ from ..models._const import SUPPORTS_MODULE_TYPES
 from ..models.base import CAPTURE_ONLY_FLAG
 from ..nn_modules.hooked_linear import (STOP_FORWARD_EXCEPTION, HookedLinear,
                                         StopForward, replace_module_with_hooked_legacy)
-from ..quantization.config import VRAMStrategy
+from ..quantization.config import VramStrategy
 from ..utils.attn_mask import apply_keep_mask_bt, normalize_seq_mask
 from ..utils.ctx import ctx
 from ..utils.device import get_device, get_device_new
 from ..utils.disk import estimate_disk_io_speed
 from ..utils.logger import setup_logger, log_time_block
+from ..utils.pause_resume import PauseResumeController, PauseResumeState
 from ..utils.looper_helpers import (
     clone_module_for_devices,
     device_ctx,
@@ -51,7 +52,8 @@ from ..utils.looper_helpers import (
     rehome_module_to_device,
     select_forward_devices,
 )
-from ..utils.model import find_modules, get_module, get_module_by_name_prefix, move_to, nested_move_to
+from ..utils.model import find_modules, get_module, get_module_by_name_prefix, move_to, nested_move_to, \
+    MoETopKState, set_moe_topk, restore_moe_topk
 from ..utils.offload import offload_to_disk
 from ..utils.torch import (CPU, META, timed_gc_collect, torch_sync, tf32_high_precision_guard)
 from .. import DEVICE_THREAD_POOL
@@ -86,6 +88,13 @@ class ModuleLooper():
     def __init__(self, model: BaseQModel, processors: List[LoopProcessor]):
         self.processors = processors
         self.gptq_model = model
+
+        # Initialize pause/resume controller first
+        self.pause_controller = PauseResumeController()
+
+        # Give processors access to pause controller for status
+        for processor in self.processors:
+            processor._pause_controller = self.pause_controller
         self.support_batch_quantize = model.support_batch_quantize
         self.lock = threading.Lock()
         self._layer_callback = getattr(model, "layer_callback", None)
@@ -112,14 +121,14 @@ class ModuleLooper():
         if not quant_devices:
             quant_devices = [CPU]
 
-        vram_strategy = getattr(self.gptq_model.quantize_config, "vram_strategy", VRAMStrategy.EXCLUSIVE)
+        vram_strategy = getattr(self.gptq_model.quantize_config, "vram_strategy", VramStrategy.EXCLUSIVE)
         if isinstance(vram_strategy, str):
             try:
-                vram_strategy = VRAMStrategy(vram_strategy.lower())
+                vram_strategy = VramStrategy(vram_strategy.lower())
             except ValueError:
-                vram_strategy = VRAMStrategy.EXCLUSIVE
-        supported_strategies = getattr(self.gptq_model, "supported_vram_strategies", [VRAMStrategy.EXCLUSIVE, VRAMStrategy.BALANCED])
-        if isinstance(supported_strategies, VRAMStrategy):
+                vram_strategy = VramStrategy.EXCLUSIVE
+        supported_strategies = getattr(self.gptq_model, "supported_vram_strategies", [VramStrategy.EXCLUSIVE, VramStrategy.BALANCED])
+        if isinstance(supported_strategies, VramStrategy):
             supported_strategies = [supported_strategies]
         if vram_strategy not in supported_strategies:
             log.debug(
@@ -127,19 +136,18 @@ class ModuleLooper():
                 getattr(self.gptq_model, "__class__", type(self.gptq_model)).__name__,
                 vram_strategy,
             )
-            vram_strategy = VRAMStrategy.EXCLUSIVE
+            vram_strategy = VramStrategy.EXCLUSIVE
         self._vram_strategy = vram_strategy
 
-        # For vram_opt_exclude_device_0_from_compute=True, exclude device 0 from quantization device pool
-        # Device 0 holds inputs/outputs/modules, so quantization should happen on other devices
-        if self.gptq_model.quantize_config.vram_opt_exclude_device_0_from_compute:
-            quant_devices_filtered = [d for d in quant_devices if d.index != 0]
+        # Apply compute device filter if provided to determine which devices to use for quantization
+        if self.gptq_model.quantize_config.compute_device_filter is not None:
+            quant_devices_filtered = self.gptq_model.quantize_config.compute_device_filter(quant_devices)
             if len(quant_devices_filtered) >= 1:
                 quant_devices = quant_devices_filtered
             else:
                 log.warn(
-                    f"vram_opt_exclude_device_0_from_compute=True: No devices available after excluding device 0. "
-                    "Using all devices including device 0 for quantization."
+                    "compute_device_filter returned empty device list. "
+                    "Using all devices for quantization."
                 )
 
         self._quant_devices = quant_devices
@@ -152,8 +160,39 @@ class ModuleLooper():
         # Track current subset for MoE lifecycle hooks
         self._current_subset: Optional[Dict[str, Any]] = None
 
+        num_experts = self.gptq_model.get_num_experts(self.gptq_model.model.config)
+        self.moe_routing_override = self.gptq_model.quantize_config.moe_routing_override(num_experts)
+
         for processor in self.processors:
             self._processor_mask_tls(processor)
+
+    class MoERoutingOverrideContext:
+        """
+        Context manager that temporarily overrides MoE routing top-k.
+
+        On entry, applies the specified top-k override to all MoE routing modules.
+        On exit, restores the original routing configuration.
+        """
+
+        def __init__(self, model, moe_routing_override: int):
+            # Model containing MoE routing modules
+            self.model = model
+            # Target top-k value for per-token expert routing
+            self.moe_routing_override = moe_routing_override
+            # Saved state for restoring original top-k values
+            self._state: MoETopKState | None = None
+
+        def __enter__(self):
+            # Apply routing override if specified
+            if self.moe_routing_override:
+                self._state = set_moe_topk(self.model, self.moe_routing_override)
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            # Restore original routing configuration
+            if self.moe_routing_override:
+                restore_moe_topk(self._state)
+            return False  # Do not suppress exceptions
 
     class MoELifecycleContext:
         """Context manager for MoE lifecycle hooks integration."""
@@ -528,7 +567,7 @@ class ModuleLooper():
         - Module contains an MoE block
         """
         # Check if feature is enabled
-        flag_enabled = self.gptq_model.quantize_config.moe_bypass_router
+        flag_enabled = self.gptq_model.quantize_config.moe_routing_bypass()
         if not flag_enabled:
             return False
         
@@ -879,16 +918,22 @@ class ModuleLooper():
                         additional_inputs["position_ids"] = move_to(pos, device=exec_device)
 
                 for key, value in layer_input_kwargs[batch_idx].items():
+                    # past_key_values will triggers the cache logic. we need disable cache when layer forward.
+                    if key in ["past_key_values", "past_key_value"]:
+                        continue
                     additional_inputs[key] = nested_move_to(value, device=exec_device)
 
                 if reuse_kv and prev_kv is not None:
                     additional_inputs["kv_last_layer"] = nested_move_to(prev_kv, device=exec_device)
 
+                # TODO: some models does not honor generate config.use_cache property so we are forced to hack this to false
+                additional_inputs["use_cache"] = False
+
                 if not preserve_module_devices:
                     rehome_module_to_device(module, cur_layer_device, move_parameters=True, move_buffers=True)
 
                 # MoE lifecycle hooks integration - using context manager
-                with self.MoELifecycleContext(self, module, processor, self._current_subset):
+                with self.MoERoutingOverrideContext(module, self.moe_routing_override) if self.moe_routing_override else self.MoELifecycleContext(self, module, processor, self._current_subset):
                     module_output = None
                     try:
                         if is_lm_head_module:
@@ -1045,10 +1090,15 @@ class ModuleLooper():
         # Apply MoE lifecycle hooks to ALL replicas (not just the original module)
         moe_contexts = []
         try:
-            if self._should_use_moe_lifecycle(module, processor):
-                for device, replica in module_replicas.items():
-                    # Create and activate context for each replica
+            for device, replica in module_replicas.items():
+                # Create and activate context for each replica
+                ctx = None
+                if self.moe_routing_override:
+                    ctx = self.MoERoutingOverrideContext(replica, self.moe_routing_override)
+                elif self._should_use_moe_lifecycle(module, processor):
                     ctx = self.MoELifecycleContext(self, replica, processor, self._current_subset)
+
+                if ctx:
                     ctx.__enter__()
                     moe_contexts.append(ctx)
 
@@ -1058,16 +1108,17 @@ class ModuleLooper():
 
             processed_rows = 0
             
-            # Check if device 0 should be excluded from forward execution
-            if self.gptq_model.quantize_config.vram_opt_exclude_device_0_from_compute:
-                forward_devices = [d for d in devices if d.index != 0]
+            # Apply compute device filter if provided to determine which devices to use for forward execution
+            if self.gptq_model.quantize_config.compute_device_filter is not None:
+                forward_devices = self.gptq_model.quantize_config.compute_device_filter(devices)
                 if len(forward_devices) < 1:
                     log.warn(
-                        f"vram_opt_exclude_device_0_from_compute=True: No devices available after excluding device 0. "
-                        "Using all devices including device 0."
+                        "compute_device_filter returned empty device list. "
+                        "Using all devices for forward execution."
                     )
                     forward_devices = devices
             else:
+                # If no filter is provided, use all devices (default behavior)
                 forward_devices = devices
             
             device_segments: Dict[torch.device, List[int]] = {}
@@ -1289,12 +1340,16 @@ class ModuleLooper():
             use_cache=use_cache,
         )
 
-    def loop(self, fail_safe: bool = False, **kwargs):
+    def loop(self, failsafe=None, **kwargs):
         with tf32_high_precision_guard():
-            return self._loop_impl(fail_safe=fail_safe, **kwargs)
+            with self.pause_controller.lifecycle():
+                return self._loop_impl(failsafe=failsafe, **kwargs)
 
     @torch.inference_mode()
-    def _loop_impl(self, fail_safe: bool = False, **kwargs):
+    def _loop_impl(self, failsafe=None, **kwargs):
+        if failsafe is None:
+            failsafe = getattr(self.gptq_model.quantize_config, "failsafe", None)
+
         if self.gptq_model.quantize_config.lm_head:
             if self.gptq_model.model.config.tie_word_embeddings and hasattr(self.gptq_model.model.model, "_tied_weights_keys"):
                 tied_keys = self.gptq_model.model._tied_weights_keys
@@ -1324,7 +1379,7 @@ class ModuleLooper():
         for p_index, processor in enumerate(self.processors):
             if not processor.verify_calibration_dataset(p_index):
                 if isinstance(processor, EoraProcessor) or\
-                        (isinstance(processor, GPTQProcessor) and self.gptq_model.quantize_config.gptaq):
+                        (isinstance(processor, GPTQProcessor) and self.gptq_model.quantize_config.gptaq is not None):
                     prev_processor = self.processors[p_index - 1]
                     processor.set_calibration_dataset(prev_processor.calibration_dataset)
                     # If calibration_dataset is None or Empty, the input_cache of the previous processor is used.
@@ -1344,6 +1399,14 @@ class ModuleLooper():
         # release calibration_dataset
         for processor in self.processors:
             processor.release_calibration_dataset()
+
+        if self.gptq_model.quantize_config.offload_to_disk:
+            log.info("Offloading base modules to disk...")
+            offload_to_disk(
+                model=self.gptq_model.model,
+                module=self.gptq_model.get_base_modules(model=self.gptq_model.model),
+                disk_path=self.gptq_model.quantize_config.offload_to_disk_path
+            )
 
         if region_timer is not None:
             region_timer.flush()
@@ -1390,7 +1453,7 @@ class ModuleLooper():
             layers=layers,
             layer_modules=layer_modules,
             layers_prefix=layers_prefix,
-            fail_safe=fail_safe,
+            failsafe=failsafe,
             shared_kv_cache_dict=shared_kv_cache_dict,
             pb=pb,
             layer_count=layer_count,
@@ -1469,19 +1532,25 @@ class ModuleLooper():
 
         return total_log
 
-    def crate_named_modules(self, module, full, is_lm_head_module, layer_index, layers_prefix, names, processor, fail_safe, layer_module=None) -> Dict[str, NamedModule]:
+    def create_named_modules(self, module, full, is_lm_head_module, layer_index, layers_prefix, names, processor, failsafe, layer_module=None) -> Dict[str, NamedModule]:
         subset = {}
+        capture_only_flags: Dict[str, bool] = {}
         for n in names:
+            capture_only = False
+            if n.endswith(CAPTURE_ONLY_FLAG):
+                capture_only = True
+                n = n.split(CAPTURE_ONLY_FLAG, 1)[0]
             if n in full:
                 subset[n] = full[n]
-            elif n.endswith(CAPTURE_ONLY_FLAG):
+            elif capture_only:
                 # Obtain the CAPTURE_ONLY_FLAG Module separately
-                n = n.split(CAPTURE_ONLY_FLAG, 1)[0]
                 subset[n], _ = get_module_by_name_prefix(module, module_name=n)
             # some modules have layer_modules that are dynamic based on config
             # ref: deepseek v2/v3/r1
             elif self.gptq_model.layer_modules_strict:
                 raise ValueError(f"layer module item `{n}` not found in model, please check your model config.")
+            if capture_only:
+                capture_only_flags[n] = True  # forward-only modules should not be finalized
         skipped_modules = []
         for name in subset:
             layer_name = self.gptq_model.lm_head if is_lm_head_module else f"{layers_prefix}.{layer_index}.{name}"
@@ -1490,6 +1559,8 @@ class ModuleLooper():
             if not isinstance(subset[name], NamedModule):
                 named_module = NamedModule(subset[name], name=name, full_name=layer_name,
                                            layer_index=layer_index)
+                if capture_only_flags.get(name, False):
+                    named_module.state["capture_only"] = True
                 if isinstance(processor, EoraProcessor):
                     named_module.state.update({
                         "wq": processor.quantized_weights[layer_name],
@@ -1499,9 +1570,11 @@ class ModuleLooper():
                 full[name] = named_module
                 if layer_module is not None:
                     named_module.state.setdefault("layer_module", layer_module)
+            elif capture_only_flags.get(name, False):
+                subset[name].state["capture_only"] = True
 
             if isinstance(processor, GPTQProcessor):
-                processor.preprocess(subset[name], fail_safe=fail_safe)
+                processor.preprocess(subset[name], failsafe=failsafe)
             else:
                 processor.preprocess(subset[name])
             # some modules are skipped

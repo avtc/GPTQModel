@@ -19,7 +19,6 @@ import transformers
 from safetensors import safe_open
 from safetensors.torch import save_file
 from transformers import AutoConfig, PreTrainedTokenizerFast, ProcessorMixin
-from transformers.modeling_utils import no_init_weights
 from transformers.models.auto.tokenization_auto import get_tokenizer_config
 from transformers.utils.generic import ContextManagers
 
@@ -30,7 +29,6 @@ from ..quantization.config import (
     META_FIELD_ACT_GROUP_AWARE,
     META_FIELD_DAMP_AUTO_INCREMENT,
     META_FIELD_DAMP_PERCENT,
-    META_FIELD_GPTAQ_ALPHA,
     META_FIELD_GPTAQ_ENABLED,
     META_FIELD_MSE,
     META_FIELD_QUANTIZER,
@@ -42,7 +40,7 @@ from ..quantization.config import (
     MIN_VERSION_WITH_V2,
 )
 from ..utils.backend import BACKEND
-from ..utils.hf import sanitize_generation_config_file
+from ..utils.hf import no_init_weights, sanitize_generation_config_file
 from ..utils.logger import setup_logger
 from ..utils.model import (
     copy_py_files,
@@ -147,7 +145,7 @@ def ModelWriter(cls):
             with open(os.path.join(save_dir, "quant_log.csv"), mode='w', newline='') as file:
                 w = csv.writer(file)
                 w.writerow([PROCESS_LOG_LAYER, PROCESS_LOG_MODULE, QUANT_LOG_LOSS, QUANT_LOG_NSAMPLES, QUANT_LOG_DAMP, PROCESS_LOG_TIME])
-                w.writerows([[entry.get(PROCESS_LOG_LAYER), entry.get(PROCESS_LOG_MODULE), entry.get(QUANT_LOG_LOSS),
+                w.writerows([[entry.get(PROCESS_LOG_LAYER), entry.get(PROCESS_LOG_MODULE), entry.get(QUANT_LOG_LOSS), entry.get(QUANT_LOG_NSAMPLES),
                               entry.get(QUANT_LOG_DAMP), entry.get(PROCESS_LOG_TIME)] for entry in self.quant_log])
 
         pre_quantized_size_mb = get_model_files_size(self.model_local_path)
@@ -200,12 +198,14 @@ def ModelWriter(cls):
 
         self.quantize_config.meta_set(
             key=META_FIELD_GPTAQ_ENABLED,
-            value=self.quantize_config.gptaq
-        )
-
-        self.quantize_config.meta_set(
-            key=META_FIELD_GPTAQ_ALPHA,
-            value=self.quantize_config.gptaq_alpha
+            value=None if self.quantize_config.gptaq is None else {
+                "alpha": self.quantize_config.gptaq.alpha,
+                "device": (
+                    self.quantize_config.gptaq.device
+                    if isinstance(self.quantize_config.gptaq.device, str)
+                    else str(self.quantize_config.gptaq.device)
+                ),
+            }
         )
 
         self.quantize_config.meta_set(
@@ -502,7 +502,7 @@ def ModelWriter(cls):
             saved_tokenizer_config = get_tokenizer_config(save_dir)
             config_tokenizer_class = saved_tokenizer_config.get("tokenizer_class")
             # if the tokenizer is fast, but the tokenizer_config.json does not have Fast suffix, add "Fast" suffix
-            if (not config_tokenizer_class.endswith("Fast")) and (
+            if config_tokenizer_class and (not config_tokenizer_class.endswith("Fast")) and (
                 isinstance(self.tokenizer.tokenizer, PreTrainedTokenizerFast)
                 ):
                 saved_tokenizer_config["tokenizer_class"] = saved_tokenizer_config["tokenizer_class"] + "Fast"

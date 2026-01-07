@@ -11,8 +11,21 @@ from .config import (
                      QUANT_CONFIG_FILENAME,
                      QUANT_METHOD_FIELD,
                      BaseQuantizeConfig,
+                     FailSafe,
+                     FailSafeStrategy,
+                     HessianConfig,
+                     GPTAQConfig,
                      QuantizeConfig,
+                     SmoothLog,
+                     SmoothMAD,
+                     SmoothMethod,
+                     SmoothMSE,
+                     SmoothOutlier,
+                     SmoothPercentile,
+                     SmoothPercentileAsymmetric,
+                     SmoothRowCol,
+                     SmoothSoftNorm,
 )
 from .gptq import GPTQ
-from .gptqv2 import GPTQv2
+from .gptaq import GPTAQ
 from .quantizer import Quantizer, quantize

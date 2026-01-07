@@ -62,7 +62,14 @@ from gptqmodel.looper.module_looper import StopMainLoop  # noqa: E402
 from gptqmodel.models.base import BaseQModel  # noqa: E402
 from gptqmodel.nn_modules.qlinear import BaseQuantLinear  # noqa: E402
 from gptqmodel.quantization import FORMAT, METHOD  # noqa: E402
-from gptqmodel.quantization.config import QuantizeConfig, VRAMStrategy  # noqa: E402
+from gptqmodel.quantization.config import (  # noqa: E402
+    FailSafe,
+    GPTAQConfig,
+    HessianConfig,
+    MoEConfig,
+    QuantizeConfig,
+    VramStrategy,
+)
 from gptqmodel.utils.eval import EVAL  # noqa: E402
 from gptqmodel.utils.model import MODALITY  # noqa: E402
 from gptqmodel.utils.torch import torch_empty_cache  # noqa: E402
@@ -80,7 +87,7 @@ DEFAULT_TASK_NAMES = (EVAL.LM_EVAL.ARC_CHALLENGE,)
 class ModelTest(unittest.TestCase):
     DEBUG = True # enable extra debug output
 
-    VRAM_STRATEGY = VRAMStrategy.EXCLUSIVE
+    VRAM_STRATEGY = VramStrategy.EXCLUSIVE
     TRUST_REMOTE_CODE = False
     TORCH_DTYPE = "auto"
     EVAL_BATCH_SIZE = "auto"
@@ -111,7 +118,7 @@ class ModelTest(unittest.TestCase):
     SYM = True
     GPTQA = False
     ACT_GROUP_AWARE = True
-    FAIL_SAFE = True
+    FAILSAFE = FailSafe()
     EORA = None
     DAMP_PERCENT = 0.05
     MSE = 0.0
@@ -130,6 +137,7 @@ class ModelTest(unittest.TestCase):
     LM_HEAD_LOSS_MAX_DELTA_PERCENT = 0.1  # ±10%
     EXPECT_LM_HEAD_LOSS = None
     STOP_AFTER_LAYER: Optional[int] = None
+    MOE_CONFIG: Optional[MoEConfig] = None
 
     GENERIC_TEST_PROMPTS = [
         {"prompt": "Which city is the capital city of France?", "keywords": ["paris"]},
@@ -738,7 +746,8 @@ class ModelTest(unittest.TestCase):
         headers = ["Metric"] + [backend.name for backend in ordered_backends]
         log.info("Evaluation comparison:\n%s", tabulate(table_rows, headers=headers, tablefmt="github"))
 
-    def load_tokenizer(self, model_id_or_path, trust_remote_code=False):
+    @classmethod
+    def load_tokenizer(cls, model_id_or_path, trust_remote_code=False):
         tokenizer = AutoTokenizer.from_pretrained(model_id_or_path, trust_remote_code=trust_remote_code)
         return tokenizer
 
@@ -829,16 +838,17 @@ class ModelTest(unittest.TestCase):
             group_size=self.GROUP_SIZE,
             desc_act=self.DESC_ACT if not self.ACT_GROUP_AWARE else False,
             act_group_aware=self.ACT_GROUP_AWARE,
-            fail_safe=self.FAIL_SAFE,
+            failsafe=self.FAILSAFE,
             sym=self.SYM,
-            gptaq=self.GPTQA,
+            gptaq=GPTAQConfig() if self.GPTQA else None,
             adapter=self.EORA,
             pack_impl="cpu",
             vram_strategy=self.VRAM_STRATEGY,
             damp_percent=self.DAMP_PERCENT,
             mse=self.MSE,
             dynamic=self.DYNAMIC,
-            hessian_chunk_size=self.HESSIAN_CHUNK_SIZE,
+            hessian=HessianConfig(chunk_size=self.HESSIAN_CHUNK_SIZE),
+            moe=self.MOE_CONFIG,
         )
 
         log.info(f"Quant config: {quantize_config}")
