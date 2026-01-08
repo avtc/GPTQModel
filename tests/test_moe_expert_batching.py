@@ -40,21 +40,15 @@ class TestMoEExpertBatching(unittest.TestCase):
         self.processor.require_fwd = True
 
         # Create fake subset
-        self.subset_names = [f"expert.{i}" for i in range(10)]
-        self.subset = {name: MagicMock() for name in self.subset_names}
-        self.looper.crate_named_modules.return_value = self.subset
+        self.subset = {f"expert.{i}": MagicMock() for i in range(10)}
 
         # Setup default return values
         self.looper._run_forward_batches.return_value = [torch.tensor([1.0])]
         self.looper._resolve_batch_total.return_value = 1
         self.looper._collect_row_counts.return_value = [1]
 
-    def _run_subset_stage(self, subset_names, subset=None):
-        """Helper to run subset stage with given subset names."""
-        if subset is None:
-            subset = {name: MagicMock() for name in subset_names}
-        self.looper.crate_named_modules.return_value = subset
-
+    def _run_subset_stage(self, subset):
+        """Helper to run subset stage with given subset."""
         run_subset_stage(
             looper=self.looper,
             processor=self.processor,
@@ -69,7 +63,7 @@ class TestMoEExpertBatching(unittest.TestCase):
             layer_title="title",
             layer_index=0,
             layers_prefix="model.layers",
-            subset_names=subset_names,
+            subset=subset,
             subset_index=0,
             subset_total=1,
             full=self.full,
@@ -83,7 +77,7 @@ class TestMoEExpertBatching(unittest.TestCase):
         """When batch_size is None, all experts should be processed in one batch."""
         self.looper.gptq_model.quantize_config.moe.routing.batch_size = None
 
-        self._run_subset_stage(self.subset_names)
+        self._run_subset_stage(self.subset)
 
         self.assertEqual(self.looper._run_forward_batches.call_count, 1)
 
@@ -92,7 +86,7 @@ class TestMoEExpertBatching(unittest.TestCase):
         """When batch_size is 0, batching should be disabled."""
         self.looper.gptq_model.quantize_config.moe.routing.batch_size = 0
 
-        self._run_subset_stage(self.subset_names)
+        self._run_subset_stage(self.subset)
 
         self.assertEqual(self.looper._run_forward_batches.call_count, 1)
 
@@ -102,12 +96,10 @@ class TestMoEExpertBatching(unittest.TestCase):
         self.looper.gptq_model.quantize_config.moe.routing.batch_size = 2
 
         # Create 10 experts with 2 modules each (gate_proj, up_proj)
-        subset_names = []
         subset = {}
         for i in range(10):
             gate_name = f"model.layers.0.experts.{i}.gate_proj"
             up_name = f"model.layers.0.experts.{i}.up_proj"
-            subset_names.extend([gate_name, up_name])
             subset[gate_name] = MagicMock()
             subset[up_name] = MagicMock()
 
@@ -120,7 +112,7 @@ class TestMoEExpertBatching(unittest.TestCase):
             return None
         self.looper._extract_moe_group_key.side_effect = get_group_key
 
-        self._run_subset_stage(subset_names, subset)
+        self._run_subset_stage(subset)
 
         # 20 total modules (10 experts × 2 modules) with batch_size 2 modules = 10 batches
         self.assertEqual(self.looper._run_forward_batches.call_count, 10)
@@ -132,11 +124,9 @@ class TestMoEExpertBatching(unittest.TestCase):
         self.looper.gptq_model.quantize_config.moe.routing.batch_size = 3
 
         # Create 7 experts
-        subset_names = []
         subset = {}
         for i in range(7):
             name = f"model.layers.0.experts.{i}.gate_proj"
-            subset_names.append(name)
             subset[name] = MagicMock()
 
         def get_group_key(name):
@@ -147,7 +137,7 @@ class TestMoEExpertBatching(unittest.TestCase):
             return None
         self.looper._extract_moe_group_key.side_effect = get_group_key
 
-        self._run_subset_stage(subset_names, subset)
+        self._run_subset_stage(subset)
 
         # 7 experts with batch_size 3 = 3 batches (3 + 3 + 1)
         self.assertEqual(self.looper._run_forward_batches.call_count, 3)
@@ -159,11 +149,9 @@ class TestMoEExpertBatching(unittest.TestCase):
         self.looper.gptq_model.quantize_config.moe.routing.batch_size = 100
 
         # Create 5 experts
-        subset_names = []
         subset = {}
         for i in range(5):
             name = f"model.layers.0.experts.{i}.gate_proj"
-            subset_names.append(name)
             subset[name] = MagicMock()
 
         def get_group_key(name):
@@ -174,7 +162,7 @@ class TestMoEExpertBatching(unittest.TestCase):
             return None
         self.looper._extract_moe_group_key.side_effect = get_group_key
 
-        self._run_subset_stage(subset_names, subset)
+        self._run_subset_stage(subset)
 
         # Should process all in one batch
         self.assertEqual(self.looper._run_forward_batches.call_count, 1)
@@ -185,11 +173,9 @@ class TestMoEExpertBatching(unittest.TestCase):
         self.looper.gptq_model.quantize_config.moe.routing.batch_size = 1
 
         # Create 4 experts
-        subset_names = []
         subset = {}
         for i in range(4):
             name = f"model.layers.0.experts.{i}.gate_proj"
-            subset_names.append(name)
             subset[name] = MagicMock()
 
         def get_group_key(name):
@@ -200,7 +186,7 @@ class TestMoEExpertBatching(unittest.TestCase):
             return None
         self.looper._extract_moe_group_key.side_effect = get_group_key
 
-        self._run_subset_stage(subset_names, subset)
+        self._run_subset_stage(subset)
 
         # 4 experts with batch_size 1 = 4 batches
         self.assertEqual(self.looper._run_forward_batches.call_count, 4)
@@ -214,7 +200,7 @@ class TestMoEExpertBatching(unittest.TestCase):
             routing=ExpertsRoutingOverride(num_experts_per_tok=2)
         )
 
-        self._run_subset_stage(self.subset_names)
+        self._run_subset_stage(self.subset)
 
         # Should process all in one batch since no batch_size is available
         self.assertEqual(self.looper._run_forward_batches.call_count, 1)
@@ -224,7 +210,7 @@ class TestMoEExpertBatching(unittest.TestCase):
         """When moe config is None, batching should be disabled."""
         self.looper.gptq_model.quantize_config.moe = None
 
-        self._run_subset_stage(self.subset_names)
+        self._run_subset_stage(self.subset)
 
         self.assertEqual(self.looper._run_forward_batches.call_count, 1)
 
@@ -234,15 +220,12 @@ class TestMoEExpertBatching(unittest.TestCase):
         self.looper.gptq_model.quantize_config.moe.routing.batch_size = 2
 
         # Create 4 experts + 2 non-expert modules
-        subset_names = []
         subset = {}
         for i in range(4):
             name = f"model.layers.0.experts.{i}.gate_proj"
-            subset_names.append(name)
             subset[name] = MagicMock()
 
         # Add non-expert modules
-        subset_names.extend(["model.layers.0.norm", "model.layers.0.input_layernorm"])
         subset["model.layers.0.norm"] = MagicMock()
         subset["model.layers.0.input_layernorm"] = MagicMock()
 
@@ -254,7 +237,7 @@ class TestMoEExpertBatching(unittest.TestCase):
             return None
         self.looper._extract_moe_group_key.side_effect = get_group_key
 
-        self._run_subset_stage(subset_names, subset)
+        self._run_subset_stage(subset)
 
         # 6 total modules (4 expert + 2 non-expert) with batch_size 2 modules = 3 batches
         self.assertEqual(self.looper._run_forward_batches.call_count, 3)
@@ -264,7 +247,7 @@ class TestMoEExpertBatching(unittest.TestCase):
         """Test with empty subset names."""
         self.looper.gptq_model.quantize_config.moe.routing.batch_size = 2
 
-        self._run_subset_stage([])
+        self._run_subset_stage({})
 
         # Should not call _run_forward_batches for empty subset
         self.assertEqual(self.looper._run_forward_batches.call_count, 0)

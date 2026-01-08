@@ -302,6 +302,19 @@ def test_stage_subset_early_stop_and_callbacks():
     full_modules = find_modules(mini_layer)
     subset_names = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]
 
+    # Create subset from names
+    subset = looper.create_named_modules(
+        module=mini_layer,
+        full=full_modules,
+        is_lm_head_module=False,
+        layer_index=0,
+        layers_prefix="layers",
+        names=subset_names,
+        processor=processor,
+        failsafe=False,
+        layer_module=mini_layer,
+    )
+
     run_subset_stage(
         looper=looper,
         processor=processor,
@@ -316,7 +329,7 @@ def test_stage_subset_early_stop_and_callbacks():
         layer_title="subset-check",
         layer_index=0,
         layers_prefix="layers",
-        subset_names=subset_names,
+        subset=subset,
         subset_index=0,
         subset_total=2,
         full=full_modules,
