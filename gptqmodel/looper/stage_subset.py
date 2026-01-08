@@ -587,17 +587,25 @@ def run_subset_stage(
         # Chunk module names directly by batch_size
         module_chunks = [sorted_module_names[i:i + batch_size] for i in range(0, len(sorted_module_names), batch_size)]
 
-        logger.info(
-            f"MoE Expert Batching Enabled: Processing {len(sorted_module_names)} modules in {len(module_chunks)} batches "
-            f"(batch_size={batch_size} modules per batch)."
-        )
+        if DEBUG_ON and logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                f"MoE Expert Batching Enabled: Processing {len(sorted_module_names)} modules in {len(module_chunks)} batches "
+                f"(batch_size={batch_size} modules per batch)."
+            )
 
-        for i, chunk_keys in enumerate(module_chunks):
+        # Create progress bar for MOE chunks
+        moe_chunk_pb = logger.pb(range(len(module_chunks))).manual()
+        moe_chunk_pb.title(f"MoE Chunks ({len(module_chunks)} total)")
+
+        for chunk_idx in moe_chunk_pb:
+            chunk_keys = module_chunks[chunk_idx]
             # Create subset for this chunk
             chunk_subset = {k: subset[k] for k in chunk_keys}
-            
-            logger.info(f"Processing MoE Chunk {i+1}/{len(module_chunks)} ({len(chunk_subset)} modules)...")
-            
+
+            moe_chunk_pb.subtitle(f"Chunk {chunk_idx+1}/{len(module_chunks)} ({len(chunk_subset)} modules)").draw()
+            if DEBUG_ON and logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Processing MoE Chunk {chunk_idx+1}/{len(module_chunks)} ({len(chunk_subset)} modules)...")
+
             # Run pass
             chunk_result, _ = _run_single_subset_pass(
                 looper=looper,
@@ -636,7 +644,10 @@ def run_subset_stage(
             # Force cleanup between chunks
             if looper.gptq_model.quantize_config.gc_mode == GcMode.ON_STAGE_END:
                  torch_empty_cache()
-    
+
+        # Close MOE chunks progress bar
+        moe_chunk_pb.close()
+
         # If processor.fwd_after_process is False, stage_layer won't run replay.
         # But we haven't collected proper full outputs yet (we ignored them or they were partial).
         # So we MUST run a replay here to get valid layer_inputs for the next layer.
