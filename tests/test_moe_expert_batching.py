@@ -122,8 +122,10 @@ class TestMoEExpertBatching(unittest.TestCase):
         self._run_subset_stage(subset)
 
         # 20 total modules (10 experts × 2 modules) with batch_size 2 modules = 10 batches
+        # Each batch calls _run_forward_batches once, and torch_empty_cache is called 3 times per batch
+        # (once after forward pass, once after quant pass, once after chunk processing)
         self.assertEqual(self.looper._run_forward_batches.call_count, 10)
-        self.assertEqual(mock_empty_cache.call_count, 10)
+        self.assertEqual(mock_empty_cache.call_count, 30)
 
     @patch('gptqmodel.looper.stage_subset.torch_empty_cache')
     def test_batching_with_odd_number_of_experts(self, mock_empty_cache):
@@ -147,8 +149,10 @@ class TestMoEExpertBatching(unittest.TestCase):
         self._run_subset_stage(subset)
 
         # 7 experts (modules) with batch_size 3 = 3 batches (3 + 3 + 1)
+        # Each batch calls _run_forward_batches once, and torch_empty_cache is called 3 times per batch
+        # (once after forward pass, once after quant pass, once after chunk processing)
         self.assertEqual(self.looper._run_forward_batches.call_count, 3)
-        self.assertEqual(mock_empty_cache.call_count, 3)
+        self.assertEqual(mock_empty_cache.call_count, 9)
 
     @patch('gptqmodel.looper.stage_subset.torch_empty_cache')
     def test_batching_when_batch_size_exceeds_expert_count(self, mock_empty_cache):
@@ -196,8 +200,10 @@ class TestMoEExpertBatching(unittest.TestCase):
         self._run_subset_stage(subset)
 
         # 4 experts with batch_size 1 = 4 batches
+        # Each batch calls _run_forward_batches once, and torch_empty_cache is called 3 times per batch
+        # (once after forward pass, once after quant pass, once after chunk processing)
         self.assertEqual(self.looper._run_forward_batches.call_count, 4)
-        self.assertEqual(mock_empty_cache.call_count, 4)
+        self.assertEqual(mock_empty_cache.call_count, 12)
 
     @patch('gptqmodel.looper.stage_subset.torch_empty_cache')
     def test_no_batching_when_not_using_bypass_routing(self, mock_empty_cache):
