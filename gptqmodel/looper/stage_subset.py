@@ -574,7 +574,9 @@ def run_subset_stage(
     # Check for MoE batching
     # batch_size is only available when using ExpertsRoutingBypass routing strategy
     moe_routing = looper.gptq_model.quantize_config.moe
-    batch_size = moe_routing.routing.batch_size if isinstance(moe_routing.routing, ExpertsRoutingBypass) else None
+    batch_size = None
+    if moe_routing is not None and isinstance(moe_routing.routing, ExpertsRoutingBypass):
+        batch_size = moe_routing.routing.batch_size
     batching_enabled = is_moe_subset and batch_size is not None and batch_size > 0
     
     processed_results = {}

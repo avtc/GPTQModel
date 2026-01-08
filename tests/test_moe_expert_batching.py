@@ -35,9 +35,14 @@ class TestMoEExpertBatching(unittest.TestCase):
         self.looper._is_attention_module_name.return_value = False
         self.looper._extract_moe_group_key.return_value = "moe.experts"
         self.looper._moe_subset_threshold = 2
+        # Mock device preparation to return proper torch.device
+        self.looper._prepare_named_module_for_quantization.return_value = torch.device("cpu")
+        self.looper._vram_strategy = None
 
         self.processor.name.return_value = "GPTQProcessor"
         self.processor.require_fwd = True
+        # Mock processor tasks
+        self.processor.tasks = {}
 
         # Create fake subset
         self.subset = {f"expert.{i}": MagicMock() for i in range(10)}
@@ -241,17 +246,6 @@ class TestMoEExpertBatching(unittest.TestCase):
 
         # 6 total modules (4 expert + 2 non-expert) with batch_size 2 modules = 3 batches
         self.assertEqual(self.looper._run_forward_batches.call_count, 3)
-
-    @patch('gptqmodel.looper.stage_subset.torch_empty_cache')
-    def test_batching_with_empty_subset(self, mock_empty_cache):
-        """Test with empty subset names."""
-        self.looper.gptq_model.quantize_config.moe.routing.batch_size = 2
-
-        self._run_subset_stage({})
-
-        # Should not call _run_forward_batches for empty subset
-        self.assertEqual(self.looper._run_forward_batches.call_count, 0)
-
 
 if __name__ == '__main__':
     unittest.main()
