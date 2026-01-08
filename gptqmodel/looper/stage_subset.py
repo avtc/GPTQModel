@@ -595,14 +595,14 @@ def run_subset_stage(
 
         # Create progress bar for MOE chunks
         moe_chunk_pb = logger.pb(range(len(module_chunks))).manual()
-        moe_chunk_pb.title(f"MoE Chunks ({len(module_chunks)} total)")
+        moe_chunk_pb.title(f"MoE Chunk")
 
         for chunk_idx in moe_chunk_pb:
             chunk_keys = module_chunks[chunk_idx]
             # Create subset for this chunk
             chunk_subset = {k: subset[k] for k in chunk_keys}
 
-            moe_chunk_pb.subtitle(f"Chunk {chunk_idx+1}/{len(module_chunks)} ({len(chunk_subset)} modules)").draw()
+            moe_chunk_pb.subtitle(f"{chunk_idx+1}/{len(module_chunks)} ({len(chunk_subset)} modules)").draw()
             if DEBUG_ON and logger.isEnabledFor(logging.DEBUG):
                 logger.debug(f"Processing MoE Chunk {chunk_idx+1}/{len(module_chunks)} ({len(chunk_subset)} modules)...")
 
