@@ -389,10 +389,13 @@ class ExpertsRoutingOverride(BaseMoERouting):
 # This ensures all experts receive sufficient calibration samples but increases quantization time
 @dataclass
 class ExpertsRoutingBypass(BaseMoERouting):
-    # Number of experts to process in a single batch to reduce VRAM pressure during quantization
+    # Number of modules to process in a single batch to reduce VRAM pressure during quantization
+    # For example, with batch_size=10 and 20 expert modules (gate_proj + up_proj for 10 experts):
+    # - First batch processes 10 modules (could be gate_proj for experts 0-9, or a mix depending on sorting)
+    # - Second batch processes remaining 10 modules
     batch_size: Optional[int] = field(
         default=None,
-        metadata={"help": "Number of experts to process in a single batch during MoE quantization"}
+        metadata={"help": "Number of modules to process in a single batch during MoE quantization"}
     )
 
 

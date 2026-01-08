@@ -592,57 +592,23 @@ def run_subset_stage(
     processed_results = {}
     
     if batching_enabled and processor.require_fwd:
-        # Group modules by their MoE group key (Expert ID) to ensure we batch whole experts
-        expert_groups: Dict[str, List[str]] = {}
-        non_expert_modules: List[str] = []
-        
-        for name in subset:
-            group_key = looper._extract_moe_group_key(name)
-            if group_key:
-                expert_groups.setdefault(group_key, []).append(name)
-            else:
-                non_expert_modules.append(name)
-        
-        # Sort keys for deterministic execution
-        sorted_group_keys = sorted(expert_groups.keys())
-        
-        # Chunk the group keys (experts)
-        group_chunks = [sorted_group_keys[i:i + batch_size] for i in range(0, len(sorted_group_keys), batch_size)]
-        
-        # If there are non-expert modules in a MoE subset (unlikely but possible), 
-        # add them as a separate chunk or merge them. For safety, let's treat them as their own batch or append to first?
-        # Usually MoE subsets are purely experts if is_moe_subset is true.
-        # If they exist, let's process them in the first batch to ensure they are available? 
-        # Or just append them to the list of chunks as a "remainder".
-        if non_expert_modules:
-             # Just add them to the first chunk if possible, or create a 'pre-chunk'
-             # Let's effectively add a chunk for them if they exist
-             # But wait, chunks are lists of *keys* (module names).
-             pass
+        # Simply sort all module names and chunk them by batch_size
+        # This processes exactly batch_size MODULES per batch, not batch_size experts
+        sorted_module_names = sorted(subset.keys())
+
+        # Chunk module names directly by batch_size
+        module_chunks = [sorted_module_names[i:i + batch_size] for i in range(0, len(sorted_module_names), batch_size)]
 
         logger.info(
-            f"MoE Expert Batching Enabled: Splitting {len(expert_groups)} experts into {len(group_chunks)} batches "
-            f"(batch_size={batch_size})."
+            f"MoE Expert Batching Enabled: Processing {len(sorted_module_names)} modules in {len(module_chunks)} batches "
+            f"(batch_size={batch_size} modules per batch)."
         )
 
-        all_chunks_modules = []
-        for group_chunk in group_chunks:
-             chunk_module_names = []
-             for group_key in group_chunk:
-                 chunk_module_names.extend(expert_groups[group_key])
-             chunk_module_names.sort() # sort modules within chunk for determinism
-             all_chunks_modules.append(chunk_module_names)
-        
-        # Add non-expert modules as a separate chunk at the end if any
-        if non_expert_modules:
-             non_expert_modules.sort()
-             all_chunks_modules.append(non_expert_modules)
-
-        for i, chunk_keys in enumerate(all_chunks_modules):
+        for i, chunk_keys in enumerate(module_chunks):
             # Create subset for this chunk
             chunk_subset = {k: subset[k] for k in chunk_keys}
             
-            logger.info(f"Processing MoE Chunk {i+1}/{len(all_chunks_modules)} ({len(chunk_subset)} modules)...")
+            logger.info(f"Processing MoE Chunk {i+1}/{len(module_chunks)} ({len(chunk_subset)} modules)...")
             
             # Run pass
             chunk_result, _ = _run_single_subset_pass(

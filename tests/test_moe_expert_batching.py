@@ -98,7 +98,7 @@ class TestMoEExpertBatching(unittest.TestCase):
 
     @patch('gptqmodel.looper.stage_subset.torch_empty_cache')
     def test_batching_with_expert_groups(self, mock_empty_cache):
-        """Test batching when modules are grouped by expert."""
+        """Test batching when modules are processed by module count."""
         self.looper.gptq_model.quantize_config.moe.routing.batch_size = 2
 
         # Create 10 experts with 2 modules each (gate_proj, up_proj)
@@ -122,9 +122,9 @@ class TestMoEExpertBatching(unittest.TestCase):
 
         self._run_subset_stage(subset_names, subset)
 
-        # 10 expert groups with batch_size 2 = 5 batches
-        self.assertEqual(self.looper._run_forward_batches.call_count, 5)
-        self.assertEqual(mock_empty_cache.call_count, 5)
+        # 20 total modules (10 experts × 2 modules) with batch_size 2 modules = 10 batches
+        self.assertEqual(self.looper._run_forward_batches.call_count, 10)
+        self.assertEqual(mock_empty_cache.call_count, 10)
 
     @patch('gptqmodel.looper.stage_subset.torch_empty_cache')
     def test_batching_with_odd_number_of_experts(self, mock_empty_cache):
@@ -181,7 +181,7 @@ class TestMoEExpertBatching(unittest.TestCase):
 
     @patch('gptqmodel.looper.stage_subset.torch_empty_cache')
     def test_batching_one_expert_per_batch(self, mock_empty_cache):
-        """Test with batch_size=1, meaning one expert per batch."""
+        """Test with batch_size=1, meaning one module per batch."""
         self.looper.gptq_model.quantize_config.moe.routing.batch_size = 1
 
         # Create 4 experts
@@ -256,7 +256,7 @@ class TestMoEExpertBatching(unittest.TestCase):
 
         self._run_subset_stage(subset_names, subset)
 
-        # 4 expert groups with batch_size 2 = 2 batches for experts + 1 for non-experts = 3 total
+        # 6 total modules (4 expert + 2 non-expert) with batch_size 2 modules = 3 batches
         self.assertEqual(self.looper._run_forward_batches.call_count, 3)
 
     @patch('gptqmodel.looper.stage_subset.torch_empty_cache')
