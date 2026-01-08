@@ -29,7 +29,7 @@ class TestMoEExpertBatching(unittest.TestCase):
         self.looper.gptq_model.quantize_config.moe = MoEConfig(routing=ExpertsRoutingBypass())
         self.looper.gptq_model.quantize_config.moe.routing.batch_size = None
         self.looper.gptq_model.quantize_config.gc_mode = GcMode.ON_STAGE_END
-        self.looper.gptq_model.quantize_config.auto_forward_data_parallel = True
+        self.looper.gptq_model.quantize_config.auto_forward_data_parallel = False
 
         # Setup mocks
         self.looper._is_attention_module_name.return_value = False
@@ -43,6 +43,8 @@ class TestMoEExpertBatching(unittest.TestCase):
         self.processor.require_fwd = True
         # Mock processor tasks
         self.processor.tasks = {}
+        # Explicitly set fwd_after_process to match GPTQProcessor default
+        self.processor.fwd_after_process = True
 
         # Create fake subset
         self.subset = {f"expert.{i}": MagicMock() for i in range(10)}
@@ -144,7 +146,7 @@ class TestMoEExpertBatching(unittest.TestCase):
 
         self._run_subset_stage(subset)
 
-        # 7 experts with batch_size 3 = 3 batches (3 + 3 + 1)
+        # 7 experts (modules) with batch_size 3 = 3 batches (3 + 3 + 1)
         self.assertEqual(self.looper._run_forward_batches.call_count, 3)
         self.assertEqual(mock_empty_cache.call_count, 3)
 
