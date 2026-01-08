@@ -564,6 +564,64 @@ def _parse_smooth_method(setting: Any) -> Optional[SmoothMethod]:
         return _build_smooth_method_from_dict(setting)
     raise ValueError("QuantizeConfig: `failsafe.smooth` must be a SmoothMethod, string, or dict.")
 
+
+def _build_moe_routing_from_dict(payload: Dict[str, Any]) -> BaseMoERouting:
+    """
+    Build MoE routing object from dictionary.
+
+    Expected format:
+    {
+        "class": "ExpertsRoutingBypass" | "ExpertsRoutingOverride",
+        "batch_size": int (optional, for ExpertsRoutingBypass),
+        "num_experts_per_tok": int | str (for ExpertsRoutingOverride)
+    }
+    """
+    routing_class = payload.get("class")
+    if not routing_class:
+        raise ValueError("QuantizeConfig: MoE routing config missing 'class' field.")
+
+    routing_class_name = str(routing_class).strip()
+
+    if routing_class_name == "ExpertsRoutingBypass":
+        batch_size = payload.get("batch_size")
+        return ExpertsRoutingBypass(batch_size=batch_size)
+
+    elif routing_class_name == "ExpertsRoutingOverride":
+        num_experts_per_tok = payload.get("num_experts_per_tok", MOE_ALL_EXPERTS)
+        return ExpertsRoutingOverride(num_experts_per_tok=num_experts_per_tok)
+
+    else:
+        raise ValueError(
+            f"QuantizeConfig: Unknown MoE routing class '{routing_class_name}'. "
+            f"Must be 'ExpertsRoutingBypass' or 'ExpertsRoutingOverride'."
+        )
+
+
+def _parse_moe_config(setting: Any) -> Optional[MoEConfig]:
+    """
+    Parse MoE configuration from various input types.
+
+    Supports:
+    - None: returns None
+    - MoEConfig: returns as-is
+    - dict: converts to MoEConfig using routing class name
+    """
+    if setting is None:
+        return None
+
+    if isinstance(setting, MoEConfig):
+        return setting
+
+    if isinstance(setting, dict):
+        routing = setting.get("routing")
+        if routing is None:
+            raise ValueError("QuantizeConfig: MoE config dict missing 'routing' field.")
+
+        routing_obj = _build_moe_routing_from_dict(routing)
+        return MoEConfig(routing=routing_obj)
+
+    raise ValueError("QuantizeConfig: `moe` must be a MoEConfig, dict, or None.")
+
 def dynamic_get(dynamic: Dict[str, Dict[str, Union[int, bool]]], module_name: str, key: str = None,
                 default: Union[int, bool] = None, sub_key: str = None) -> Union[Dict, int, bool]:
 
@@ -710,12 +768,12 @@ class QuantizeConfig():
         default=None,
         metadata={"help": "Mixture-of-Experts (MoE) configuration for routing strategy and expert batching. "
                   "Example with bypass routing (forward all data to each expert): "
-                  "moe=MoEConfig(routing=ExpertsRoutingBypass(batch_size=None)) - processes all experts in one batch (default). "
-                  "moe=MoEConfig(routing=ExpertsRoutingBypass(batch_size=4)) - processes 4 experts at a time to reduce VRAM pressure. "
+                  "moe={'routing': {'class': 'ExpertsRoutingBypass', 'batch_size': None}} - processes all experts in one batch (default). "
+                  "moe={'routing': {'class': 'ExpertsRoutingBypass', 'batch_size': 4}} - processes 4 experts at a time to reduce VRAM pressure. "
                   "Example with routing override (limit experts per token): "
-                  "moe=MoEConfig(routing=ExpertsRoutingOverride(num_experts_per_tok=2)). "
+                  "moe={'routing': {'class': 'ExpertsRoutingOverride', 'num_experts_per_tok': 2}}. "
                   "Example to forward to all experts: "
-                  "moe=MoEConfig(routing=ExpertsRoutingOverride(num_experts_per_tok='all'))"}
+                  "moe={'routing': {'class': 'ExpertsRoutingOverride', 'num_experts_per_tok': 'all'}}"}
     )
 
     # Works faster with some configurations when disabled
@@ -869,6 +927,9 @@ class QuantizeConfig():
             self.gptaq = GPTAQConfig(**self.gptaq)
         elif not isinstance(self.gptaq, GPTAQConfig):
             raise ValueError("QuantizeConfig: `gptaq` must be a GPTAQConfig, dict, or None.")
+
+        # normalize moe config
+        self.moe = _parse_moe_config(self.moe)
 
         # resolve activation ordering compatibility and defaults
         desc_act_user_value = self.desc_act
@@ -1142,6 +1203,8 @@ class QuantizeConfig():
             normalized["hessian"] = meta_payload.get("hessian")
         if "gptaq" not in normalized and isinstance(meta_payload, dict) and "gptaq" in meta_payload:
             normalized["gptaq"] = meta_payload.get("gptaq")
+        if "moe" not in normalized and isinstance(meta_payload, dict) and "moe" in meta_payload:
+            normalized["moe"] = meta_payload.get("moe")
 
         cfg = cls(**normalized)
 
