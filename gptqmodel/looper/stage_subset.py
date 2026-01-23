@@ -400,6 +400,7 @@ def _handle_empty_subset(
     subset_event_cb: Optional[Callable[..., None]],
     layer_inputs: List[List[torch.Tensor]],
     logger,
+    looper,
 ) -> SubsetStageResult:
     """Handle empty subset with consistent logging, events, and memory cleanup."""
     if DEBUG_ON and logger.isEnabledFor(logging.DEBUG):
@@ -430,7 +431,7 @@ def _handle_empty_subset(
     forward_context = SubsetForwardContext(
         subset={},
         forward_device_map={},
-        subset_forward_serial=False,  # Consistent with empty subset behavior
+        subset_forward_serial=looper.gptq_model.quantize_config.force_subset_forward_serial,  # Consistent with empty subset behavior
         subset_total=subset_total,
         subset_index=subset_index,
     )
@@ -494,7 +495,7 @@ def run_subset_stage(
     if not subset:
         return _handle_empty_subset(
             layer_index, subset_index, subset_total, processor_name, subset_event_cb,
-            layer_inputs, logger
+            layer_inputs, logger, looper
         )
 
     def emit_subset_event(stage: str) -> None:
